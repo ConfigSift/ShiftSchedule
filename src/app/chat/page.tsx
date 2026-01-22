@@ -1,73 +1,224 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useScheduleStore } from '../../store/scheduleStore';
+import { useRouter } from 'next/navigation';
+import { ArrowLeft, MessageSquare, Plus, Send } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
-import { Toast } from '../../components/Toast';
-import { SECTIONS } from '../../types';
-import { formatTimestamp, formatHour, formatDateLong } from '../../utils/timeUtils';
-import { 
-  ArrowLeft, 
-  Send, 
-  Calendar,
-  Clock,
-  Check,
-  X,
-  AlertTriangle,
-} from 'lucide-react';
+import { supabase } from '../../lib/supabase/client';
+import { apiFetch } from '../../lib/apiClient';
+import { normalizeUserRow } from '../../utils/userMapper';
+import { formatTimestamp } from '../../utils/timeUtils';
+import { getUserRole, isManagerRole } from '../../utils/role';
+
+type ChatRoom = {
+  id: string;
+  name: string;
+  organizationId: string;
+  createdAt: string;
+};
+
+type ChatMessage = {
+  id: string;
+  roomId: string;
+  organizationId: string;
+  authorAuthUserId: string;
+  body: string;
+  createdAt: string;
+};
+
+type UserLookup = {
+  name: string;
+  initials: string;
+};
 
 export default function ChatPage() {
   const router = useRouter();
+  const { currentUser, activeRestaurantId, init, isInitialized } = useAuthStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  
-  const { 
-    hydrate, 
-    isHydrated, 
-    getEmployeesForRestaurant,
-    getShiftsForRestaurant,
-    chatMessages,
-    dropRequests,
-    sendChatMessage,
-    acceptDropRequest,
-    cancelDropRequest,
-    getEmployeeById,
-    showToast,
-    loadRestaurantData,
-  } = useScheduleStore();
-  
-  const { currentUser, init, isInitialized, activeRestaurantId } = useAuthStore();
 
-  const [message, setMessage] = useState('');
-  const [showDropModal, setShowDropModal] = useState(false);
-  const [selectedShiftId, setSelectedShiftId] = useState('');
+  const [rooms, setRooms] = useState<ChatRoom[]>([]);
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messageText, setMessageText] = useState('');
+  const [loadingRooms, setLoadingRooms] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [usersByAuthId, setUsersByAuthId] = useState<Record<string, UserLookup>>({});
+  const [showRoomModal, setShowRoomModal] = useState(false);
+  const [newRoomName, setNewRoomName] = useState('');
+  const [error, setError] = useState('');
+
+  const isManager = isManagerRole(getUserRole(currentUser?.role));
 
   useEffect(() => {
-    hydrate();
-  }, [hydrate]);
+    init();
+  }, [init]);
 
   useEffect(() => {
-    if (isHydrated) {
-      init();
-    }
-  }, [isHydrated, init]);
-
-  useEffect(() => {
-    loadRestaurantData(activeRestaurantId);
-  }, [activeRestaurantId, loadRestaurantData]);
-
-  useEffect(() => {
-    if (isHydrated && isInitialized && !currentUser) {
+    if (isInitialized && !currentUser) {
       router.push('/login');
     }
-  }, [isHydrated, isInitialized, currentUser, router]);
+  }, [isInitialized, currentUser, router]);
+
+  useEffect(() => {
+    if (activeRestaurantId && currentUser) {
+      loadRooms(activeRestaurantId);
+      loadUsers(activeRestaurantId);
+    }
+  }, [activeRestaurantId, currentUser]);
+
+  useEffect(() => {
+    if (activeRoomId) {
+      loadMessages(activeRoomId);
+    }
+  }, [activeRoomId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+  }, [messages]);
 
-  if (!isHydrated || !isInitialized || !currentUser) {
+  const loadRooms = async (organizationId: string) => {
+    setLoadingRooms(true);
+    const { data, error } = (await supabase
+      .from('chat_rooms')
+      .select('id,name,organization_id,created_at')
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: true })) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    if (error) {
+      setError(error.message);
+      setLoadingRooms(false);
+      return;
+    }
+
+    const mapped = (data || []).map((room) => ({
+      id: room.id,
+      name: room.name,
+      organizationId: room.organization_id,
+      createdAt: room.created_at,
+    }));
+
+    setRooms(mapped);
+    setLoadingRooms(false);
+    if (!activeRoomId && mapped.length > 0) {
+      setActiveRoomId(mapped[0].id);
+    }
+  };
+
+  const loadMessages = async (roomId: string) => {
+    setLoadingMessages(true);
+    const { data, error } = (await supabase
+      .from('chat_messages')
+      .select('id,room_id,organization_id,author_auth_user_id,body,created_at')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: true })) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    if (error) {
+      setError(error.message);
+      setLoadingMessages(false);
+      return;
+    }
+
+    const mapped = (data || []).map((row) => ({
+      id: row.id,
+      roomId: row.room_id,
+      organizationId: row.organization_id,
+      authorAuthUserId: row.author_auth_user_id,
+      body: row.body,
+      createdAt: row.created_at,
+    }));
+
+    setMessages(mapped);
+    setLoadingMessages(false);
+  };
+
+  const loadUsers = async (organizationId: string) => {
+    const { data, error } = (await supabase
+      .from('users')
+      .select('*')
+      .eq('organization_id', organizationId)) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    if (error) return;
+
+    const lookup: Record<string, UserLookup> = {};
+    (data || []).forEach((row) => {
+      const normalized = normalizeUserRow(row);
+      const name = normalized.fullName || normalized.email || 'Team Member';
+      const initials = name
+        .split(' ')
+        .map((part) => part[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase();
+      if (normalized.authUserId) {
+        lookup[normalized.authUserId] = { name, initials };
+      }
+    });
+    setUsersByAuthId(lookup);
+  };
+
+  const activeRoom = rooms.find((room) => room.id === activeRoomId);
+
+  const handleCreateRoom = async () => {
+    if (!activeRestaurantId || !newRoomName.trim()) return;
+    setError('');
+    const result = await apiFetch<{ room: Record<string, any> }>('/api/chat/rooms/create', {
+      method: 'POST',
+      json: {
+        organizationId: activeRestaurantId,
+        name: newRoomName.trim(),
+      },
+    });
+
+    if (!result.ok || !result.data?.room) {
+      setError(result.error || 'Unable to create room.');
+      return;
+    }
+
+    const room = result.data.room;
+    const mapped: ChatRoom = {
+      id: room.id,
+      name: room.name,
+      organizationId: room.organization_id,
+      createdAt: room.created_at,
+    };
+    setRooms((prev) => [...prev, mapped]);
+    setActiveRoomId(mapped.id);
+    setNewRoomName('');
+    setShowRoomModal(false);
+  };
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeRestaurantId || !activeRoomId || !messageText.trim()) return;
+    const result = await apiFetch<{ message: Record<string, any> }>('/api/chat/messages/send', {
+      method: 'POST',
+      json: {
+        organizationId: activeRestaurantId,
+        roomId: activeRoomId,
+        body: messageText.trim(),
+      },
+    });
+    if (!result.ok) {
+      setError(result.error || 'Unable to send message.');
+      return;
+    }
+    setMessageText('');
+    await loadMessages(activeRoomId);
+  };
+
+  const getUser = (authUserId: string) => usersByAuthId[authUserId] || { name: 'Team Member', initials: '?' };
+
+  if (!isInitialized || !currentUser) {
     return (
       <div className="min-h-screen bg-theme-primary flex items-center justify-center">
         <p className="text-theme-secondary">Loading...</p>
@@ -75,53 +226,8 @@ export default function ChatPage() {
     );
   }
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!message.trim()) return;
-
-    sendChatMessage(currentUser.id, message.trim());
-    setMessage('');
-  };
-
-  const handleDropRequest = () => {
-    if (!selectedShiftId) return;
-    
-    const { createDropRequest } = useScheduleStore.getState();
-    createDropRequest(selectedShiftId, currentUser.id);
-    setShowDropModal(false);
-    setSelectedShiftId('');
-    showToast('Drop request posted', 'success');
-  };
-
-  const handleAcceptDrop = async (requestId: string) => {
-    const result = await acceptDropRequest(requestId, currentUser.id);
-    if (result.success) {
-      showToast('Shift accepted! It has been assigned to you.', 'success');
-    } else {
-      showToast(result.error || 'Could not accept shift', 'error');
-    }
-  };
-
-  const handleCancelDrop = (requestId: string) => {
-    cancelDropRequest(requestId);
-    showToast('Drop request cancelled', 'success');
-  };
-
-  // Get user's upcoming shifts for drop modal
-  const myUpcomingShifts = getShiftsForRestaurant(activeRestaurantId).filter(s => 
-    s.employeeId === currentUser.id && 
-    !s.isBlocked &&
-    new Date(s.date) >= new Date()
-  ).sort((a, b) => a.date.localeCompare(b.date));
-
-  // Check if shift already has open drop request
-  const hasOpenDropRequest = (shiftId: string) => {
-    return dropRequests.some(r => r.shiftId === shiftId && r.status === 'open');
-  };
-
   return (
     <div className="min-h-screen bg-theme-primary flex flex-col">
-      {/* Header */}
       <header className="h-16 bg-theme-secondary border-b border-theme-primary flex items-center justify-between px-6 shrink-0">
         <Link
           href="/dashboard"
@@ -130,269 +236,159 @@ export default function ChatPage() {
           <ArrowLeft className="w-5 h-5" />
           Back
         </Link>
-        <h1 className="text-lg font-semibold text-theme-primary">Team Chat</h1>
-        <button
-          onClick={() => setShowDropModal(true)}
-          className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 text-amber-500 rounded-lg hover:bg-amber-500/20 transition-colors text-sm font-medium"
-        >
-          <Calendar className="w-4 h-4" />
-          Drop Shift
-        </button>
+        <h1 className="text-lg font-semibold text-theme-primary flex items-center gap-2">
+          <MessageSquare className="w-5 h-5 text-amber-400" />
+          Team Chat
+        </h1>
+        {isManager && (
+          <button
+            onClick={() => setShowRoomModal(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 text-amber-500 rounded-lg hover:bg-amber-500/20 transition-colors text-sm font-medium"
+          >
+            <Plus className="w-4 h-4" />
+            New Room
+          </button>
+        )}
       </header>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {chatMessages.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-theme-muted">
-            <p>No messages yet. Start the conversation!</p>
-          </div>
-        ) : (
-          chatMessages.map((msg) => {
-            const sender = getEmployeeById(msg.senderId);
-            const isMe = msg.senderId === currentUser.id;
-            const isSystem = msg.type === 'system';
-            const isDropRequest = msg.type === 'drop_request';
-            const dropRequest = isDropRequest ? dropRequests.find(r => r.id === msg.dropRequestId) : null;
-            
-            if (isSystem) {
-              return (
-                <div key={msg.id} className="flex justify-center">
-                  <p className="text-xs text-theme-muted bg-theme-tertiary px-3 py-1.5 rounded-full">
-                    {msg.text}
-                  </p>
-                </div>
-              );
-            }
+      <div className="flex flex-1 overflow-hidden">
+        <aside className="w-56 shrink-0 border-r border-theme-primary bg-theme-secondary p-4 space-y-3">
+          <div className="text-xs uppercase tracking-wide text-theme-muted">Rooms</div>
+          {loadingRooms ? (
+            <p className="text-sm text-theme-muted">Loading rooms...</p>
+          ) : rooms.length === 0 ? (
+            <p className="text-sm text-theme-muted">No rooms yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {rooms.map((room) => (
+                <button
+                  key={room.id}
+                  onClick={() => setActiveRoomId(room.id)}
+                  className={`w-full text-left px-3 py-2 rounded-lg transition-colors text-sm ${
+                    room.id === activeRoomId
+                      ? 'bg-amber-500/20 text-amber-400'
+                      : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
+                  }`}
+                >
+                  {room.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </aside>
 
-            if (isDropRequest && dropRequest) {
-              const shift = getShiftsForRestaurant(activeRestaurantId).find(s => s.id === dropRequest.shiftId);
-              const fromEmployee = getEmployeeById(dropRequest.fromEmployeeId);
-              const sectionConfig = fromEmployee ? SECTIONS[fromEmployee.section] : null;
-              const isOpen = dropRequest.status === 'open';
-              const isMyRequest = dropRequest.fromEmployeeId === currentUser.id;
-              const acceptor = dropRequest.acceptedByEmployeeId ? getEmployeeById(dropRequest.acceptedByEmployeeId) : null;
-
-              return (
-                <div key={msg.id} className="flex justify-center">
-                  <div className="bg-theme-secondary border border-theme-primary rounded-xl p-4 max-w-md w-full">
-                    <div className="flex items-start gap-3 mb-3">
-                      {sectionConfig && (
-                        <div
-                          className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0"
-                          style={{
-                            backgroundColor: sectionConfig.bgColor,
-                            color: sectionConfig.color,
-                          }}
-                        >
-                          {fromEmployee?.name.split(' ').map(n => n[0]).join('')}
-                        </div>
-                      )}
-                      <div className="flex-1">
-                        <p className="text-sm font-medium text-theme-primary">
-                          {fromEmployee?.name} wants to drop a shift
+        <main className="flex-1 flex flex-col">
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {error && (
+              <div className="bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg p-3 text-sm">
+                {error}
+              </div>
+            )}
+            {!activeRoom && !loadingRooms ? (
+              <div className="flex items-center justify-center h-full text-theme-muted">
+                <p>Select or create a chat room.</p>
+              </div>
+            ) : loadingMessages ? (
+              <div className="flex items-center justify-center h-full text-theme-muted">
+                <p>Loading messages...</p>
+              </div>
+            ) : messages.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-theme-muted">
+                <p>No messages yet. Start the conversation!</p>
+              </div>
+            ) : (
+              messages.map((msg) => {
+                const author = getUser(msg.authorAuthUserId);
+                const isMe = msg.authorAuthUserId === currentUser.authUserId;
+                const displayName = isMe ? 'You' : author.name;
+                return (
+                  <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`flex items-end gap-2 max-w-[70%] ${isMe ? 'flex-row-reverse' : ''}`}>
+                      <div className="w-8 h-8 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-xs font-semibold">
+                        {author.initials}
+                      </div>
+                      <div>
+                        <p className={`text-xs text-theme-muted mb-1 ${isMe ? 'text-right mr-1' : 'ml-1'}`}>
+                          {displayName}
                         </p>
-                        <p className="text-xs text-theme-muted">
+                        <div
+                          className={`px-4 py-2 rounded-2xl ${
+                            isMe
+                              ? 'bg-amber-500 text-zinc-900 rounded-br-md'
+                              : 'bg-theme-secondary text-theme-primary rounded-bl-md'
+                          }`}
+                        >
+                          <p className="text-sm">{msg.body}</p>
+                        </div>
+                        <p className={`text-xs text-theme-muted mt-1 ${isMe ? 'text-right mr-1' : 'ml-1'}`}>
                           {formatTimestamp(msg.createdAt)}
                         </p>
                       </div>
                     </div>
-
-                    {shift && (
-                      <div className="bg-theme-tertiary rounded-lg p-3 mb-3">
-                        <div className="flex items-center gap-2 text-theme-primary">
-                          <Calendar className="w-4 h-4" />
-                          <span className="font-medium">{formatDateLong(shift.date)}</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-theme-secondary mt-1">
-                          <Clock className="w-4 h-4" />
-                          <span>{formatHour(shift.startHour)} - {formatHour(shift.endHour)}</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {isOpen ? (
-                      <div className="flex gap-2">
-                        {!isMyRequest && (
-                          <button
-                            onClick={() => handleAcceptDrop(dropRequest.id)}
-                            className="flex-1 flex items-center justify-center gap-2 py-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-400 transition-colors text-sm font-medium"
-                          >
-                            <Check className="w-4 h-4" />
-                            Accept Shift
-                          </button>
-                        )}
-                        {isMyRequest && (
-                          <button
-                            onClick={() => handleCancelDrop(dropRequest.id)}
-                            className="flex-1 flex items-center justify-center gap-2 py-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20 transition-colors text-sm font-medium"
-                          >
-                            <X className="w-4 h-4" />
-                            Cancel Request
-                          </button>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2 text-sm text-theme-muted">
-                        {dropRequest.status === 'accepted' ? (
-                          <>
-                            <Check className="w-4 h-4 text-emerald-500" />
-                            Accepted by {acceptor?.name}
-                          </>
-                        ) : (
-                          <>
-                            <X className="w-4 h-4 text-red-400" />
-                            Cancelled
-                          </>
-                        )}
-                      </div>
-                    )}
                   </div>
-                </div>
-              );
-            }
+                );
+              })
+            )}
+            <div ref={messagesEndRef} />
+          </div>
 
-            const sectionConfig = sender ? SECTIONS[sender.section] : null;
-
-            return (
-              <div
-                key={msg.id}
-                className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
+          <form onSubmit={handleSend} className="p-4 bg-theme-secondary border-t border-theme-primary">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                className="flex-1 px-4 py-3 bg-theme-tertiary border border-theme-primary rounded-xl text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                placeholder={activeRoom ? `Message #${activeRoom.name}` : 'Select a room'}
+                disabled={!activeRoom}
+              />
+              <button
+                type="submit"
+                disabled={!messageText.trim() || !activeRoom}
+                className="px-4 py-3 bg-amber-500 text-zinc-900 rounded-xl hover:bg-amber-400 transition-colors disabled:opacity-50"
               >
-                <div className={`flex items-end gap-2 max-w-[70%] ${isMe ? 'flex-row-reverse' : ''}`}>
-                  {!isMe && sectionConfig && (
-                    <div
-                      className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
-                      style={{
-                        backgroundColor: sectionConfig.bgColor,
-                        color: sectionConfig.color,
-                      }}
-                    >
-                      {sender?.name.split(' ').map(n => n[0]).join('')}
-                    </div>
-                  )}
-                  <div>
-                    {!isMe && (
-                      <p className="text-xs text-theme-muted mb-1 ml-1">
-                        {sender?.name}
-                      </p>
-                    )}
-                    <div
-                      className={`px-4 py-2 rounded-2xl ${
-                        isMe
-                          ? 'bg-amber-500 text-zinc-900 rounded-br-md'
-                          : 'bg-theme-secondary text-theme-primary rounded-bl-md'
-                      }`}
-                    >
-                      <p className="text-sm">{msg.text}</p>
-                    </div>
-                    <p className={`text-xs text-theme-muted mt-1 ${isMe ? 'text-right mr-1' : 'ml-1'}`}>
-                      {formatTimestamp(msg.createdAt)}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            );
-          })
-        )}
-        <div ref={messagesEndRef} />
+                <Send className="w-5 h-5" />
+              </button>
+            </div>
+          </form>
+        </main>
       </div>
 
-      {/* Input */}
-      <form onSubmit={handleSend} className="p-4 bg-theme-secondary border-t border-theme-primary">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            className="flex-1 px-4 py-3 bg-theme-tertiary border border-theme-primary rounded-xl text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-            placeholder="Type a message..."
-          />
-          <button
-            type="submit"
-            disabled={!message.trim()}
-            className="px-4 py-3 bg-amber-500 text-zinc-900 rounded-xl hover:bg-amber-400 transition-colors disabled:opacity-50"
-          >
-            <Send className="w-5 h-5" />
-          </button>
-        </div>
-      </form>
-
-      {/* Drop Shift Modal */}
-      {showDropModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div 
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setShowDropModal(false)}
-          />
-          <div className="relative w-full max-w-md mx-4 bg-theme-secondary rounded-2xl shadow-2xl border border-theme-primary">
-            <div className="p-4 border-b border-theme-primary">
-              <h2 className="text-lg font-semibold text-theme-primary">Drop a Shift</h2>
+      {showRoomModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowRoomModal(false)} />
+          <div className="relative w-full max-w-md bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-theme-primary">Create Chat Room</h2>
+            <div>
+              <label className="text-sm text-theme-secondary">Room name</label>
+              <input
+                type="text"
+                value={newRoomName}
+                onChange={(e) => setNewRoomName(e.target.value)}
+                className="w-full mt-2 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+                placeholder="e.g. Front of House"
+              />
             </div>
-            <div className="p-4">
-              <p className="text-sm text-theme-tertiary mb-4">
-                Select a shift you want to drop. Another team member can pick it up.
-              </p>
-
-              {myUpcomingShifts.length === 0 ? (
-                <div className="text-center py-8 text-theme-muted">
-                  <AlertTriangle className="w-8 h-8 mx-auto mb-2" />
-                  <p>You have no upcoming shifts to drop</p>
-                </div>
-              ) : (
-                <div className="space-y-2 max-h-60 overflow-y-auto">
-                  {myUpcomingShifts.map(shift => {
-                    const alreadyDropping = hasOpenDropRequest(shift.id);
-                    return (
-                      <button
-                        key={shift.id}
-                        onClick={() => !alreadyDropping && setSelectedShiftId(shift.id)}
-                        disabled={alreadyDropping}
-                        className={`w-full p-3 rounded-lg border text-left transition-colors ${
-                          selectedShiftId === shift.id
-                            ? 'border-amber-500 bg-amber-500/10'
-                            : alreadyDropping
-                            ? 'border-theme-primary bg-theme-tertiary opacity-50 cursor-not-allowed'
-                            : 'border-theme-primary hover:bg-theme-tertiary'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-theme-primary">
-                            {formatDateLong(shift.date)}
-                          </span>
-                          {alreadyDropping && (
-                            <span className="text-xs text-amber-500">Pending</span>
-                          )}
-                        </div>
-                        <span className="text-sm text-theme-secondary">
-                          {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-
-              <div className="flex gap-3 mt-4">
-                <button
-                  onClick={() => setShowDropModal(false)}
-                  className="flex-1 py-2 bg-theme-tertiary text-theme-secondary rounded-lg hover:bg-theme-hover transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDropRequest}
-                  disabled={!selectedShiftId}
-                  className="flex-1 py-2 bg-amber-500 text-zinc-900 rounded-lg hover:bg-amber-400 transition-colors disabled:opacity-50"
-                >
-                  Request Drop
-                </button>
-              </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowRoomModal(false)}
+                className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateRoom}
+                disabled={!newRoomName.trim()}
+                className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 disabled:opacity-50"
+              >
+                Create
+              </button>
             </div>
           </div>
         </div>
       )}
-
-      <Toast />
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { JOB_OPTIONS } from '../../../types';
 import { getUserRole, isManagerRole } from '../../../utils/role';
 import { normalizeUserRow } from '../../../utils/userMapper';
 import { formatDateLong } from '../../../utils/timeUtils';
+import { apiFetch } from '../../../lib/apiClient';
 
 type ProfileUser = {
   id: string;
@@ -21,6 +22,7 @@ type ProfileUser = {
   phone: string;
   accountType: string;
   jobs: string[];
+  hourlyPay?: number;
 };
 
 export default function StaffProfilePage() {
@@ -29,7 +31,7 @@ export default function StaffProfilePage() {
   const userId = String(params?.userId ?? '');
 
   const { currentUser, init, isInitialized, activeRestaurantId, updateProfile, userProfiles, signOut } = useAuthStore();
-  const { loadRestaurantData, getBlockedShiftsForEmployee, deleteBlockedPeriod, openModal, showToast } =
+  const { loadRestaurantData, getBlockedRequestsForEmployee, deleteBlockedPeriod, openModal, showToast } =
     useScheduleStore();
 
   const [user, setUser] = useState<ProfileUser | null>(null);
@@ -39,6 +41,7 @@ export default function StaffProfilePage() {
   const [phone, setPhone] = useState('');
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
+  const [hourlyPay, setHourlyPay] = useState('0');
   const [saving, setSaving] = useState(false);
   const [authBanner, setAuthBanner] = useState<string | null>(null);
 
@@ -109,6 +112,7 @@ export default function StaffProfilePage() {
       phone: normalized.phone ?? '',
       accountType: normalized.role,
       jobs: normalized.jobs,
+      hourlyPay: normalized.hourlyPay,
     };
 
     setUser(mapped);
@@ -116,6 +120,7 @@ export default function StaffProfilePage() {
     setPhone(mapped.phone);
     setAccountType(mapped.accountType);
     setJobs(mapped.jobs);
+    setHourlyPay(String(mapped.hourlyPay ?? 0));
     setLoading(false);
   };
 
@@ -127,13 +132,10 @@ export default function StaffProfilePage() {
 
   const blockedShifts = useMemo(() => {
     if (!user) return [];
-    return getBlockedShiftsForEmployee(user.id);
-  }, [user, getBlockedShiftsForEmployee]);
+    return getBlockedRequestsForEmployee(user.id).filter((req) => req.status === 'APPROVED');
+  }, [user, getBlockedRequestsForEmployee]);
 
-  const parseBlockedReason = (note?: string) => {
-    if (!note) return '';
-    return note.replace('[BLOCKED]', '').trim();
-  };
+  const parseBlockedReason = (note?: string) => note ?? '';
 
   const canEditJobs = isAdmin || (isManager && targetRole !== 'ADMIN');
   const canEditAccountType = isAdmin && !isSelf;
@@ -173,34 +175,31 @@ export default function StaffProfilePage() {
         return;
       }
 
-      const response = await fetch('/api/admin/update-user', {
+      const result = await apiFetch('/api/admin/update-user', {
         method: 'POST',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        json: {
           userId: user.id,
           organizationId: activeRestaurantId,
           fullName: fullName.trim(),
           phone: phone.trim() || '',
           accountType: canEditAccountType ? accountType : undefined,
           jobs: canEditJobs ? jobs : user.jobs,
-        }),
+          hourlyPay: canEditJobs ? Number(hourlyPay || 0) : user.hourlyPay,
+        },
       });
 
-      const payload = await response.json();
-      if (!response.ok) {
-        if (response.status === 401) {
+      if (!result.ok) {
+        if (result.status === 401) {
           const message = 'Session expired. Please sign out and sign in again.';
           setAuthBanner(message);
           showToast(message, 'error');
           setError(message);
-        } else if (response.status === 403) {
+        } else if (result.status === 403) {
           const message = 'You dont have permission for that action.';
           setError(message);
           showToast(message, 'error');
         } else {
-          setError(payload.error || 'Unable to update profile.');
+          setError(result.error || 'Unable to update profile.');
         }
         setSaving(false);
         return;
@@ -361,8 +360,8 @@ export default function StaffProfilePage() {
                 className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary opacity-60"
               />
             </div>
-            <div>
-              <label className="text-sm text-theme-secondary">Account type</label>
+          <div>
+            <label className="text-sm text-theme-secondary">Account type</label>
               {canEditAccountType && (allowAdminCreation || targetRole !== 'ADMIN') ? (
                 <select
                   value={accountType}
@@ -387,6 +386,23 @@ export default function StaffProfilePage() {
                 </p>
               )}
             </div>
+          </div>
+          <div>
+            <label className="text-sm text-theme-secondary">Hourly Pay</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={hourlyPay}
+              onChange={(e) => setHourlyPay(e.target.value)}
+              disabled={!canEditJobs}
+              className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+            />
+            {!canEditJobs && (
+              <p className="text-xs text-theme-muted mt-2">
+                Hourly pay can only be edited by managers or admins.
+              </p>
+            )}
           </div>
 
           <div>
@@ -443,9 +459,12 @@ export default function StaffProfilePage() {
                   className="flex items-start justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3"
                 >
                   <div>
-                    <p className="text-sm text-red-400 font-medium">{formatDateLong(shift.date)}</p>
+                    <p className="text-sm text-red-400 font-medium">
+                      {formatDateLong(shift.startDate)}
+                      {shift.startDate !== shift.endDate && ` - ${formatDateLong(shift.endDate)}`}
+                    </p>
                     <p className="text-xs text-theme-tertiary">
-                      {parseBlockedReason(shift.notes) || 'Blocked'}
+                      {parseBlockedReason(shift.reason) || 'Blocked'}
                     </p>
                   </div>
                   {isManager && (

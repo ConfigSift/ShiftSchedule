@@ -6,6 +6,7 @@ import { SECTIONS } from '../types';
 import { getWeekDates, dateToString, isSameDay, formatHour } from '../utils/timeUtils';
 import { Palmtree } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
+import { useCallback, useRef } from 'react';
 
 export function WeekView() {
   const {
@@ -14,9 +15,12 @@ export function WeekView() {
     getShiftsForRestaurant,
     setSelectedDate,
     setViewMode,
+    goToPrevious,
+    goToNext,
     openModal,
     hasApprovedTimeOff,
     hasBlockedShiftOnDate,
+    hasOrgBlackoutOnDate,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
@@ -25,6 +29,8 @@ export function WeekView() {
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const today = new Date();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollLockRef = useRef(false);
 
   const handleDayClick = (date: Date) => {
     setSelectedDate(date);
@@ -38,44 +44,82 @@ export function WeekView() {
     openModal('editShift', shift);
   };
 
+  const handleScrollEdge = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || scrollLockRef.current) return;
+    if (el.scrollWidth <= el.clientWidth) return;
+    const threshold = 24;
+    if (el.scrollLeft <= threshold) {
+      scrollLockRef.current = true;
+      goToPrevious();
+      requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollLeft =
+            (scrollRef.current.scrollWidth - scrollRef.current.clientWidth) / 2;
+        }
+      });
+      setTimeout(() => {
+        scrollLockRef.current = false;
+      }, 300);
+    } else if (el.scrollLeft + el.clientWidth >= el.scrollWidth - threshold) {
+      scrollLockRef.current = true;
+      goToNext();
+      requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollLeft =
+            (scrollRef.current.scrollWidth - scrollRef.current.clientWidth) / 2;
+        }
+      });
+      setTimeout(() => {
+        scrollLockRef.current = false;
+      }, 300);
+    }
+  }, [goToPrevious, goToNext]);
+
   return (
     <div className="flex-1 flex flex-col bg-theme-timeline overflow-hidden transition-theme">
-      <div className="h-12 border-b border-theme-primary flex shrink-0">
-        <div className="w-44 shrink-0 border-r border-theme-primary" />
-        <div className="flex-1 flex">
-          {weekDates.map((date) => {
-            const isToday = isSameDay(date, today);
-            const isSelected = isSameDay(date, selectedDate);
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-x-auto overflow-y-hidden scroll-smooth"
+        onScroll={handleScrollEdge}
+      >
+        <div className="min-w-[1100px] flex flex-col h-full">
+          <div className="h-12 border-b border-theme-primary flex shrink-0">
+            <div className="w-44 shrink-0 border-r border-theme-primary" />
+            <div className="flex-1 flex">
+              {weekDates.map((date) => {
+                const isToday = isSameDay(date, today);
+                const isSelected = isSameDay(date, selectedDate);
 
-            return (
-              <button
-                key={date.toISOString()}
-                onClick={() => handleDayClick(date)}
-                className={`flex-1 border-r border-theme-primary/50 flex flex-col items-center justify-center transition-colors ${
-                  isToday
-                    ? 'bg-amber-500/10'
-                    : isSelected
-                    ? 'bg-theme-hover'
-                    : 'hover:bg-theme-hover/50'
-                }`}
-              >
-                <span className={`text-xs font-medium ${
-                  isToday ? 'text-amber-500' : 'text-theme-muted'
-                }`}>
-                  {date.toLocaleDateString('en-US', { weekday: 'short' })}
-                </span>
-                <span className={`text-sm font-semibold ${
-                  isToday ? 'text-amber-500' : 'text-theme-secondary'
-                }`}>
-                  {date.getDate()}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+                return (
+                  <button
+                    key={date.toISOString()}
+                    onClick={() => handleDayClick(date)}
+                    className={`flex-1 border-r border-theme-primary/50 flex flex-col items-center justify-center transition-colors ${
+                      isToday
+                        ? 'bg-amber-500/10'
+                        : isSelected
+                        ? 'bg-theme-hover'
+                        : 'hover:bg-theme-hover/50'
+                    }`}
+                  >
+                    <span className={`text-xs font-medium ${
+                      isToday ? 'text-amber-500' : 'text-theme-muted'
+                    }`}>
+                      {date.toLocaleDateString('en-US', { weekday: 'short' })}
+                    </span>
+                    <span className={`text-sm font-semibold ${
+                      isToday ? 'text-amber-500' : 'text-theme-secondary'
+                    }`}>
+                      {date.getDate()}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-      <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto">
         {filteredEmployees.length === 0 ? (
           <div className="flex items-center justify-center h-full text-theme-muted">
             <div className="text-center">
@@ -121,13 +165,14 @@ export function WeekView() {
                     const isToday = isSameDay(date, today);
                     const hasTimeOff = hasApprovedTimeOff(employee.id, dateStr);
                     const hasBlocked = hasBlockedShiftOnDate(employee.id, dateStr);
+                    const hasOrgBlackout = hasOrgBlackoutOnDate(dateStr);
 
                     return (
                       <div
                         key={date.toISOString()}
                         className={`flex-1 border-r border-theme-primary/30 p-1 ${
                           isToday ? 'bg-amber-500/5' : ''
-                        } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''}`}
+                        } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''} ${hasOrgBlackout ? 'bg-amber-500/5' : ''}`}
                       >
                         {hasTimeOff ? (
                           <div className="h-full flex items-center justify-center">
@@ -140,6 +185,12 @@ export function WeekView() {
                           <div className="h-full flex items-center justify-center">
                             <div className="flex items-center gap-1 px-2 py-1 bg-red-500/20 rounded text-red-400">
                               <span className="text-xs font-medium">BLOCKED</span>
+                            </div>
+                          </div>
+                        ) : hasOrgBlackout ? (
+                          <div className="h-full flex items-center justify-center">
+                            <div className="flex items-center gap-1 px-2 py-1 bg-amber-500/20 rounded text-amber-500">
+                              <span className="text-xs font-medium">BLACKOUT</span>
                             </div>
                           </div>
                         ) : (
@@ -172,6 +223,8 @@ export function WeekView() {
             );
           })
         )}
+          </div>
+        </div>
       </div>
     </div>
   );

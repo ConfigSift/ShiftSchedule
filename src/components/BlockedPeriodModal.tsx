@@ -14,7 +14,7 @@ export function BlockedPeriodModal() {
     modalData,
     closeModal,
     createBlockedPeriod,
-    getBlockedShiftsForEmployee,
+    getBlockedRequestsForEmployee,
     showToast,
     getEmployeesForRestaurant,
   } = useScheduleStore();
@@ -45,10 +45,10 @@ export function BlockedPeriodModal() {
     }
   }, [isOpen, modalEmployeeId]);
 
-  const blockedShifts = useMemo(() => {
+  const blockedRequests = useMemo(() => {
     if (!employeeId) return [];
-    return getBlockedShiftsForEmployee(employeeId);
-  }, [employeeId, getBlockedShiftsForEmployee]);
+    return getBlockedRequestsForEmployee(employeeId).filter((req) => req.status === 'APPROVED');
+  }, [employeeId, getBlockedRequestsForEmployee]);
 
   if (!isManager) return null;
 
@@ -91,24 +91,25 @@ export function BlockedPeriodModal() {
           </select>
         </div>
 
-        {employeeId && blockedShifts.length > 0 && (
+        {employeeId && blockedRequests.length > 0 && (
           <div>
             <h4 className="text-sm font-medium text-theme-secondary mb-2 flex items-center gap-2">
               <CalendarOff className="w-4 h-4" />
               Current Blocks
             </h4>
             <div className="space-y-2 max-h-48 overflow-y-auto">
-              {blockedShifts.map((shift) => (
+              {blockedRequests.map((request) => (
                 <div
-                  key={shift.id}
+                  key={request.id}
                   className="flex items-center justify-between p-3 bg-red-500/10 border border-red-500/30 rounded-lg"
                 >
                   <div>
                     <p className="text-sm text-red-400 font-medium">
-                      {formatDateLong(shift.date)}
+                      {formatDateLong(request.startDate)}
+                      {request.startDate !== request.endDate && ` - ${formatDateLong(request.endDate)}`}
                     </p>
-                    {shift.notes && (
-                      <p className="text-xs text-theme-tertiary mt-1">{shift.notes}</p>
+                    {request.reason && (
+                      <p className="text-xs text-theme-tertiary mt-1">{request.reason}</p>
                     )}
                   </div>
                 </div>

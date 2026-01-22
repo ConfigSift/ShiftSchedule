@@ -5,6 +5,7 @@ import { Modal } from './Modal';
 import { JOB_OPTIONS } from '../types';
 import { normalizeJobs } from '../utils/jobs';
 import { getUserRole } from '../utils/role';
+import { apiFetch } from '../lib/apiClient';
 
 type StaffProfileUser = {
   id: string;
@@ -14,6 +15,7 @@ type StaffProfileUser = {
   phone: string;
   accountType: string;
   jobs: string[];
+  hourlyPay?: number;
 };
 
 type StaffProfileModalProps = {
@@ -48,6 +50,7 @@ export function StaffProfileModal({
   const [phone, setPhone] = useState('');
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
+  const [hourlyPay, setHourlyPay] = useState('0');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -56,6 +59,7 @@ export function StaffProfileModal({
       setPhone(user.phone || '');
       setAccountType(getUserRole(user.accountType));
       setJobs(normalizeJobs(user.jobs));
+      setHourlyPay(String(user.hourlyPay ?? 0));
     }
   }, [isOpen, user]);
 
@@ -84,31 +88,28 @@ export function StaffProfileModal({
     }
     setSubmitting(true);
     try {
-      const response = await fetch('/api/admin/update-user', {
+      const result = await apiFetch('/api/admin/update-user', {
         method: 'POST',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        json: {
           userId: user.id,
           organizationId,
           fullName: fullName.trim(),
           phone: phone.trim() || '',
           accountType: canEditAccountType ? accountType : undefined,
           jobs,
-        }),
+          hourlyPay: Number(hourlyPay || 0),
+        },
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        if (response.status === 401) {
+      if (!result.ok) {
+        if (result.status === 401) {
           const message = 'Session expired. Please sign out and sign in again.';
           onAuthError?.(message);
           onError(message);
-        } else if (response.status === 403) {
+        } else if (result.status === 403) {
           const message = 'You dont have permission for that action.';
           onError(message);
         } else {
-          onError(payload.error || 'Unable to update profile.');
+          onError(result.error || 'Unable to update profile.');
         }
         setSubmitting(false);
         return;
@@ -193,6 +194,19 @@ export function StaffProfileModal({
           {requiresJobs && jobs.length === 0 && (
             <p className="text-xs text-red-400 mt-1">Assign at least one job.</p>
           )}
+        </div>
+
+        <div>
+          <label className="text-sm text-theme-secondary">Hourly Pay</label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={hourlyPay}
+            onChange={(e) => setHourlyPay(e.target.value)}
+            disabled={!canEdit}
+            className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+          />
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-2">

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
+import { jsonError } from '@/lib/apiResponses';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs } from '@/utils/jobs';
@@ -17,6 +18,7 @@ type CreatePayload = {
   jobs: string[];
   passcode?: string;
   pinCode?: string;
+  hourlyPay?: number;
 };
 
 function isValidPasscode(passcode: string) {
@@ -41,15 +43,15 @@ export async function POST(request: NextRequest) {
   }
 
   const { supabase, response } = createSupabaseRouteClient(request);
-  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-  const authUserId = sessionData.session?.user?.id;
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  const authUserId = authData.user?.id;
 
   if (!authUserId) {
     const message =
       process.env.NODE_ENV === 'production'
         ? 'Not signed in. Please sign out/in again.'
-        : sessionError?.message || 'Unauthorized.';
-    return applySupabaseCookies(NextResponse.json({ error: message }, { status: 401 }), response);
+        : authError?.message || 'Unauthorized.';
+    return applySupabaseCookies(jsonError(message, 401), response);
   }
 
   const { data: requesterRow, error: requesterError } = await supabase
@@ -59,26 +61,17 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
   }
 
   const requester = normalizeUserRow(requesterRow);
   const requesterRole = requester.role;
   if (!isManagerRole(requesterRole)) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
   }
 
   if (requester.organizationId !== payload.organizationId) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
   }
 
   const rawRole = String(payload.accountType ?? '').trim();
@@ -90,16 +83,10 @@ export async function POST(request: NextRequest) {
     );
   }
   if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Managers cannot create admins.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Managers cannot create admins.', 403), response);
   }
   if (targetRole === 'ADMIN' && !allowAdminCreation) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Admin creation is disabled.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Admin creation is disabled.', 403), response);
   }
 
   const normalizedJobs = sanitizeJobs(payload.jobs ?? []);
@@ -134,14 +121,15 @@ export async function POST(request: NextRequest) {
     account_type: targetRole,
     jobs: normalizedJobs,
     pin_code: pinValue,
+    hourly_pay: payload.hourlyPay ?? 0,
   };
 
   const insertResult = await supabaseAdmin.from('users').insert(insertPayload);
 
   if (insertResult.error) {
     const message = insertResult.error.message?.toLowerCase() ?? '';
-    if (message.includes('pin_code')) {
-      const { pin_code, ...withoutPin } = insertPayload;
+    if (message.includes('pin_code') || message.includes('hourly_pay')) {
+      const { pin_code, hourly_pay, ...withoutPin } = insertPayload;
       const pinFallbackResult = await supabaseAdmin.from('users').insert(withoutPin);
       if (pinFallbackResult.error) {
         await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
@@ -164,11 +152,15 @@ export async function POST(request: NextRequest) {
         role: targetRole,
         jobs: normalizedJobs,
         pin_code: pinValue,
+        hourly_pay: payload.hourlyPay ?? 0,
       };
       const legacyResult = await supabaseAdmin.from('users').insert(legacyPayload);
       if (legacyResult.error) {
-        if (legacyResult.error.message?.toLowerCase().includes('pin_code')) {
-          const { pin_code, ...legacyNoPin } = legacyPayload;
+        if (
+          legacyResult.error.message?.toLowerCase().includes('pin_code') ||
+          legacyResult.error.message?.toLowerCase().includes('hourly_pay')
+        ) {
+          const { pin_code, hourly_pay, ...legacyNoPin } = legacyPayload;
           const secondLegacy = await supabaseAdmin.from('users').insert(legacyNoPin);
           if (secondLegacy.error) {
             await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);

@@ -12,6 +12,7 @@ export function TimeOffRequestModal() {
     modalData,
     closeModal, 
     addTimeOffRequest,
+    hasOrgBlackoutOnDate,
     showToast,
   } = useScheduleStore();
 
@@ -51,6 +52,11 @@ export function TimeOffRequestModal() {
 
     if (!reason.trim()) {
       showToast('Please add a reason for this request', 'error');
+      return;
+    }
+
+    if (hasOrgBlackoutOnDate(startDate) || hasOrgBlackoutOnDate(endDate)) {
+      showToast('Time off is not allowed on blackout dates', 'error');
       return;
     }
 

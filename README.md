@@ -34,6 +34,28 @@ Reset the database (applies migrations):
 supabase db reset
 ```
 
+## Applying Supabase migrations
+
+Use one of the following:
+
+CLI (recommended for local dev):
+1. `supabase db reset` to recreate and apply all migrations.
+2. Or run `supabase db push` to apply new migrations to an existing database.
+
+SQL Editor (no CLI):
+1. Run the app: `pnpm dev`
+2. Visit `http://localhost:3000/debug/db`
+3. Copy the SQL blocks shown for any missing tables/columns.
+4. Paste into Supabase Dashboard -> SQL Editor -> Run.
+
+## Windows Build Note (EPERM)
+
+If `pnpm run build` fails with `Error: spawn EPERM` on Windows, it is typically caused by PowerShell execution policy, antivirus, or Windows Controlled Folder Access when the repo is under Desktop/Documents. Recommended fixes:
+
+- Move the repo to a non-protected folder (e.g. `C:\dev\shiftschedule`).
+- Allow `node.exe` and `pnpm` through Controlled Folder Access.
+- Re-run `pnpm run build` from a normal Command Prompt (cmd.exe).
+
 Seed the default restaurant (SKYBIRD / RST-K7M2Q9PJ):
 
 ```powershell
@@ -57,13 +79,13 @@ pnpm dev
 Login (seeded admin):
 - Restaurant ID: RST-K7M2Q9PJ
 - Email: ggodo@oakland.edu
-- Passcode: 503211
+- PIN: 503211
 
 Staff accounts are created by managers/admins in `/staff`.
 
 Login flow:
 - Visit `/login`.
-- Enter Restaurant ID (format `RST-XXXXXXXX`), email, and 6-digit passcode.
+- Enter Restaurant ID (format `RST-XXXXXXXX`), email, and 6-digit PIN.
 - Accounts are created by managers/admins in `/staff`.
 
 Restart dev server after env changes:
@@ -80,7 +102,20 @@ If you don't have Supabase CLI installed, use the in-app diagnostics page to get
 1. Run the app: `pnpm dev`
 2. Visit `http://localhost:3000/debug/db`
 3. Copy the SQL blocks shown for any missing tables/columns.
-4. Paste into Supabase Dashboard → SQL Editor → Run.
+4. Paste into Supabase Dashboard -> SQL Editor -> Run.
+## New Tables & Pages
+
+New Supabase tables used by the app (created via migrations or `/debug/db` SQL blocks):
+- `public.chat_rooms`, `public.chat_messages`
+- `public.blocked_day_requests`
+- `public.business_hours`
+- `public.users.hourly_pay`
+
+Manager/Admin tools:
+- `/blocked-days` to manage org blackout days and employee block requests
+- `/business-hours` to configure open/close hours
+- `/chat` for team chat rooms and messages
+
 
 After schema changes, restart the dev server:
 
@@ -90,6 +125,13 @@ pnpm dev
 ```
 
 Note: `.env.local` is only used locally. Configure Vercel env vars separately.
+
+## Recent Updates
+
+- Hardened time-off review/cancel errors and restricted cancels to pending-only.
+- Prevented rapid repeat review submits; errors surface via toast messages.
+- Replaced API auth checks to use `getUser()` for safer authorization.
+- Expanded `/debug/db` SQL to include full time-off schema + RLS.
 
 ## Learn More
 
@@ -108,10 +150,8 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## QA Checklist
 
-- Log in as Manager and confirm the notification bell links to `/manager/timeoff`.
-- Submit a time off request from `/profile`, approve it in `/manager/timeoff`, and confirm it appears in staff views.
-- In the staff sidebar, use each section checkbox to select and deselect all members in that section.
-- Verify Add Team Member (People) and Add Shift buttons show intentional hover feedback.
-- Post a chat message and confirm it persists after refresh with sender and timestamp.
-- Submit a drop request, see it posted to chat, accept once, and verify server-side overlap/time-off checks prevent invalid reassignments.
-- Validate staff cannot access `/manager/*` pages and manager-only actions are blocked server-side.
+- Log in with Restaurant ID + email + PIN and confirm you reach the correct org.
+- Submit a time off request and approve/deny it in `/time-off`.
+- Create and review a blocked day request in `/blocked-days`.
+- Create a chat room and post messages; confirm initials + name appear.
+- Verify employees can view schedules but cannot create/edit shifts.

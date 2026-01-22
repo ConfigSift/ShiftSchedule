@@ -26,8 +26,12 @@ export function StatsFooter() {
     return acc;
   }, {} as Record<Section, number>);
 
-  // Rough cost estimate ($15/hr average)
-  const estimatedCost = totalHours * 15;
+  const estimatedCost = todayShifts.reduce((sum, shift) => {
+    const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
+    const rate = employee?.hourlyPay ?? 0;
+    const hours = shift.endHour - shift.startHour;
+    return sum + hours * rate;
+  }, 0);
 
   return (
     <footer className="h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-6 gap-8 shrink-0 transition-theme">
@@ -77,7 +81,7 @@ export function StatsFooter() {
         <div>
           <p className="text-xs text-theme-muted">Est. Labor Cost</p>
           <p className="text-sm font-semibold text-theme-primary">
-            ${estimatedCost.toLocaleString()}
+            ${estimatedCost.toFixed(2)}
           </p>
         </div>
       </div>

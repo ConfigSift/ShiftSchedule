@@ -6,6 +6,9 @@ import {
   Shift,
   Section,
   TimeOffRequest,
+  BlockedDayRequest,
+  BlockedDayStatus,
+  BusinessHour,
   DropShiftRequest,
   ChatMessage,
   TimeOffStatus,
@@ -18,6 +21,7 @@ import { supabase } from '../lib/supabase/client';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { normalizeUserRow } from '../utils/userMapper';
 import { useAuthStore } from './authStore';
+import { apiFetch } from '../lib/apiClient';
 
 function parseTimeToDecimal(value: string | number | null): number {
   if (typeof value === 'number') return value;
@@ -55,6 +59,7 @@ type ModalType =
   | 'addEmployee'
   | 'editEmployee'
   | 'timeOffRequest'
+  | 'blockedDayRequest'
   | 'blockedPeriod'
   | 'timeOffReview'
   | 'dropShift'
@@ -64,6 +69,8 @@ interface ScheduleState {
   employees: Employee[];
   shifts: Shift[];
   timeOffRequests: TimeOffRequest[];
+  blockedDayRequests: BlockedDayRequest[];
+  businessHours: BusinessHour[];
   dropRequests: DropShiftRequest[];
   chatMessages: ChatMessage[];
 
@@ -124,10 +131,41 @@ interface ScheduleState {
   getTimeOffForDate: (employeeId: string, date: string) => TimeOffRequest | undefined;
   hasApprovedTimeOff: (employeeId: string, date: string) => boolean;
 
+  submitBlockedDayRequest: (request: {
+    organizationId: string;
+    startDate: string;
+    endDate: string;
+    reason: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  reviewBlockedDayRequest: (id: string, status: BlockedDayStatus, managerNote?: string) => Promise<{ success: boolean; error?: string }>;
+  cancelBlockedDayRequest: (id: string) => Promise<{ success: boolean; error?: string }>;
+  createImmediateBlockedDay: (data: {
+    organizationId: string;
+    userId?: string | null;
+    scope: 'ORG_BLACKOUT' | 'EMPLOYEE';
+    startDate: string;
+    endDate: string;
+    reason: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  updateBlockedDay: (data: {
+    id: string;
+    organizationId: string;
+    userId?: string | null;
+    scope: 'ORG_BLACKOUT' | 'EMPLOYEE';
+    startDate: string;
+    endDate: string;
+    reason: string;
+    status?: BlockedDayStatus;
+    managerNote?: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  deleteBlockedDay: (id: string, organizationId: string) => Promise<{ success: boolean; error?: string }>;
+
   createBlockedPeriod: (employeeId: string, startDate: string, endDate: string, reason: string) => Promise<{ success: boolean; error?: string }>;
   deleteBlockedPeriod: (blockId: string) => Promise<{ success: boolean; error?: string }>;
-  getBlockedShiftsForEmployee: (employeeId: string) => Shift[];
+  getBlockedRequestsForEmployee: (employeeId: string) => BlockedDayRequest[];
+  getOrgBlackoutDays: () => BlockedDayRequest[];
   hasBlockedShiftOnDate: (employeeId: string, date: string) => boolean;
+  hasOrgBlackoutOnDate: (date: string) => boolean;
 
   createDropRequest: (shiftId: string, employeeId: string) => void;
   acceptDropRequest: (requestId: string, acceptingEmployeeId: string) => Promise<{ success: boolean; error?: string }>;
@@ -150,6 +188,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   employees: [],
   shifts: [],
   timeOffRequests: [],
+  blockedDayRequests: [],
+  businessHours: [],
   dropRequests: [],
   chatMessages: [],
 
@@ -172,6 +212,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
     set({
       timeOffRequests: [],
+      blockedDayRequests: [],
+      businessHours: [],
       dropRequests,
       chatMessages,
       isHydrated: true,
@@ -180,7 +222,15 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
   loadRestaurantData: async (restaurantId) => {
     if (!restaurantId) {
-      set({ employees: [], shifts: [], selectedEmployeeIds: [], timeOffRequests: [], shiftLoadCounts: { total: 0, visible: 0 } });
+      set({
+        employees: [],
+        shifts: [],
+        selectedEmployeeIds: [],
+        timeOffRequests: [],
+        blockedDayRequests: [],
+        businessHours: [],
+        shiftLoadCounts: { total: 0, visible: 0 },
+      });
       return;
     }
 
@@ -200,7 +250,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return;
     }
 
-    let employees: Employee[] = (userData || []).map((row) => {
+    const employees: Employee[] = (userData || []).map((row) => {
       const normalized = normalizeUserRow(row);
       const profileRole = normalized.role;
       const section = profileRole === 'MANAGER' || profileRole === 'ADMIN' ? 'management' : 'front';
@@ -217,21 +267,14 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         },
         isActive: true,
         jobs: normalized.jobs,
+        hourlyPay: normalized.hourlyPay,
       };
     });
-
-    if (currentRole === 'EMPLOYEE' && currentUser?.id) {
-      employees = employees.filter((emp) => emp.id === currentUser.id);
-    }
 
     let shiftQuery = supabase
       .from('shifts')
       .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,is_blocked,job')
       .eq('organization_id', restaurantId);
-
-    if (currentRole === 'EMPLOYEE' && currentUser?.id) {
-      shiftQuery = shiftQuery.eq('user_id', currentUser.id);
-    }
 
     const { data: shiftData, error: shiftError } = (await shiftQuery) as {
       data: Array<Record<string, any>> | null;
@@ -330,11 +373,78 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           managerNote: row.manager_note ?? undefined,
         }));
 
+    const blockedQuery = (supabase as any)
+      .from('blocked_day_requests')
+      .select('*')
+      .eq('organization_id', restaurantId);
+
+    let blockedData: Array<Record<string, any>> | null = null;
+    let blockedError: { message: string } | null = null;
+    if (currentRole === 'EMPLOYEE' && currentUser?.authUserId) {
+      const [ownResult, blackoutResult] = await Promise.all([
+        blockedQuery.eq('requested_by_auth_user_id', currentUser.authUserId),
+        (supabase as any)
+          .from('blocked_day_requests')
+          .select('*')
+          .eq('organization_id', restaurantId)
+          .eq('scope', 'ORG_BLACKOUT')
+          .eq('status', 'APPROVED'),
+      ]);
+      const ownData = ownResult.data as Array<Record<string, any>> | null;
+      const blackoutData = blackoutResult.data as Array<Record<string, any>> | null;
+      blockedData = [...(ownData || []), ...(blackoutData || [])];
+      blockedError = ownResult.error ?? blackoutResult.error;
+    } else {
+      const result = await blockedQuery;
+      blockedData = result.data as Array<Record<string, any>> | null;
+      blockedError = result.error as { message: string } | null;
+    }
+
+    const blockedDayRequests: BlockedDayRequest[] = blockedError
+      ? []
+      : (blockedData || []).map((row) => ({
+          id: row.id,
+          organizationId: row.organization_id,
+          userId: row.user_id ?? undefined,
+          scope: String(row.scope ?? 'EMPLOYEE').toUpperCase() === 'ORG_BLACKOUT' ? 'ORG_BLACKOUT' : 'EMPLOYEE',
+          startDate: row.start_date,
+          endDate: row.end_date,
+          reason: row.reason ?? '',
+          status: String(row.status ?? 'PENDING').toUpperCase() as BlockedDayStatus,
+          managerNote: row.manager_note ?? undefined,
+          requestedByAuthUserId: row.requested_by_auth_user_id ?? '',
+          reviewedByAuthUserId: row.reviewed_by_auth_user_id ?? undefined,
+          reviewedAt: row.reviewed_at ?? undefined,
+          createdAt: row.created_at ?? new Date().toISOString(),
+          updatedAt: row.updated_at ?? undefined,
+        }));
+
+    const { data: businessData, error: businessError } = (await (supabase as any)
+      .from('business_hours')
+      .select('*')
+      .eq('organization_id', restaurantId)) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    const businessHours: BusinessHour[] = businessError
+      ? []
+      : (businessData || []).map((row) => ({
+          id: row.id,
+          organizationId: row.organization_id,
+          dayOfWeek: Number(row.day_of_week ?? 0),
+          openTime: row.open_time ?? undefined,
+          closeTime: row.close_time ?? undefined,
+          enabled: Boolean(row.enabled),
+        }));
+
     set({
       employees,
       shifts,
       selectedEmployeeIds: employees.map((e) => e.id),
       timeOffRequests,
+      blockedDayRequests,
+      businessHours,
       shiftLoadCounts: {
         total: shiftData?.length ?? 0,
         visible: shifts.length,
@@ -587,55 +697,25 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     if (!request.reason || !String(request.reason).trim()) {
       return { success: false, error: 'Reason is required for this request' };
     }
-    const insertPayload = {
-      organization_id: request.organizationId,
-      user_id: request.employeeId,
-      requester_auth_user_id: request.requesterAuthUserId,
-      start_date: request.startDate,
-      end_date: request.endDate,
-      reason: request.reason ?? null,
-      status: 'PENDING',
-    };
-
-    let insertData: Record<string, any> | null = null;
-    let error: { message: string } | null = null;
-
-    const primaryResult = await (supabase as any)
-      .from('time_off_requests')
-      .insert(insertPayload)
-      .select('*')
-      .single();
-
-    if (!primaryResult.error) {
-      insertData = primaryResult.data;
-    } else if (primaryResult.error.message?.toLowerCase().includes('requester_auth_user_id')) {
-      const { requester_auth_user_id, ...fallbackPayload } = insertPayload;
-      const fallbackResult = await (supabase as any)
-        .from('time_off_requests')
-        .insert({ ...fallbackPayload, auth_user_id: request.requesterAuthUserId })
-        .select('*')
-        .single();
-      if (!fallbackResult.error) {
-        insertData = fallbackResult.data;
-      } else if (fallbackResult.error.message?.toLowerCase().includes('auth_user_id')) {
-        const secondFallbackResult = await (supabase as any)
-          .from('time_off_requests')
-          .insert({ ...fallbackPayload, requester_user_id: request.requesterAuthUserId })
-          .select('*')
-          .single();
-        insertData = secondFallbackResult.data;
-        error = secondFallbackResult.error;
-      } else {
-        error = fallbackResult.error;
-      }
-    } else {
-      error = primaryResult.error;
+    if (get().hasOrgBlackoutOnDate(request.startDate) || get().hasOrgBlackoutOnDate(request.endDate)) {
+      return { success: false, error: 'Time off is not allowed on blackout dates.' };
     }
 
-    if (error || !insertData) {
-      return { success: false, error: error?.message ?? 'Failed to submit request' };
+    const result = await apiFetch<{ request: Record<string, any> }>('/api/time-off/request', {
+      method: 'POST',
+      json: {
+        organizationId: request.organizationId,
+        startDate: request.startDate,
+        endDate: request.endDate,
+        reason: request.reason,
+      },
+    });
+
+    if (!result.ok || !result.data?.request) {
+      return { success: false, error: result.error ?? 'Failed to submit request' };
     }
 
+    const insertData = result.data.request;
     const newRequest: TimeOffRequest = {
       id: insertData.id,
       employeeId:
@@ -661,29 +741,33 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   },
 
   reviewTimeOffRequest: async (id, status, reviewerId, managerNote) => {
-    const { data, error } = await (supabase as any)
-      .from('time_off_requests')
-      .update({
-        status,
-        reviewed_by: reviewerId,
-        reviewed_at: new Date().toISOString(),
-        manager_note: managerNote ?? null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select('id,status,reviewed_by,reviewed_at,manager_note,updated_at')
-      .single();
+    const organizationId = useAuthStore.getState().activeRestaurantId;
+    if (!organizationId) {
+      return { success: false, error: 'Organization not selected.' };
+    }
+    const normalizedStatus = String(status || '').toUpperCase() as TimeOffStatus;
 
-    if (error || !data) {
-      return { success: false, error: error?.message ?? 'Unable to update request' };
+    const result = await apiFetch<{ request: Record<string, any> }>('/api/time-off/review', {
+      method: 'POST',
+      json: {
+        id,
+        organizationId,
+        status: normalizedStatus,
+        managerNote,
+      },
+    });
+
+    if (!result.ok || !result.data?.request) {
+      return { success: false, error: result.error ?? 'Unable to update request' };
     }
 
+    const data = result.data.request;
     set((state) => ({
       timeOffRequests: state.timeOffRequests.map((req) =>
         req.id === id
           ? {
               ...req,
-              status: String(data.status ?? status).toUpperCase() as TimeOffStatus,
+              status: String(data.status ?? normalizedStatus).toUpperCase() as TimeOffStatus,
               reviewedBy: data.reviewed_by ?? req.reviewedBy,
               reviewedAt: data.reviewed_at ?? req.reviewedAt,
               managerNote: data.manager_note ?? req.managerNote,
@@ -696,20 +780,24 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   },
 
   cancelTimeOffRequest: async (id) => {
-    const { data, error } = await (supabase as any)
-      .from('time_off_requests')
-      .update({
-        status: 'CANCELLED',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select('id,status,updated_at')
-      .single();
-
-    if (error || !data) {
-      return { success: false, error: error?.message ?? 'Unable to cancel request' };
+    const organizationId = useAuthStore.getState().activeRestaurantId;
+    if (!organizationId) {
+      return { success: false, error: 'Organization not selected.' };
     }
 
+    const result = await apiFetch<{ request: Record<string, any> }>('/api/time-off/cancel', {
+      method: 'POST',
+      json: {
+        id,
+        organizationId,
+      },
+    });
+
+    if (!result.ok || !result.data?.request) {
+      return { success: false, error: result.error ?? 'Unable to cancel request' };
+    }
+
+    const data = result.data.request;
     set((state) => ({
       timeOffRequests: state.timeOffRequests.map((req) =>
         req.id === id
@@ -742,6 +830,182 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         date <= r.endDate
     ),
 
+  submitBlockedDayRequest: async (request) => {
+    const result = await apiFetch<{ request: Record<string, any> }>('/api/blocked-days/request', {
+      method: 'POST',
+      json: {
+        organizationId: request.organizationId,
+        startDate: request.startDate,
+        endDate: request.endDate,
+        reason: request.reason,
+      },
+    });
+
+    if (!result.ok || !result.data?.request) {
+      return { success: false, error: result.error ?? 'Failed to submit blocked day request' };
+    }
+
+    const row = result.data.request;
+    const newRequest: BlockedDayRequest = {
+      id: row.id,
+      organizationId: row.organization_id,
+      userId: row.user_id ?? undefined,
+      scope: String(row.scope ?? 'EMPLOYEE').toUpperCase() === 'ORG_BLACKOUT' ? 'ORG_BLACKOUT' : 'EMPLOYEE',
+      startDate: row.start_date,
+      endDate: row.end_date,
+      reason: row.reason ?? '',
+      status: String(row.status ?? 'PENDING').toUpperCase() as BlockedDayStatus,
+      managerNote: row.manager_note ?? undefined,
+      requestedByAuthUserId: row.requested_by_auth_user_id ?? '',
+      reviewedByAuthUserId: row.reviewed_by_auth_user_id ?? undefined,
+      reviewedAt: row.reviewed_at ?? undefined,
+      createdAt: row.created_at ?? new Date().toISOString(),
+      updatedAt: row.updated_at ?? undefined,
+    };
+
+    set((state) => ({ blockedDayRequests: [...state.blockedDayRequests, newRequest] }));
+    return { success: true };
+  },
+
+  reviewBlockedDayRequest: async (id, status, managerNote) => {
+    const organizationId = useAuthStore.getState().activeRestaurantId;
+    if (!organizationId) {
+      return { success: false, error: 'Organization not selected.' };
+    }
+    const result = await apiFetch<{ request: Record<string, any> }>('/api/blocked-days/review', {
+      method: 'POST',
+      json: { id, organizationId, status, managerNote },
+    });
+
+    if (!result.ok || !result.data?.request) {
+      return { success: false, error: result.error ?? 'Unable to update blocked day.' };
+    }
+
+    const data = result.data.request;
+    set((state) => ({
+      blockedDayRequests: state.blockedDayRequests.map((req) =>
+        req.id === id
+          ? {
+              ...req,
+              status: String(data.status ?? status).toUpperCase() as BlockedDayStatus,
+              managerNote: data.manager_note ?? req.managerNote,
+              reviewedByAuthUserId: data.reviewed_by_auth_user_id ?? req.reviewedByAuthUserId,
+              reviewedAt: data.reviewed_at ?? req.reviewedAt,
+              updatedAt: data.updated_at ?? req.updatedAt,
+            }
+          : req
+      ),
+    }));
+    return { success: true };
+  },
+
+  cancelBlockedDayRequest: async (id) => {
+    const organizationId = useAuthStore.getState().activeRestaurantId;
+    if (!organizationId) {
+      return { success: false, error: 'Organization not selected.' };
+    }
+    const result = await apiFetch<{ request: Record<string, any> }>('/api/blocked-days/cancel', {
+      method: 'POST',
+      json: { id, organizationId },
+    });
+
+    if (!result.ok || !result.data?.request) {
+      return { success: false, error: result.error ?? 'Unable to cancel blocked day.' };
+    }
+
+    const data = result.data.request;
+    set((state) => ({
+      blockedDayRequests: state.blockedDayRequests.map((req) =>
+        req.id === id
+          ? {
+              ...req,
+              status: String(data.status ?? 'CANCELLED').toUpperCase() as BlockedDayStatus,
+              updatedAt: data.updated_at ?? req.updatedAt,
+            }
+          : req
+      ),
+    }));
+    return { success: true };
+  },
+
+  createImmediateBlockedDay: async (data) => {
+    const result = await apiFetch<{ request: Record<string, any> }>('/api/blocked-days/create', {
+      method: 'POST',
+      json: data,
+    });
+
+    if (!result.ok || !result.data?.request) {
+      return { success: false, error: result.error ?? 'Unable to create blocked day.' };
+    }
+
+    const row = result.data.request;
+    const newRequest: BlockedDayRequest = {
+      id: row.id,
+      organizationId: row.organization_id,
+      userId: row.user_id ?? undefined,
+      scope: String(row.scope ?? 'EMPLOYEE').toUpperCase() === 'ORG_BLACKOUT' ? 'ORG_BLACKOUT' : 'EMPLOYEE',
+      startDate: row.start_date,
+      endDate: row.end_date,
+      reason: row.reason ?? '',
+      status: String(row.status ?? 'APPROVED').toUpperCase() as BlockedDayStatus,
+      managerNote: row.manager_note ?? undefined,
+      requestedByAuthUserId: row.requested_by_auth_user_id ?? '',
+      reviewedByAuthUserId: row.reviewed_by_auth_user_id ?? undefined,
+      reviewedAt: row.reviewed_at ?? undefined,
+      createdAt: row.created_at ?? new Date().toISOString(),
+      updatedAt: row.updated_at ?? undefined,
+    };
+
+    set((state) => ({ blockedDayRequests: [...state.blockedDayRequests, newRequest] }));
+    return { success: true };
+  },
+
+  updateBlockedDay: async (data) => {
+    const result = await apiFetch<{ request: Record<string, any> }>('/api/blocked-days/update', {
+      method: 'POST',
+      json: data,
+    });
+
+    if (!result.ok || !result.data?.request) {
+      return { success: false, error: result.error ?? 'Unable to update blocked day.' };
+    }
+
+    const row = result.data.request;
+    set((state) => ({
+      blockedDayRequests: state.blockedDayRequests.map((req) =>
+        req.id === data.id
+          ? {
+              ...req,
+              scope: String(row.scope ?? req.scope).toUpperCase() === 'ORG_BLACKOUT' ? 'ORG_BLACKOUT' : 'EMPLOYEE',
+              startDate: row.start_date ?? req.startDate,
+              endDate: row.end_date ?? req.endDate,
+              reason: row.reason ?? req.reason,
+              status: String(row.status ?? req.status).toUpperCase() as BlockedDayStatus,
+              managerNote: row.manager_note ?? req.managerNote,
+              updatedAt: row.updated_at ?? req.updatedAt,
+            }
+          : req
+      ),
+    }));
+    return { success: true };
+  },
+
+  deleteBlockedDay: async (id, organizationId) => {
+    const result = await apiFetch('/api/blocked-days/delete', {
+      method: 'POST',
+      json: { id, organizationId },
+    });
+
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to delete blocked day.' };
+    }
+
+    set((state) => ({
+      blockedDayRequests: state.blockedDayRequests.filter((req) => req.id !== id),
+    }));
+    return { success: true };
+  },
+
   createBlockedPeriod: async (employeeId, startDate, endDate, reason) => {
     const state = get();
     const currentUser = useAuthStore.getState().currentUser;
@@ -760,78 +1024,48 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return { success: false, error: 'Managers cannot block out admins.' };
     }
 
-    const days: string[] = [];
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      return { success: false, error: 'Invalid date range' };
-    }
-
-    for (let dt = new Date(start); dt <= end; dt.setDate(dt.getDate() + 1)) {
-      days.push(dt.toISOString().split('T')[0]);
-    }
-
-    const { data, error } = await (supabase as any)
-      .from('shifts')
-      .insert(
-        days.map((date) => ({
-          organization_id: employee.restaurantId,
-          user_id: employeeId,
-          shift_date: date,
-          start_time: formatTimeFromDecimal(0),
-          end_time: formatTimeFromDecimal(23.99),
-          notes: `[BLOCKED] ${reason.trim()}`,
-          is_blocked: true,
-        }))
-      )
-      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,is_blocked');
-
-    if (error || !data) {
-      return { success: false, error: error?.message ?? 'Unable to block out dates' };
-    }
-
-    const newShifts: Shift[] = (data || []).map((row: any) => ({
-      id: row.id,
-      employeeId: row.user_id,
-      restaurantId: row.organization_id,
-      date: row.shift_date,
-      startHour: parseTimeToDecimal(row.start_time),
-      endHour: parseTimeToDecimal(row.end_time),
-      notes: row.notes ?? undefined,
-      isBlocked: Boolean(row.is_blocked),
-    }));
-
-    set({ shifts: [...state.shifts, ...newShifts] });
-    return { success: true };
+    return get().createImmediateBlockedDay({
+      organizationId: employee.restaurantId,
+      userId: employeeId,
+      scope: 'EMPLOYEE',
+      startDate,
+      endDate,
+      reason,
+    });
   },
 
   deleteBlockedPeriod: async (blockId) => {
-    const state = get();
-    const currentUser = useAuthStore.getState().currentUser;
-    if (!isManagerRole(currentUser?.role)) {
-      return { success: false, error: "You don't have permission to remove blocked days." };
+    const organizationId = useAuthStore.getState().activeRestaurantId;
+    if (!organizationId) {
+      return { success: false, error: 'Organization not selected.' };
     }
-    const block = state.shifts.find((shift) => shift.id === blockId);
-    if (!block || !block.isBlocked) {
-      return { success: false, error: 'Blocked entry not found.' };
-    }
-    const { error } = await (supabase as any)
-      .from('shifts')
-      .delete()
-      .eq('id', blockId)
-      .eq('is_blocked', true);
-    if (error) {
-      return { success: false, error: error.message };
-    }
-    set({ shifts: state.shifts.filter((shift) => shift.id !== blockId) });
-    return { success: true };
+    return get().deleteBlockedDay(blockId, organizationId);
   },
 
-  getBlockedShiftsForEmployee: (employeeId) =>
-    get().shifts.filter((shift) => shift.employeeId === employeeId && shift.isBlocked),
+  getBlockedRequestsForEmployee: (employeeId) =>
+    get().blockedDayRequests.filter((req) => req.userId === employeeId),
+
+  getOrgBlackoutDays: () =>
+    get().blockedDayRequests.filter((req) => req.scope === 'ORG_BLACKOUT'),
 
   hasBlockedShiftOnDate: (employeeId, date) =>
-    get().shifts.some((shift) => shift.employeeId === employeeId && shift.date === date && shift.isBlocked),
+    get().blockedDayRequests.some(
+      (req) =>
+        req.scope === 'EMPLOYEE' &&
+        req.userId === employeeId &&
+        req.status === 'APPROVED' &&
+        date >= req.startDate &&
+        date <= req.endDate
+    ) || get().shifts.some((shift) => shift.employeeId === employeeId && shift.date === date && shift.isBlocked),
+
+  hasOrgBlackoutOnDate: (date) =>
+    get().blockedDayRequests.some(
+      (req) =>
+        req.scope === 'ORG_BLACKOUT' &&
+        req.status === 'APPROVED' &&
+        date >= req.startDate &&
+        date <= req.endDate
+    ),
 
   createDropRequest: (shiftId, employeeId) => {
     const state = get();

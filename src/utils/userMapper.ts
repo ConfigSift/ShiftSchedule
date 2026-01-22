@@ -12,12 +12,14 @@ export type NormalizedUser = {
   phone: string | null;
   role: 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
   jobs: string[];
+  hourlyPay: number;
 };
 
 export function normalizeUserRow(row: RawUserRow): NormalizedUser {
   const fullName =
     row.full_name
     || `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim();
+  const hourlyPay = Number(row.hourly_pay ?? 0);
 
   return {
     id: row.id,
@@ -28,6 +30,7 @@ export function normalizeUserRow(row: RawUserRow): NormalizedUser {
     phone: row.phone ?? null,
     role: getUserRole(row.account_type ?? row.role),
     jobs: normalizeJobs(row.jobs),
+    hourlyPay: Number.isFinite(hourlyPay) ? hourlyPay : 0,
   };
 }
 

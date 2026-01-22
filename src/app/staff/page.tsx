@@ -12,6 +12,7 @@ import { JOB_OPTIONS } from '../../types';
 import { getUserRole, isManagerRole } from '../../utils/role';
 import { normalizeUserRow } from '../../utils/userMapper';
 import { StaffProfileModal } from '../../components/StaffProfileModal';
+import { apiFetch } from '../../lib/apiClient';
 
 interface OrgUser {
   id: string;
@@ -21,6 +22,7 @@ interface OrgUser {
   phone: string;
   accountType: string;
   jobs: string[];
+  hourlyPay?: number;
 }
 
 const EMPTY_FORM = {
@@ -30,6 +32,7 @@ const EMPTY_FORM = {
   accountType: 'EMPLOYEE',
   jobs: [] as string[],
   passcode: '',
+  hourlyPay: '0',
 };
 
 export default function StaffPage() {
@@ -123,6 +126,7 @@ export default function StaffPage() {
         phone: normalized.phone ?? '',
         accountType: normalized.role,
         jobs: normalized.jobs,
+        hourlyPay: normalized.hourlyPay,
       };
     });
 
@@ -220,12 +224,9 @@ export default function StaffPage() {
     setSubmitting(true);
 
     try {
-      const response = await fetch('/api/admin/create-user', {
+      const result = await apiFetch('/api/admin/create-user', {
         method: 'POST',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        json: {
           organizationId: activeRestaurantId,
           fullName: formState.fullName.trim(),
           phone: formState.phone.trim() || '',
@@ -233,23 +234,23 @@ export default function StaffPage() {
           accountType: formState.accountType,
           jobs: formState.jobs,
           pinCode: formState.passcode,
-        }),
+          hourlyPay: Number(formState.hourlyPay || 0),
+        },
       });
 
-      const payload = await response.json();
-      if (!response.ok) {
+      if (!result.ok) {
         const isDev = process.env.NODE_ENV !== 'production';
-        if (response.status === 401) {
+        if (result.status === 401) {
           const message = 'Session expired. Please sign out and sign in again.';
-          handleAuthExpired(isDev ? payload.error || message : message);
-        } else if (response.status === 403) {
+          handleAuthExpired(isDev ? result.error || message : message);
+        } else if (result.status === 403) {
           const message = 'You dont have permission for that action.';
-          setError(isDev ? payload.error || message : message);
+          setError(isDev ? result.error || message : message);
           showToast(message, 'error');
-        } else if (response.status === 400 && payload?.error) {
-          setError(isDev ? payload.error : 'Unable to create user. Please verify the fields.');
+        } else if (result.status === 400 && result.error) {
+          setError(isDev ? result.error : 'Unable to create user. Please verify the fields.');
         } else {
-          setError(isDev ? payload.error || 'Unable to create user.' : 'Unable to create user.');
+          setError(isDev ? result.error || 'Unable to create user.' : 'Unable to create user.');
         }
         setSubmitting(false);
         return;
@@ -275,28 +276,24 @@ export default function StaffPage() {
     const confirmed = window.confirm(`Delete ${user.fullName || user.email}? This cannot be undone.`);
     if (!confirmed) return;
 
-    const response = await fetch('/api/admin/delete-user', {
+    const result = await apiFetch('/api/admin/delete-user', {
       method: 'POST',
-      credentials: 'include',
-      cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      json: {
         userId: user.id,
         organizationId: activeRestaurantId,
-      }),
+      },
     });
 
-    const payload = await response.json();
-    if (!response.ok) {
-      if (response.status === 401) {
+    if (!result.ok) {
+      if (result.status === 401) {
         const message = 'Session expired. Please sign out and sign in again.';
         handleAuthExpired(message);
-      } else if (response.status === 403) {
+      } else if (result.status === 403) {
         const message = 'You dont have permission for that action.';
         setError(message);
         showToast(message, 'error');
       } else {
-        setError(payload.error || 'Unable to delete user.');
+        setError(result.error || 'Unable to delete user.');
       }
       return;
     }
@@ -332,30 +329,26 @@ export default function StaffPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch('/api/admin/set-passcode', {
+      const result = await apiFetch('/api/admin/set-passcode', {
         method: 'POST',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        json: {
           organizationId: activeRestaurantId,
           email: resetTarget.email || undefined,
           authUserId: resetTarget.email ? undefined : resetTarget.authUserId,
           pinCode: resetPasscode,
-        }),
+        },
       });
 
-      const payload = await response.json();
-      if (!response.ok) {
-        if (response.status === 401) {
-        const message = 'Session expired. Please sign out and sign in again.';
-        handleAuthExpired(message);
-        } else if (response.status === 403) {
+      if (!result.ok) {
+        if (result.status === 401) {
+          const message = 'Session expired. Please sign out and sign in again.';
+          handleAuthExpired(message);
+        } else if (result.status === 403) {
           const message = 'You dont have permission for that action.';
           setError(message);
           showToast(message, 'error');
         } else {
-          setError(payload.error || 'Unable to reset PIN.');
+          setError(result.error || 'Unable to reset PIN.');
         }
         setSubmitting(false);
         return;
@@ -452,6 +445,7 @@ export default function StaffPage() {
                     <p className="text-xs text-theme-muted mt-1">
                       {user.accountType}
                       {user.jobs.length > 0 ? ` - ${user.jobs.join(', ')}` : ''}
+                      {typeof user.hourlyPay === 'number' ? ` | $${user.hourlyPay.toFixed(2)}/hr` : ''}
                     </p>
                   </div>
                   {isManager && (
@@ -531,6 +525,17 @@ export default function StaffPage() {
                   type="tel"
                   value={formState.phone}
                   onChange={(e) => setFormState((prev) => ({ ...prev, phone: e.target.value }))}
+                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-theme-secondary">Hourly Pay</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={formState.hourlyPay}
+                  onChange={(e) => setFormState((prev) => ({ ...prev, hourlyPay: e.target.value }))}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 />
               </div>

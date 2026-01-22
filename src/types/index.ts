@@ -19,6 +19,7 @@ export interface Employee {
   profile: EmployeeProfile;
   isActive: boolean;
   jobs?: string[];
+  hourlyPay?: number;
 }
 
 export interface Restaurant {
@@ -38,6 +39,7 @@ export interface UserProfile {
   fullName: string;
   role: UserRole;
   jobs: string[];
+  hourlyPay?: number;
 }
 
 export interface Shift {
@@ -101,6 +103,52 @@ export interface ChatMessage {
   text: string;
   type: ChatMessageType;
   dropRequestId?: string;
+}
+
+export interface ChatRoom {
+  id: string;
+  organizationId: string;
+  name: string;
+  createdByAuthUserId: string;
+  createdAt: string;
+}
+
+export interface ChatMessageRecord {
+  id: string;
+  roomId: string;
+  organizationId: string;
+  authorAuthUserId: string;
+  body: string;
+  createdAt: string;
+}
+
+export type BlockedDayStatus = 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED';
+export type BlockedDayScope = 'ORG_BLACKOUT' | 'EMPLOYEE';
+
+export interface BlockedDayRequest {
+  id: string;
+  organizationId: string;
+  userId?: string;
+  scope: BlockedDayScope;
+  startDate: string;
+  endDate: string;
+  reason: string;
+  status: BlockedDayStatus;
+  managerNote?: string;
+  requestedByAuthUserId: string;
+  reviewedByAuthUserId?: string;
+  reviewedAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface BusinessHour {
+  id: string;
+  organizationId: string;
+  dayOfWeek: number;
+  openTime?: string;
+  closeTime?: string;
+  enabled: boolean;
 }
 
 export interface SectionConfig {

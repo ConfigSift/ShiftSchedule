@@ -20,6 +20,7 @@ export default function TimeOffPage() {
 
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [statusFilter, setStatusFilter] = useState<'PENDING' | 'APPROVED' | 'DENIED'>('PENDING');
+  const [reviewingIds, setReviewingIds] = useState<Set<string>>(new Set());
 
   const isManager = isManagerRole(getUserRole(currentUser?.role));
 
@@ -55,13 +56,25 @@ export default function TimeOffPage() {
 
   const handleDecision = async (id: string, status: 'APPROVED' | 'DENIED') => {
     if (!currentUser) return;
+    if (reviewingIds.has(id)) return;
+    setReviewingIds((prev) => new Set(prev).add(id));
     const result = await reviewTimeOffRequest(id, status, currentUser.id, notesById[id]);
     if (!result.success) {
       showToast(result.error || 'Unable to update request', 'error');
+      setReviewingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       return;
     }
     showToast(status === 'APPROVED' ? 'Request approved' : 'Request denied', 'success');
     setNotesById((prev) => ({ ...prev, [id]: '' }));
+    setReviewingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
   if (!isInitialized || !currentUser || !isManager) {
@@ -127,7 +140,7 @@ export default function TimeOffPage() {
                         <div className="text-xs text-theme-muted">{employee?.profile?.email || ''}</div>
                       </td>
                       <td className="py-3 px-3 text-xs text-theme-tertiary">
-                        {employee?.jobs?.length ? employee.jobs.join(', ') : '—'}
+                        {employee?.jobs?.length ? employee.jobs.join(', ') : '-'}
                       </td>
                       <td className="py-3 px-3">
                         {formatDateLong(request.startDate)}
@@ -175,13 +188,15 @@ export default function TimeOffPage() {
                           <div className="flex justify-end gap-2">
                             <button
                               onClick={() => handleDecision(request.id, 'DENIED')}
-                              className="px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                              disabled={reviewingIds.has(request.id)}
+                              className="px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                             >
                               Deny
                             </button>
                             <button
                               onClick={() => handleDecision(request.id, 'APPROVED')}
-                              className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+                              disabled={reviewingIds.has(request.id)}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                             >
                               Approve
                             </button>

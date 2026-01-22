@@ -7,6 +7,7 @@ import { useAuthStore } from '../../../store/authStore';
 import { useScheduleStore } from '../../../store/scheduleStore';
 import { getUserRole } from '../../../utils/role';
 import { getJobsStorageType, normalizeJobs } from '../../../utils/jobs';
+import { apiFetch } from '../../../lib/apiClient';
 
 export default function SupabaseDebugPage() {
   const { activeRestaurantId, activeRestaurantCode, currentUser } = useAuthStore();
@@ -177,11 +178,11 @@ export default function SupabaseDebugPage() {
     try {
       const browserSession = await getSupabaseClient().auth.getSession();
       setBrowserSessionExists(Boolean(browserSession.data.session));
-      const response = await fetch('/api/me', { cache: 'no-store', credentials: 'include' });
-      const data = await response.json();
-      if (!response.ok) {
+      const result = await apiFetch('/api/me', { method: 'GET', skipAuthDebug: true });
+      const data = result.data as typeof whoAmIData | null;
+      if (!result.ok) {
         setWhoAmIStatus(null);
-        setError(data?.error || 'Who am I failed');
+        setError((data as { error?: string } | null)?.error || 'Who am I failed');
         return;
       }
       if (!data?.hasSession) {

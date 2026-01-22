@@ -6,6 +6,7 @@ import { UserProfile, UserRole } from '../types';
 import { clearStorage, loadFromStorage, saveToStorage, STORAGE_KEYS } from '../utils/storage';
 import { getUserRole } from '../utils/role';
 import { normalizeUserRow } from '../utils/userMapper';
+import { apiFetch } from '../lib/apiClient';
 
 interface AuthState {
   currentUser: UserProfile | null;
@@ -67,6 +68,7 @@ async function fetchUserProfiles(authUserId: string) {
       fullName: normalized.fullName,
       role: normalized.role,
       jobs: normalized.jobs,
+      hourlyPay: normalized.hourlyPay,
     };
   });
 
@@ -185,18 +187,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateProfile: async (data) => {
     const current = get().currentUser;
     if (!current) return { success: false, error: 'No user session.' };
-    const response = await fetch('/api/me/update-profile', {
+    const result = await apiFetch('/api/me/update-profile', {
       method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      json: {
         fullName: data.fullName,
         phone: data.phone ?? '',
-      }),
+      },
     });
-    const payload = await response.json();
-    if (!response.ok) {
-      return { success: false, error: payload.error || 'Unable to update profile.' };
+    if (!result.ok) {
+      return {
+        success: false,
+        error: result.error || 'Unable to update profile.',
+      };
     }
     await get().refreshProfile();
     return { success: true };

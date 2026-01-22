@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
+import { jsonError } from '@/lib/apiResponses';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs, serializeJobsForStorage } from '@/utils/jobs';
@@ -16,6 +17,7 @@ type UpdatePayload = {
   accountType?: string;
   jobs?: string[];
   passcode?: string;
+  hourlyPay?: number;
 };
 
 export async function POST(request: NextRequest) {
@@ -27,15 +29,15 @@ export async function POST(request: NextRequest) {
   }
 
   const { supabase, response } = createSupabaseRouteClient(request);
-  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-  const authUserId = sessionData.session?.user?.id;
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  const authUserId = authData.user?.id;
 
   if (!authUserId) {
     const message =
       process.env.NODE_ENV === 'production'
         ? 'Not signed in. Please sign out/in again.'
-        : sessionError?.message || 'Unauthorized.';
-    return applySupabaseCookies(NextResponse.json({ error: message }, { status: 401 }), response);
+        : authError?.message || 'Unauthorized.';
+    return applySupabaseCookies(jsonError(message, 401), response);
   }
 
   const { data: requesterRow, error: requesterError } = await supabase
@@ -45,26 +47,17 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
   }
 
   const requester = normalizeUserRow(requesterRow);
   const requesterRole = requester.role;
   if (!isManagerRole(requesterRole)) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
   }
 
   if (requester.organizationId !== payload.organizationId) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
   }
 
   const { data: targetRow, error: targetError } = await supabaseAdmin
@@ -83,10 +76,7 @@ export async function POST(request: NextRequest) {
   const target = normalizeUserRow(targetRow);
 
   if (target.organizationId !== payload.organizationId) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Target not in this organization.', 403), response);
   }
 
   const rawRole = payload.accountType ?? target.role ?? '';
@@ -100,44 +90,29 @@ export async function POST(request: NextRequest) {
   }
 
   if (requesterRole === 'MANAGER' && targetCurrentRole === 'ADMIN') {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Managers cannot edit admins.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Managers cannot edit admins.', 403), response);
   }
 
   if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Managers cannot assign ADMIN.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Managers cannot assign ADMIN.', 403), response);
   }
 
   if (requesterRole === 'MANAGER' && targetRole !== 'MANAGER' && targetRole !== 'EMPLOYEE') {
     return applySupabaseCookies(
-      NextResponse.json({ error: 'Managers can only assign MANAGER or EMPLOYEE.' }, { status: 403 }),
+      jsonError('Managers can only assign MANAGER or EMPLOYEE.', 403),
       response
     );
   }
 
   if (payload.accountType && targetRole === 'ADMIN' && !allowAdminCreation) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Admin updates are disabled.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Admin updates are disabled.', 403), response);
   }
 
   if (requesterRole === 'ADMIN' && target.authUserId === authUserId && targetRole !== 'ADMIN') {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Admins cannot demote themselves.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Admins cannot demote themselves.', 403), response);
   }
   if (target.authUserId === authUserId && payload.accountType && targetRole !== targetCurrentRole) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'You cannot change your own account type.' }, { status: 403 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('You cannot change your own account type.', 403), response);
   }
 
   const normalizedJobs = payload.jobs ? normalizeJobs(payload.jobs) : normalizeJobs(targetRow.jobs);
@@ -149,11 +124,13 @@ export async function POST(request: NextRequest) {
   }
   const jobsPayload = serializeJobsForStorage(targetRow.jobs, normalizedJobs);
 
+  const hourlyPayValue = payload.hourlyPay ?? targetRow.hourly_pay ?? 0;
   const baseUpdatePayload = {
     full_name: payload.fullName,
     phone: payload.phone ?? '',
     account_type: targetRole,
     jobs: jobsPayload,
+    hourly_pay: hourlyPayValue,
   };
 
   const updateResult = await supabaseAdmin
@@ -163,7 +140,8 @@ export async function POST(request: NextRequest) {
 
   if (updateResult.error) {
     const message = updateResult.error.message?.toLowerCase() ?? '';
-    if (message.includes('full_name') || message.includes('account_type')) {
+    if (message.includes('full_name') || message.includes('account_type') || message.includes('hourly_pay')) {
+      const safeHourlyPay = message.includes('hourly_pay') ? undefined : hourlyPayValue;
       const { firstName, lastName } = splitFullName(payload.fullName);
       const legacyResult = await supabaseAdmin
         .from('users')
@@ -173,6 +151,7 @@ export async function POST(request: NextRequest) {
           phone: payload.phone ?? '',
           role: targetRole,
           jobs: jobsPayload,
+          ...(safeHourlyPay === undefined ? {} : { hourly_pay: safeHourlyPay }),
         })
         .eq('id', payload.userId);
       if (legacyResult.error) {

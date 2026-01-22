@@ -21,7 +21,8 @@ export function StaffSidebar() {
     openModal,
     timeOffRequests,
     cancelTimeOffRequest,
-    getBlockedShiftsForEmployee,
+    getBlockedRequestsForEmployee,
+    cancelBlockedDayRequest,
     showToast,
   } = useScheduleStore();
 
@@ -72,7 +73,9 @@ export function StaffSidebar() {
   const myRequests = currentUser
     ? timeOffRequests.filter((req) => req.employeeId === currentUser.id)
     : [];
-  const myBlocks = currentUser ? getBlockedShiftsForEmployee(currentUser.id) : [];
+  const myBlockedRequests = currentUser
+    ? getBlockedRequestsForEmployee(currentUser.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    : [];
 
   const splitReason = (value?: string) => {
     const text = String(value ?? '').trim();
@@ -83,15 +86,21 @@ export function StaffSidebar() {
     return { reason: reason.trim(), note: note.trim() };
   };
 
-  const parseBlockedReason = (note?: string) => {
-    if (!note) return '';
-    return note.replace('[BLOCKED]', '').trim();
-  };
-
   const handleCancelRequest = async (requestId: string) => {
     const confirmed = window.confirm('Cancel this time off request?');
     if (!confirmed) return;
     const result = await cancelTimeOffRequest(requestId);
+    if (!result.success) {
+      showToast(result.error || 'Unable to cancel request', 'error');
+      return;
+    }
+    showToast('Request cancelled', 'success');
+  };
+
+  const handleCancelBlocked = async (requestId: string) => {
+    const confirmed = window.confirm('Cancel this blocked day request?');
+    if (!confirmed) return;
+    const result = await cancelBlockedDayRequest(requestId);
     if (!result.success) {
       showToast(result.error || 'Unable to cancel request', 'error');
       return;
@@ -323,25 +332,43 @@ export function StaffSidebar() {
 
           <div className="mt-4">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-theme-secondary">My Blocks</span>
+              <span className="text-sm font-medium text-theme-secondary">My Blocked Days</span>
+              <button
+                onClick={() => openModal('blockedDayRequest', { employeeId: currentUser.id })}
+                className="text-xs text-amber-400 hover:text-amber-300"
+              >
+                Request
+              </button>
             </div>
-            {myBlocks.length === 0 ? (
-              <p className="text-xs text-theme-muted">No blocked days.</p>
+            {myBlockedRequests.length === 0 ? (
+              <p className="text-xs text-theme-muted">No blocked day requests.</p>
             ) : (
               <div className="space-y-2 max-h-28 overflow-y-auto">
-                {myBlocks.slice(0, 3).map((block) => (
+                {myBlockedRequests.slice(0, 3).map((block) => (
                   <div
                     key={block.id}
                     className="rounded-lg border border-red-500/30 bg-red-500/10 p-2"
                   >
                     <p className="text-xs text-red-400">
-                      {block.date}
+                      {block.startDate}
+                      {block.startDate !== block.endDate ? ` - ${block.endDate}` : ''}
                     </p>
-                    {parseBlockedReason(block.notes) && (
+                    {block.reason && (
                       <p className="text-[11px] text-theme-muted mt-1">
-                        {parseBlockedReason(block.notes)}
+                        {block.reason}
                       </p>
                     )}
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-[11px] text-theme-muted">{block.status}</span>
+                      {block.status === 'PENDING' && (
+                        <button
+                          onClick={() => handleCancelBlocked(block.id)}
+                          className="text-[11px] text-red-400 hover:text-red-300"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

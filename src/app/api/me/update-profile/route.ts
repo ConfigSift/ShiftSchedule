@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
+import { jsonError } from '@/lib/apiResponses';
 import { splitFullName } from '@/utils/userMapper';
 
 type UpdatePayload = {
@@ -18,14 +19,11 @@ export async function POST(request: NextRequest) {
   }
 
   const { supabase, response } = createSupabaseRouteClient(request);
-  const { data: sessionData } = await supabase.auth.getSession();
-  const authUserId = sessionData.session?.user?.id;
+  const { data: authData } = await supabase.auth.getUser();
+  const authUserId = authData.user?.id;
 
   if (!authUserId) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Unauthorized.' }, { status: 401 }),
-      response
-    );
+    return applySupabaseCookies(jsonError('Unauthorized.', 401), response);
   }
 
   const updatePayload = {

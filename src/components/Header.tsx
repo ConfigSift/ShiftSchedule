@@ -17,6 +17,7 @@ import {
   LogOut,
   CalendarOff,
   Users,
+  Clock,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -62,7 +63,7 @@ export function Header() {
   };
 
   return (
-    <header className="h-16 bg-theme-secondary border-b border-theme-primary flex flex-wrap items-center justify-between px-4 lg:px-6 shrink-0 transition-theme">
+    <header className="sticky top-0 z-30 min-h-16 h-auto bg-theme-secondary border-b border-theme-primary flex flex-wrap items-center justify-between px-4 lg:px-6 py-2 gap-2 shrink-0 transition-theme">
       {/* Left: Logo */}
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
@@ -72,7 +73,7 @@ export function Header() {
       </div>
 
       {/* Center: Date Navigation */}
-      <div className="flex items-center gap-1 sm:gap-2">
+      <div className="flex items-center gap-1 sm:gap-2 flex-wrap justify-center">
         <button
           onClick={goToPrevious}
           className="p-2 rounded-lg hover:bg-theme-hover text-theme-tertiary hover:text-theme-primary transition-colors"
@@ -176,15 +177,24 @@ export function Header() {
           </Link>
         )}
 
-        {/* Manager Only: Blocked Periods */}
         {isManagerRole(currentRole) && (
-          <button
-            onClick={() => openModal('blockedPeriod')}
+          <Link
+            href="/blocked-days"
             className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
-            title="Blocked Periods"
+            title="Blocked Days"
           >
             <CalendarOff className="w-5 h-5" />
-          </button>
+          </Link>
+        )}
+
+        {isManagerRole(currentRole) && (
+          <Link
+            href="/business-hours"
+            className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
+            title="Business Hours"
+          >
+            <Clock className="w-5 h-5" />
+          </Link>
         )}
 
         {/* Theme Toggle */}

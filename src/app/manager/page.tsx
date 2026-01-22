@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Building2, ChevronRight, Copy, PlusCircle, Users } from 'lucide-react';
-import Link from 'next/link';
+import { Building2, ChevronRight, PlusCircle, Pencil } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useRestaurantStore, generateRestaurantCode } from '../../store/restaurantStore';
 import { supabase } from '../../lib/supabase/client';
 import { getUserRole, isManagerRole } from '../../utils/role';
 import { splitFullName } from '../../utils/userMapper';
+import { apiFetch } from '../../lib/apiClient';
 
 export default function ManagerPage() {
   const router = useRouter();
@@ -24,7 +24,8 @@ export default function ManagerPage() {
 
   const [newRestaurantName, setNewRestaurantName] = useState('');
   const [error, setError] = useState('');
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editedName, setEditedName] = useState('');
 
   useEffect(() => {
     init();
@@ -62,14 +63,31 @@ export default function ManagerPage() {
     router.push('/dashboard');
   };
 
-  const handleCopyCode = async (restaurantCode: string, restaurantId: string) => {
-    try {
-      await navigator.clipboard.writeText(restaurantCode);
-      setCopiedId(restaurantId);
-      setTimeout(() => setCopiedId((current) => (current === restaurantId ? null : current)), 2000);
-    } catch {
-      setError('Unable to copy restaurant code. Copy it manually.');
+  const handleStartEdit = (id: string, name: string) => {
+    setEditingId(id);
+    setEditedName(name);
+    setError('');
+  };
+
+  const handleSaveEdit = async (id: string) => {
+    if (!editedName.trim()) {
+      setError('Restaurant name is required.');
+      return;
     }
+    const result = await apiFetch('/api/organizations/update', {
+      method: 'POST',
+      json: {
+        organizationId: id,
+        name: editedName.trim(),
+      },
+    });
+    if (!result.ok) {
+      setError(result.error || 'Unable to update restaurant.');
+      return;
+    }
+    setEditingId(null);
+    setEditedName('');
+    await hydrateRestaurants(managerRestaurantIds);
   };
 
   const handleCreateRestaurant = async () => {
@@ -160,22 +178,6 @@ export default function ManagerPage() {
             Choose which restaurant you want to manage.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            href="/time-off"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
-          >
-            <Users className="w-4 h-4" />
-            Time Off
-          </Link>
-          <Link
-            href="/staff"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
-          >
-            <Users className="w-4 h-4" />
-            Manage Staff
-          </Link>
-        </div>
       </header>
 
       <main className="max-w-3xl mx-auto space-y-6">
@@ -189,7 +191,11 @@ export default function ManagerPage() {
               {managerRestaurants.map((restaurant) => (
                 <div
                   key={restaurant.id}
-                  className="w-full flex items-center justify-between bg-theme-tertiary border border-theme-primary rounded-xl p-4 text-left hover:bg-theme-hover transition-colors"
+                  className={`w-full flex items-center justify-between bg-theme-tertiary border rounded-xl p-4 text-left transition-colors ${
+                    activeRestaurantId === restaurant.id
+                      ? 'border-amber-500/60 bg-amber-500/10'
+                      : 'border-theme-primary hover:bg-theme-hover'
+                  }`}
                 >
                   <button
                     type="button"
@@ -205,14 +211,16 @@ export default function ManagerPage() {
                     </div>
                   </button>
                   <div className="flex items-center gap-2 text-xs text-theme-muted">
-                    <button
-                      type="button"
-                      onClick={() => handleCopyCode(restaurant.restaurantCode, restaurant.id)}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-theme-primary bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                      {copiedId === restaurant.id ? 'Copied' : 'Copy'}
-                    </button>
+                    {getUserRole(currentUser.role) === 'ADMIN' && (
+                      <button
+                        type="button"
+                        onClick={() => handleStartEdit(restaurant.id, restaurant.name)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-theme-primary bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        Edit
+                      </button>
+                    )}
                     <span className="inline-flex items-center gap-1">
                       {activeRestaurantId === restaurant.id ? 'Active' : 'Select'}
                       <ChevronRight className="w-4 h-4" />
@@ -223,6 +231,40 @@ export default function ManagerPage() {
             </div>
           )}
         </div>
+
+        {editingId && (
+          <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-5">
+            <h2 className="text-lg font-semibold text-theme-primary mb-3">Edit Restaurant</h2>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input
+                type="text"
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                className="flex-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingId(null);
+                    setEditedName('');
+                  }}
+                  className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveEdit(editingId)}
+                  className="px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+            {error && <p className="text-sm text-red-400 mt-2">{error}</p>}
+          </div>
+        )}
 
         <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-5">
           <h2 className="text-lg font-semibold text-theme-primary mb-3">Create a Restaurant</h2>

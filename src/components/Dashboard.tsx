@@ -10,6 +10,7 @@ import { AddEmployeeModal } from './AddEmployeeModal';
 import { TimeOffRequestModal } from './TimeOffRequestModal';
 import { TimeOffReviewModal } from './TimeOffReviewModal';
 import { BlockedPeriodModal } from './BlockedPeriodModal';
+import { BlockedDayRequestModal } from './BlockedDayRequestModal';
 import { Toast } from './Toast';
 import { useEffect } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
@@ -42,6 +43,7 @@ export function Dashboard() {
       <AddShiftModal />
       <AddEmployeeModal />
       <TimeOffRequestModal />
+      <BlockedDayRequestModal />
       <TimeOffReviewModal />
       <BlockedPeriodModal />
       <Toast />
