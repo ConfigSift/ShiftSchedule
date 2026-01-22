@@ -1,109 +1,47 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
-
-## Windows Setup (Supabase Postgres)
-
-This app uses Prisma with Supabase Postgres and NextAuth for PIN-based logins.
-
-### Install
+## Supabase Quickstart (PowerShell)
 
 ```powershell
 npm install
 ```
 
-### Environment Variables (PowerShell, UTF-8)
+Create `.env.local` (no quotes required; quotes are ok if you include them):
 
-Prisma reads `DATABASE_URL` from the root `.env` (UTF-8). Next.js uses `.env.local` for app secrets.
-
-Use the Supabase session pooler connection with the exact parameters below. The password must be your Supabase **Database password** (not the anon key).
-
-Pooler params (confirmed):
-- host: aws-1-us-east-2.pooler.supabase.com
-- port: 5432
-- database: postgres
-- user: postgres.ggzqctyjlwajqytyfssq
-- pool_mode: session
-
-```powershell
-# Supabase session pooler connection string. Use the Database password (not the anon key).
-$dbPassword = "YOUR_SUPABASE_DATABASE_PASSWORD"
-$dbUrl = "postgresql://postgres.ggzqctyjlwajqytyfssq:$dbPassword@aws-1-us-east-2.pooler.supabase.com:5432/postgres?sslmode=require"
-Set-Content -Path .env -Value "DATABASE_URL=`"$dbUrl`"" -Encoding UTF8
-Set-Content -Path .env.local -Value "DATABASE_URL=`"$dbUrl`"" -Encoding UTF8
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://<your-project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=StrongPassword123!
 ```
 
-#### Optional but recommended: DIRECT_URL for Prisma migrations
+After editing `.env.local`, restart the dev server to pick up changes.
 
-`DIRECT_URL` lets Prisma migrations use a direct, non-pooler connection while the app runtime uses the session pooler via `DATABASE_URL`.
-
-- Use `DATABASE_URL` for app runtime and regular queries (session pooler).
-- Use `DIRECT_URL` for `prisma migrate`/`db:reset` (direct connection from Supabase settings).
-- The direct connection string also uses the Supabase Database password (not the anon key).
+Quick reset (clear `.next` and restart):
 
 ```powershell
-# Direct connection string (Supabase Settings > Database > Connection string > Direct).
-$directPassword = "YOUR_SUPABASE_DATABASE_PASSWORD"
-$directUrl = "postgresql://postgres.ggzqctyjlwajqytyfssq:$directPassword@YOUR_SUPABASE_DIRECT_HOST:5432/postgres?sslmode=require"
-Add-Content -Path .env -Value "DIRECT_URL=`"$directUrl`"" -Encoding UTF8
-Add-Content -Path .env.local -Value "DIRECT_URL=`"$directUrl`"" -Encoding UTF8
+Remove-Item -Recurse -Force .next
+pnpm dev
 ```
 
-Supabase API (supabase-js) uses Next.js public env vars in `.env.local`. These are not the Prisma database connection string.
+Reset the database (applies migrations):
 
 ```powershell
-$sbUrl = "https://ggzqctyjlwajqytyfssq.supabase.co"
-$sbAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnenFjdHlqbHdhanF5dHlmc3NxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwMDA4NDksImV4cCI6MjA4NDU3Njg0OX0.H-bactZImISz8cdAc0bFl6ppXqW9_vxrfMsTTvrcwzM"
-Add-Content -Path .env.local -Value "NEXT_PUBLIC_SUPABASE_URL=`"$sbUrl`"" -Encoding UTF8
-Add-Content -Path .env.local -Value "NEXT_PUBLIC_SUPABASE_ANON_KEY=`"$sbAnonKey`"" -Encoding UTF8
+supabase db reset
 ```
 
-Add any Next.js secrets to `.env.local` as needed, for example:
+Seed the default restaurant (SKYBIRD / RST-K7M2Q9PJ):
 
 ```powershell
-$nextAuthUrl = "http://localhost:3000"
-$nextAuthSecret = [System.Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
-Add-Content -Path .env.local -Value "NEXTAUTH_URL=`"$nextAuthUrl`"" -Encoding UTF8
-Add-Content -Path .env.local -Value "NEXTAUTH_SECRET=`"$nextAuthSecret`"" -Encoding UTF8
+npm run seed:restaurant
 ```
 
-### Migrate + Seed
+Run the dev server:
 
 ```powershell
-npm run db:generate
-npm run db:migrate
-npm run db:seed
+pnpm dev
 ```
 
-`db:migrate` prints which URL is used. If `DIRECT_URL` is set, Prisma migrations use it automatically via `directUrl` in the schema.
-
-### Connectivity Check (Windows)
-
-Prints parsed connection details (with password masked) and verifies TCP connectivity.
-
-```powershell
-npm run db:check
-```
-
-### Reset Database (re-apply migrations + seed)
-
-```powershell
-npm run db:reset
-```
-
-This wipes local data and re-applies migrations before seeding. Do not run against production.
-
-### Run Dev Server
-
-```powershell
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-### Build
-
-```powershell
-npm run build
-```
+Staff signup: go to `/signup` and enter the Restaurant ID `RST-K7M2Q9PJ` when prompted.
 
 ## Learn More
 
@@ -119,11 +57,6 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-
-## Default Manager Credentials
-
-- Name: Manager
-- PIN: 1234
 
 ## QA Checklist
 
