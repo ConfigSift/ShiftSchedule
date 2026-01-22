@@ -1,11 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { supabase } from '../../../lib/supabase/client';
+import { getSupabaseClient } from '../../../lib/supabase/client';
+import { formatSupabaseEnvError, getSupabaseEnv } from '../../../lib/supabase/env';
 
 export default function SupabaseDebugPage() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+  const { supabaseUrl, supabaseAnonKey, urlValid, anonKeyValid, isValid } = getSupabaseEnv();
+  const keyPreview = supabaseAnonKey ? `${supabaseAnonKey.slice(0, 12)}...` : '(missing)';
   const [healthStatus, setHealthStatus] = useState<string | null>(null);
   const [sessionStatus, setSessionStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -14,6 +15,9 @@ export default function SupabaseDebugPage() {
     setError(null);
     setHealthStatus('Checking...');
     try {
+      if (!isValid) {
+        throw new Error(formatSupabaseEnvError());
+      }
       const response = await fetch(`${supabaseUrl}/auth/v1/health`, {
         headers: { apikey: supabaseAnonKey },
       });
@@ -29,7 +33,10 @@ export default function SupabaseDebugPage() {
     setError(null);
     setSessionStatus('Checking...');
     try {
-      const { data, error: sessionError } = await supabase.auth.getSession();
+      if (!isValid) {
+        throw new Error(formatSupabaseEnvError());
+      }
+      const { data, error: sessionError } = await getSupabaseClient().auth.getSession();
       if (sessionError) {
         setSessionStatus(null);
         setError(sessionError.message);
@@ -57,6 +64,16 @@ export default function SupabaseDebugPage() {
           <div>
             <p className="text-xs uppercase tracking-wide text-theme-muted">Supabase URL</p>
             <p className="text-theme-primary font-medium break-all">{supabaseUrl || 'Not set'}</p>
+            <p className="text-xs text-theme-muted mt-1">
+              URL valid: {urlValid ? 'yes' : 'no'}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wide text-theme-muted">Anon Key (preview)</p>
+            <p className="text-theme-primary font-medium">{keyPreview}</p>
+            <p className="text-xs text-theme-muted mt-1">
+              Key valid: {anonKeyValid ? 'yes' : 'no'}
+            </p>
           </div>
 
           <div className="flex flex-wrap gap-3">
