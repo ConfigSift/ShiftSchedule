@@ -44,3 +44,7 @@ next-env.d.ts
 src_bak/
 src_BAK/
 
+
+# Archives
+*.zip
+
