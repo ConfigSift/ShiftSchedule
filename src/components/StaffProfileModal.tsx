@@ -27,6 +27,7 @@ type StaffProfileModalProps = {
   onClose: () => void;
   onSaved: () => Promise<void>;
   onError: (message: string) => void;
+  onAuthError?: (message: string) => void;
 };
 
 export function StaffProfileModal({
@@ -40,6 +41,7 @@ export function StaffProfileModal({
   onClose,
   onSaved,
   onError,
+  onAuthError,
 }: StaffProfileModalProps) {
   const allowAdminCreation = process.env.NEXT_PUBLIC_ENABLE_ADMIN_CREATION === 'true';
   const [fullName, setFullName] = useState('');
@@ -85,6 +87,7 @@ export function StaffProfileModal({
       const response = await fetch('/api/admin/update-user', {
         method: 'POST',
         credentials: 'include',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
@@ -97,7 +100,16 @@ export function StaffProfileModal({
       });
       const payload = await response.json();
       if (!response.ok) {
-        onError(payload.error || 'Unable to update profile.');
+        if (response.status === 401) {
+          const message = 'Session expired. Please sign out and sign in again.';
+          onAuthError?.(message);
+          onError(message);
+        } else if (response.status === 403) {
+          const message = 'You dont have permission for that action.';
+          onError(message);
+        } else {
+          onError(payload.error || 'Unable to update profile.');
+        }
         setSubmitting(false);
         return;
       }

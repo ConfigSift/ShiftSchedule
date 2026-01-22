@@ -24,7 +24,9 @@ export function BlockedPeriodModal() {
   const isOpen = modalType === 'blockedPeriod';
   const modalEmployeeId = modalData?.employeeId as string | undefined;
 
-  const employees = getEmployeesForRestaurant(activeRestaurantId);
+  const employees = getEmployeesForRestaurant(activeRestaurantId).filter((employee) =>
+    currentUser && getUserRole(currentUser.role) === 'MANAGER' ? employee.userRole !== 'ADMIN' : true
+  );
   const [employeeId, setEmployeeId] = useState(modalEmployeeId || '');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');

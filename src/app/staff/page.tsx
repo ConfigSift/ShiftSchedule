@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { Plus, Trash2, Edit3 } from 'lucide-react';
 import { supabase } from '../../lib/supabase/client';
 import { useAuthStore } from '../../store/authStore';
+import { useScheduleStore } from '../../store/scheduleStore';
+import { Toast } from '../../components/Toast';
 import { JOB_OPTIONS } from '../../types';
 import { getUserRole, isManagerRole } from '../../utils/role';
 import { normalizeUserRow } from '../../utils/userMapper';
@@ -32,7 +34,8 @@ const EMPTY_FORM = {
 
 export default function StaffPage() {
   const router = useRouter();
-  const { currentUser, init, isInitialized, activeRestaurantId } = useAuthStore();
+  const { currentUser, init, isInitialized, activeRestaurantId, signOut } = useAuthStore();
+  const { showToast } = useScheduleStore();
 
   const [users, setUsers] = useState<OrgUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,6 +50,7 @@ export default function StaffPage() {
   const [successMessage, setSuccessMessage] = useState('');
   const [profileUser, setProfileUser] = useState<OrgUser | null>(null);
   const [profileMode, setProfileMode] = useState<'view' | 'edit' | null>(null);
+  const [authBanner, setAuthBanner] = useState<string | null>(null);
 
   const currentRole = getUserRole(currentUser?.role);
   const isManager = isManagerRole(currentRole);
@@ -54,6 +58,12 @@ export default function StaffPage() {
   const allowAdminCreation = process.env.NEXT_PUBLIC_ENABLE_ADMIN_CREATION === 'true';
 
   const canManageUser = (user: OrgUser) => {
+    if (isAdmin) return true;
+    if (!isManager) return false;
+    return user.accountType !== 'ADMIN';
+  };
+
+  const canResetPin = (user: OrgUser) => {
     if (isAdmin) return true;
     if (!isManager) return false;
     return user.accountType !== 'ADMIN';
@@ -165,6 +175,12 @@ export default function StaffPage() {
     setProfileMode(null);
   };
 
+  const handleAuthExpired = (message: string) => {
+    setAuthBanner(message);
+    showToast(message, 'error');
+    setError(message);
+  };
+
   const toggleJob = (job: string) => {
     setFormState((prev) => ({
       ...prev,
@@ -176,17 +192,18 @@ export default function StaffPage() {
     if (!activeRestaurantId) return;
     setError('');
     setSuccessMessage('');
+    setAuthBanner(null);
     const missingFields: string[] = [];
     if (!formState.fullName.trim()) missingFields.push('Full name');
     if (!formState.email.trim()) missingFields.push('Email');
-    if (!formState.passcode.trim()) missingFields.push('Passcode');
+    if (!formState.passcode.trim()) missingFields.push('PIN');
     if (missingFields.length > 0) {
       setError(`Missing required fields: ${missingFields.join(', ')}.`);
       return;
     }
 
     if (!/^\d{6}$/.test(formState.passcode)) {
-      setError('Passcode must be exactly 6 digits.');
+      setError('PIN must be exactly 6 digits.');
       return;
     }
 
@@ -206,6 +223,7 @@ export default function StaffPage() {
       const response = await fetch('/api/admin/create-user', {
         method: 'POST',
         credentials: 'include',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           organizationId: activeRestaurantId,
@@ -214,7 +232,7 @@ export default function StaffPage() {
           email: formState.email.trim().toLowerCase(),
           accountType: formState.accountType,
           jobs: formState.jobs,
-          passcode: formState.passcode,
+          pinCode: formState.passcode,
         }),
       });
 
@@ -222,9 +240,12 @@ export default function StaffPage() {
       if (!response.ok) {
         const isDev = process.env.NODE_ENV !== 'production';
         if (response.status === 401) {
-          setError('You must be logged in as an ADMIN/MANAGER.');
+          const message = 'Session expired. Please sign out and sign in again.';
+          handleAuthExpired(isDev ? payload.error || message : message);
         } else if (response.status === 403) {
-          setError(payload.error || 'You do not have permission to create this user.');
+          const message = 'You dont have permission for that action.';
+          setError(isDev ? payload.error || message : message);
+          showToast(message, 'error');
         } else if (response.status === 400 && payload?.error) {
           setError(isDev ? payload.error : 'Unable to create user. Please verify the fields.');
         } else {
@@ -256,6 +277,8 @@ export default function StaffPage() {
 
     const response = await fetch('/api/admin/delete-user', {
       method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         userId: user.id,
@@ -265,7 +288,16 @@ export default function StaffPage() {
 
     const payload = await response.json();
     if (!response.ok) {
-      setError(payload.error || 'Unable to delete user.');
+      if (response.status === 401) {
+        const message = 'Session expired. Please sign out and sign in again.';
+        handleAuthExpired(message);
+      } else if (response.status === 403) {
+        const message = 'You dont have permission for that action.';
+        setError(message);
+        showToast(message, 'error');
+      } else {
+        setError(payload.error || 'Unable to delete user.');
+      }
       return;
     }
 
@@ -281,19 +313,20 @@ export default function StaffPage() {
     if (!activeRestaurantId || !resetTarget) return;
     setError('');
     setSuccessMessage('');
+    setAuthBanner(null);
 
     if (!/^\d{6}$/.test(resetPasscode)) {
-      setError('Passcode must be exactly 6 digits.');
+      setError('PIN must be exactly 6 digits.');
       return;
     }
 
     if (resetPasscode !== resetConfirm) {
-      setError('Passcodes do not match.');
+      setError('PINs do not match.');
       return;
     }
 
     if (canResetSelf()) {
-      const confirmed = window.confirm('Reset your own passcode? This will sign you out.');
+      const confirmed = window.confirm('Reset your own PIN? This will sign you out.');
       if (!confirmed) return;
     }
 
@@ -301,23 +334,34 @@ export default function StaffPage() {
     try {
       const response = await fetch('/api/admin/set-passcode', {
         method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           organizationId: activeRestaurantId,
           email: resetTarget.email || undefined,
           authUserId: resetTarget.email ? undefined : resetTarget.authUserId,
-          passcode: resetPasscode,
+          pinCode: resetPasscode,
         }),
       });
 
       const payload = await response.json();
       if (!response.ok) {
-        setError(payload.error || 'Unable to reset passcode.');
+        if (response.status === 401) {
+        const message = 'Session expired. Please sign out and sign in again.';
+        handleAuthExpired(message);
+        } else if (response.status === 403) {
+          const message = 'You dont have permission for that action.';
+          setError(message);
+          showToast(message, 'error');
+        } else {
+          setError(payload.error || 'Unable to reset PIN.');
+        }
         setSubmitting(false);
         return;
       }
 
-      setSuccessMessage('Passcode updated.');
+      setSuccessMessage('PIN updated.');
       closeResetModal();
     } catch {
       setError('Request failed. Please try again.');
@@ -354,6 +398,30 @@ export default function StaffPage() {
           )}
         </header>
 
+        {authBanner && (
+          <div className="bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <span>{authBanner}</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  await signOut();
+                  router.push('/login?notice=signed-out');
+                }}
+                className="px-3 py-1.5 rounded-lg bg-amber-500 text-zinc-900 text-xs font-semibold hover:bg-amber-400"
+              >
+                Sign out
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push('/login?notice=session-expired')}
+                className="px-3 py-1.5 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover text-xs"
+              >
+                Go to login
+              </button>
+            </div>
+          </div>
+        )}
         {error && (
           <div className="bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg p-3">
             {error}
@@ -413,15 +481,15 @@ export default function StaffPage() {
                         <Trash2 className="w-3.5 h-3.5" />
                         Delete
                       </button>
-                      {isAdmin && (
+                      {canResetPin(user) && (
                         <button
                           type="button"
                           onClick={() => openResetModal(user)}
                           className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors text-xs"
                         >
-                          Reset Passcode
-                        </button>
-                      )}
+                          Reset PIN
+                          </button>
+                        )}
                     </div>
                   )}
                 </div>
@@ -500,7 +568,7 @@ export default function StaffPage() {
                 </p>
               </div>
               <div>
-                <label className="text-sm text-theme-secondary">Passcode (6 digits)</label>
+                <label className="text-sm text-theme-secondary">PIN (6 digits)</label>
                 <input
                   type="password"
                   inputMode="numeric"
@@ -549,19 +617,20 @@ export default function StaffPage() {
         onClose={closeProfile}
         onSaved={loadUsers}
         onError={setError}
+        onAuthError={handleAuthExpired}
       />
 
       {resetModalOpen && resetTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={closeResetModal} />
           <div className="relative w-full max-w-md bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-theme-primary">Reset Passcode</h2>
+            <h2 className="text-lg font-semibold text-theme-primary">Reset PIN</h2>
             <p className="text-sm text-theme-tertiary">
-              Update passcode for {resetTarget.fullName || resetTarget.email}.
+              Update PIN for {resetTarget.fullName || resetTarget.email}.
             </p>
             <div className="space-y-3">
               <div>
-                <label className="text-sm text-theme-secondary">New passcode</label>
+                <label className="text-sm text-theme-secondary">New PIN</label>
                 <input
                   type="password"
                   inputMode="numeric"
@@ -572,7 +641,7 @@ export default function StaffPage() {
                 />
               </div>
               <div>
-                <label className="text-sm text-theme-secondary">Confirm passcode</label>
+                <label className="text-sm text-theme-secondary">Confirm PIN</label>
                 <input
                   type="password"
                   inputMode="numeric"
@@ -598,12 +667,13 @@ export default function StaffPage() {
                 disabled={!/^\d{6}$/.test(resetPasscode) || resetPasscode !== resetConfirm || submitting}
                 className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
               >
-                {submitting ? 'Updating...' : 'Update Passcode'}
+                {submitting ? 'Updating...' : 'Update PIN'}
               </button>
             </div>
           </div>
         </div>
       )}
+      <Toast />
     </div>
   );
 }

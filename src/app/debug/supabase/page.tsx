@@ -20,6 +20,15 @@ export default function SupabaseDebugPage() {
   const [tableStatus, setTableStatus] = useState<string | null>(null);
   const [orgLookupStatus, setOrgLookupStatus] = useState<string | null>(null);
   const [userLookupStatus, setUserLookupStatus] = useState<string | null>(null);
+  const [whoAmIStatus, setWhoAmIStatus] = useState<string | null>(null);
+  const [whoAmIData, setWhoAmIData] = useState<{
+    hasSession: boolean;
+    authUserId: string | null;
+    email: string | null;
+    organizationId: string | null;
+    role: string | null;
+    userRowFound: boolean;
+  } | null>(null);
   const [orgLookupCode, setOrgLookupCode] = useState(activeRestaurantCode || '');
   const [error, setError] = useState<string | null>(null);
   const [jobsInfo, setJobsInfo] = useState<{ type: string; jobs: string[] } | null>(null);
@@ -160,6 +169,32 @@ export default function SupabaseDebugPage() {
     }
   };
 
+  const handleWhoAmI = async () => {
+    setError(null);
+    setWhoAmIStatus('Checking...');
+    try {
+      const response = await fetch('/api/me', { cache: 'no-store', credentials: 'include' });
+      const data = await response.json();
+      if (!response.ok) {
+        setWhoAmIStatus(null);
+        setError(data?.error || 'Who am I failed');
+        return;
+      }
+      if (!data?.hasSession) {
+        setWhoAmIStatus('No session');
+        setWhoAmIData(null);
+        return;
+      }
+      setWhoAmIData(data);
+      setWhoAmIStatus(`User: ${data.email || data.authUserId}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Who am I failed';
+      setWhoAmIStatus(null);
+      setWhoAmIData(null);
+      setError(message);
+    }
+  };
+
   const fetchJobsInfo = async () => {
     if (!currentUser?.authUserId || !isValid) {
       setJobsInfo(null);
@@ -268,6 +303,13 @@ export default function SupabaseDebugPage() {
             >
               Check user
             </button>
+            <button
+              type="button"
+              onClick={handleWhoAmI}
+              className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
+            >
+              Who am I?
+            </button>
           </div>
 
           {healthStatus && (
@@ -282,6 +324,22 @@ export default function SupabaseDebugPage() {
           )}
           {userLookupStatus && (
             <p className="text-sm text-theme-secondary">User lookup: {userLookupStatus}</p>
+          )}
+          {whoAmIStatus && (
+            <p className="text-sm text-theme-secondary">Who am I: {whoAmIStatus}</p>
+          )}
+          {whoAmIData && (
+            <div className="text-xs text-theme-muted space-y-1">
+              <p>Auth ID: {whoAmIData.authUserId || '-'}</p>
+              <p>Email: {whoAmIData.email || '-'}</p>
+              <p>Organization ID: {whoAmIData.organizationId || '-'}</p>
+              <p>Role: {whoAmIData.role || '-'}</p>
+              {!whoAmIData.userRowFound && (
+                <p className="text-red-400">
+                  Missing users row. Visit /setup or create a profile in /staff.
+                </p>
+              )}
+            </div>
           )}
           <div className="pt-2 border-t border-theme-primary">
             <p className="text-xs uppercase tracking-wide text-theme-muted mb-2">Org lookup</p>

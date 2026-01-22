@@ -11,22 +11,28 @@ type CheckItem = {
   details?: string;
 };
 
-const REQUIRED_TIME_OFF_COLUMNS = [
+const USERS_REQUIRED_COLUMNS = ['auth_user_id', 'organization_id', 'email', 'jobs', 'pin_code'];
+const USERS_NAME_COLUMNS = ['full_name', 'first_name', 'last_name'];
+const USERS_ROLE_COLUMNS = ['account_type', 'role'];
+
+const TIME_OFF_REQUIRED_COLUMNS = [
   'organization_id',
-  'user_id',
-  'requester_auth_user_id',
-  'auth_user_id',
-  'requester_user_id',
   'start_date',
   'end_date',
-  'reason',
-  'note',
   'status',
-  'created_at',
-  'updated_at',
-  'reviewed_by',
-  'reviewed_at',
+  'reason',
   'manager_note',
+  'created_at',
+];
+const TIME_OFF_REQUESTER_COLUMNS = ['requester_auth_user_id', 'auth_user_id', 'requester_user_id'];
+
+const SHIFTS_REQUIRED_COLUMNS = [
+  'organization_id',
+  'shift_date',
+  'start_time',
+  'end_time',
+  'is_blocked',
+  'job',
 ];
 
 export default function DebugDbPage() {
@@ -34,10 +40,39 @@ export default function DebugDbPage() {
   const [checks, setChecks] = useState<CheckItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [missingColumns, setMissingColumns] = useState<Record<string, string[]>>({});
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  const isMissingTableError = (message: string, table: string) =>
+    message.toLowerCase().includes('relation') && message.toLowerCase().includes(table);
+  const isMissingColumnError = (message: string, column: string) =>
+    message.toLowerCase().includes(column) && message.toLowerCase().includes('does not exist');
+
+  const checkTable = async (client: ReturnType<typeof getSupabaseClient>, table: string) => {
+    const result = await client.from(table).select('id').limit(1);
+    if (!result.error) return { ok: true };
+    if (isMissingTableError(result.error.message, table)) {
+      return { ok: false, error: result.error.message };
+    }
+    return { ok: true, error: result.error.message };
+  };
+
+  const checkColumn = async (client: ReturnType<typeof getSupabaseClient>, table: string, column: string) => {
+    const result = await client.from(table).select(column).limit(1);
+    if (!result.error) return { ok: true };
+    if (isMissingTableError(result.error.message, table)) {
+      return { ok: false, error: result.error.message };
+    }
+    if (isMissingColumnError(result.error.message, column)) {
+      return { ok: false, error: result.error.message };
+    }
+    return { ok: true, error: result.error.message };
+  };
 
   const runChecks = async () => {
     setLoading(true);
     setError(null);
+    setMissingColumns({});
     try {
       if (!isValid) {
         throw new Error(formatSupabaseEnvError());
@@ -45,73 +80,169 @@ export default function DebugDbPage() {
 
       const client = getSupabaseClient();
 
-      const schemaClient = (client as any).schema ? (client as any).schema('information_schema') : client;
+      const usersTable = await checkTable(client, 'users');
+      const orgTable = await checkTable(client, 'organizations');
+      const shiftsTable = await checkTable(client, 'shifts');
+      const timeOffTable = await checkTable(client, 'time_off_requests');
 
-      const { data: tables, error: tablesError } = await schemaClient
-        .from('tables')
-        .select('table_name')
-        .eq('table_schema', 'public')
-        .in('table_name', ['time_off_requests', 'shifts']);
+      const columnStatus: Record<string, string[]> = {};
+      const checksList: CheckItem[] = [];
 
-      if (tablesError) {
-        throw new Error(tablesError.message);
-      }
+      const addMissing = (table: string, column: string) => {
+        if (!columnStatus[table]) columnStatus[table] = [];
+        columnStatus[table].push(column);
+      };
 
-      const tableRows = (tables || []) as Array<{ table_name: string }>;
-      const tableSet = new Set(tableRows.map((row) => row.table_name));
-      const timeOffExists = tableSet.has('time_off_requests');
-      const shiftsExists = tableSet.has('shifts');
-
-      const { data: columns, error: columnsError } = await schemaClient
-        .from('columns')
-        .select('table_name,column_name')
-        .eq('table_schema', 'public')
-        .in('table_name', ['time_off_requests', 'shifts']);
-
-      if (columnsError) {
-        throw new Error(columnsError.message);
-      }
-
-      const columnMap = new Map<string, Set<string>>();
-      const columnRows = (columns || []) as Array<{ table_name: string; column_name: string }>;
-      columnRows.forEach((row) => {
-        if (!columnMap.has(row.table_name)) {
-          columnMap.set(row.table_name, new Set());
-        }
-        columnMap.get(row.table_name)?.add(row.column_name);
+      checksList.push({
+        id: 'users_table',
+        label: 'public.users table exists',
+        ok: usersTable.ok,
+        details: !usersTable.ok && usersTable.error ? usersTable.error : undefined,
+      });
+      checksList.push({
+        id: 'organizations_table',
+        label: 'public.organizations table exists',
+        ok: orgTable.ok,
+        details: !orgTable.ok && orgTable.error ? orgTable.error : undefined,
+      });
+      checksList.push({
+        id: 'shifts_table',
+        label: 'public.shifts table exists',
+        ok: shiftsTable.ok,
+        details: !shiftsTable.ok && shiftsTable.error ? shiftsTable.error : undefined,
+      });
+      checksList.push({
+        id: 'time_off_table',
+        label: 'public.time_off_requests table exists',
+        ok: timeOffTable.ok,
+        details: !timeOffTable.ok && timeOffTable.error ? timeOffTable.error : undefined,
       });
 
-      const timeOffColumns = columnMap.get('time_off_requests') ?? new Set<string>();
-      const missingTimeOffColumns = REQUIRED_TIME_OFF_COLUMNS.filter((col) => !timeOffColumns.has(col));
-      const shiftsColumns = columnMap.get('shifts') ?? new Set<string>();
-      const missingShiftColumns = ['is_blocked', 'job'].filter((col) => !shiftsColumns.has(col));
+      if (usersTable.ok) {
+        const baseColumns = await Promise.all(
+          USERS_REQUIRED_COLUMNS.map(async (column) => ({ column, ...(await checkColumn(client, 'users', column)) }))
+        );
+        baseColumns.forEach((result) => {
+          if (!result.ok) addMissing('users', result.column);
+        });
 
-      setChecks([
-        {
-          id: 'time_off_table',
-          label: 'public.time_off_requests table exists',
-          ok: timeOffExists,
-        },
-        {
-          id: 'time_off_columns',
+        const nameChecks = await Promise.all(
+          USERS_NAME_COLUMNS.map(async (column) => ({ column, ...(await checkColumn(client, 'users', column)) }))
+        );
+        const hasFullName = nameChecks.find((c) => c.column === 'full_name')?.ok;
+        const hasFirstName = nameChecks.find((c) => c.column === 'first_name')?.ok;
+        const hasLastName = nameChecks.find((c) => c.column === 'last_name')?.ok;
+        const nameOk = Boolean(hasFullName || (hasFirstName && hasLastName));
+        if (!nameOk) {
+          addMissing('users', 'full_name');
+          addMissing('users', 'first_name');
+          addMissing('users', 'last_name');
+        }
+
+        const roleChecks = await Promise.all(
+          USERS_ROLE_COLUMNS.map(async (column) => ({ column, ...(await checkColumn(client, 'users', column)) }))
+        );
+        const roleOk = roleChecks.some((c) => c.ok);
+        if (!roleOk) {
+          addMissing('users', 'account_type');
+          addMissing('users', 'role');
+        }
+
+        checksList.push({
+          id: 'users_required',
+          label: 'users has auth_user_id, organization_id, email, jobs, pin_code',
+          ok: baseColumns.every((c) => c.ok),
+          details: baseColumns.some((c) => !c.ok)
+            ? `Missing: ${baseColumns.filter((c) => !c.ok).map((c) => c.column).join(', ')}`
+            : undefined,
+        });
+        checksList.push({
+          id: 'users_name',
+          label: 'users has full_name or first_name + last_name',
+          ok: nameOk,
+          details: !nameOk ? 'Missing name columns' : undefined,
+        });
+        checksList.push({
+          id: 'users_role',
+          label: 'users has account_type or role',
+          ok: roleOk,
+          details: !roleOk ? 'Missing role columns' : undefined,
+        });
+      }
+
+      if (orgTable.ok) {
+        const orgCode = await checkColumn(client, 'organizations', 'restaurant_code');
+        if (!orgCode.ok) addMissing('organizations', 'restaurant_code');
+        checksList.push({
+          id: 'organizations_code',
+          label: 'organizations has restaurant_code',
+          ok: orgCode.ok,
+          details: !orgCode.ok ? orgCode.error : undefined,
+        });
+      }
+
+      if (timeOffTable.ok) {
+        const reqColumns = await Promise.all(
+          TIME_OFF_REQUIRED_COLUMNS.map(async (column) => ({
+            column,
+            ...(await checkColumn(client, 'time_off_requests', column)),
+          }))
+        );
+        reqColumns.forEach((result) => {
+          if (!result.ok) addMissing('time_off_requests', result.column);
+        });
+        const requesterChecks = await Promise.all(
+          TIME_OFF_REQUESTER_COLUMNS.map(async (column) => ({
+            column,
+            ...(await checkColumn(client, 'time_off_requests', column)),
+          }))
+        );
+        const requesterOk = requesterChecks.some((c) => c.ok);
+        if (!requesterOk) {
+          TIME_OFF_REQUESTER_COLUMNS.forEach((column) => addMissing('time_off_requests', column));
+        }
+
+        checksList.push({
+          id: 'time_off_required',
           label: 'time_off_requests has required columns',
-          ok: timeOffExists && missingTimeOffColumns.length === 0,
-          details: missingTimeOffColumns.length ? `Missing: ${missingTimeOffColumns.join(', ')}` : undefined,
-        },
-        {
-          id: 'shifts_is_blocked',
-          label: 'public.shifts has is_blocked column',
-          ok: shiftsExists && !missingShiftColumns.includes('is_blocked'),
-        },
-        {
-          id: 'shifts_job',
-          label: 'public.shifts has job column',
-          ok: shiftsExists && !missingShiftColumns.includes('job'),
-        },
-      ]);
+          ok: reqColumns.every((c) => c.ok),
+          details: reqColumns.some((c) => !c.ok)
+            ? `Missing: ${reqColumns.filter((c) => !c.ok).map((c) => c.column).join(', ')}`
+            : undefined,
+        });
+        checksList.push({
+          id: 'time_off_requester',
+          label: 'time_off_requests has requester_auth_user_id or auth_user_id or requester_user_id',
+          ok: requesterOk,
+          details: !requesterOk ? 'Missing requester identifier columns' : undefined,
+        });
+      }
+
+      if (shiftsTable.ok) {
+        const shiftColumns = await Promise.all(
+          SHIFTS_REQUIRED_COLUMNS.map(async (column) => ({
+            column,
+            ...(await checkColumn(client, 'shifts', column)),
+          }))
+        );
+        shiftColumns.forEach((result) => {
+          if (!result.ok) addMissing('shifts', result.column);
+        });
+        checksList.push({
+          id: 'shifts_required',
+          label: 'shifts has organization_id, shift_date, start_time, end_time, is_blocked, job',
+          ok: shiftColumns.every((c) => c.ok),
+          details: shiftColumns.some((c) => !c.ok)
+            ? `Missing: ${shiftColumns.filter((c) => !c.ok).map((c) => c.column).join(', ')}`
+            : undefined,
+        });
+      }
+
+      setChecks(checksList);
+      setMissingColumns(columnStatus);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unable to run DB checks.';
-      setError(message);
+      setError(isDev ? message : 'Unable to run DB checks.');
       setChecks([]);
     } finally {
       setLoading(false);
@@ -122,132 +253,71 @@ export default function DebugDbPage() {
     runChecks();
   }, []);
 
-  const missingTimeOff = useMemo(
-    () => checks.some((check) => check.id.startsWith('time_off') && !check.ok),
-    [checks]
-  );
-  const missingShiftColumns = useMemo(
-    () =>
-      checks.some((check) => check.id === 'shifts_is_blocked' && !check.ok) ||
-      checks.some((check) => check.id === 'shifts_job' && !check.ok),
-    [checks]
-  );
-
   const sqlBlocks = useMemo(() => {
     const blocks: string[] = [];
+    const missingUsers = missingColumns.users ?? [];
+    const missingOrganizations = missingColumns.organizations ?? [];
+    const missingTimeOff = missingColumns.time_off_requests ?? [];
+    const missingShifts = missingColumns.shifts ?? [];
 
-    if (missingTimeOff) {
-      blocks.push(`-- Time off requests table + policies
-create table if not exists public.time_off_requests (
-  id uuid primary key default gen_random_uuid(),
-  organization_id uuid,
-  user_id uuid,
-  requester_auth_user_id uuid,
-  auth_user_id uuid,
-  requester_user_id uuid,
-  start_date date not null,
-  end_date date not null,
-  reason text,
-  note text,
-  status text not null default 'PENDING',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  reviewed_by uuid,
-  reviewed_at timestamptz,
-  manager_note text
-);
-
-alter table if exists public.time_off_requests enable row level security;
-
-alter table if exists public.time_off_requests
-  add column if not exists organization_id uuid,
-  add column if not exists user_id uuid,
-  add column if not exists requester_auth_user_id uuid,
-  add column if not exists auth_user_id uuid,
-  add column if not exists requester_user_id uuid,
-  add column if not exists start_date date,
-  add column if not exists end_date date,
-  add column if not exists reason text,
-  add column if not exists note text,
-  add column if not exists status text,
-  add column if not exists created_at timestamptz,
-  add column if not exists updated_at timestamptz,
-  add column if not exists reviewed_by uuid,
-  add column if not exists reviewed_at timestamptz,
-  add column if not exists manager_note text;
-
-alter table if exists public.time_off_requests
-  alter column status set default 'PENDING',
-  alter column created_at set default now(),
-  alter column updated_at set default now();
-
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint where conname = 'time_off_requests_status_check'
-  ) then
-    alter table public.time_off_requests
-      add constraint time_off_requests_status_check
-      check (status in ('PENDING','APPROVED','DENIED','CANCELLED'));
-  end if;
-end $$;
-
-drop policy if exists "Time off readable by requester or managers" on public.time_off_requests;
-create policy "Time off readable by requester or managers"
-  on public.time_off_requests
-  for select
-  using (
-    auth.uid() = requester_auth_user_id
-    or exists (
-      select 1 from public.users u
-      where u.auth_user_id = auth.uid()
-        and u.organization_id = time_off_requests.organization_id
-        and upper(coalesce(u.account_type, u.role, '')) in ('ADMIN', 'MANAGER')
-    )
-  );
-
-drop policy if exists "Time off insertable by requester" on public.time_off_requests;
-create policy "Time off insertable by requester"
-  on public.time_off_requests
-  for insert
-  with check (
-    auth.uid() = requester_auth_user_id
-    and exists (
-      select 1 from public.users u
-      where u.auth_user_id = auth.uid()
-        and u.organization_id = time_off_requests.organization_id
-    )
-  );
-
-drop policy if exists "Time off updatable by requester" on public.time_off_requests;
-create policy "Time off updatable by requester"
-  on public.time_off_requests
-  for update
-  using (auth.uid() = requester_auth_user_id);
-
-drop policy if exists "Time off updatable by managers" on public.time_off_requests;
-create policy "Time off updatable by managers"
-  on public.time_off_requests
-  for update
-  using (
-    exists (
-      select 1 from public.users u
-      where u.auth_user_id = auth.uid()
-        and u.organization_id = time_off_requests.organization_id
-        and upper(coalesce(u.account_type, u.role, '')) in ('ADMIN', 'MANAGER')
-    )
-  );`);
+    if (missingOrganizations.includes('restaurant_code')) {
+      blocks.push(`-- Organizations: restaurant_code
+alter table if exists public.organizations
+  add column if not exists restaurant_code text;`);
     }
 
-    if (missingShiftColumns) {
-      blocks.push(`-- Shifts columns used by the app
+    if (missingUsers.length > 0) {
+      const userAdds: string[] = [];
+      if (missingUsers.includes('jobs')) {
+        userAdds.push("add column if not exists jobs text[] default '{}'::text[]");
+      }
+      if (missingUsers.includes('pin_code')) {
+        userAdds.push('add column if not exists pin_code text');
+      }
+      if (userAdds.length > 0) {
+        blocks.push(`-- Users: jobs + pin_code
+alter table if exists public.users
+  ${userAdds.join(',\n  ')};`);
+      }
+    }
+
+    if (missingTimeOff.length > 0) {
+      const timeOffAdds: string[] = [];
+      if (missingTimeOff.includes('manager_note')) {
+        timeOffAdds.push('add column if not exists manager_note text');
+      }
+      if (missingTimeOff.includes('created_at')) {
+        timeOffAdds.push('add column if not exists created_at timestamptz default now()');
+      }
+      if (missingTimeOff.includes('requester_auth_user_id')) {
+        timeOffAdds.push('add column if not exists requester_auth_user_id uuid');
+      }
+      if (timeOffAdds.length > 0) {
+        blocks.push(`-- Time off: manager_note + created_at + requester_auth_user_id
+alter table if exists public.time_off_requests
+  ${timeOffAdds.join(',\n  ')};
+alter table if exists public.time_off_requests
+  alter column created_at set default now();`);
+      }
+    }
+
+    if (missingShifts.length > 0) {
+      const shiftAdds: string[] = [];
+      if (missingShifts.includes('is_blocked')) {
+        shiftAdds.push('add column if not exists is_blocked boolean not null default false');
+      }
+      if (missingShifts.includes('job')) {
+        shiftAdds.push('add column if not exists job text');
+      }
+      if (shiftAdds.length > 0) {
+        blocks.push(`-- Shifts: is_blocked + job
 alter table if exists public.shifts
-  add column if not exists is_blocked boolean not null default false,
-  add column if not exists job text;`);
+  ${shiftAdds.join(',\n  ')};`);
+      }
     }
 
     return blocks;
-  }, [missingTimeOff, missingShiftColumns]);
+  }, [missingColumns]);
 
   return (
     <div className="min-h-screen bg-theme-primary p-6">
@@ -284,7 +354,11 @@ alter table if exists public.shifts
               >
                 <div>
                   <p className="text-sm text-theme-primary font-medium">{check.label}</p>
-                  {check.details && <p className="text-xs text-theme-muted mt-1">{check.details}</p>}
+                  {check.details && (
+                    <p className="text-xs text-theme-muted mt-1">
+                      {isDev ? check.details : 'Missing or inaccessible.'}
+                    </p>
+                  )}
                 </div>
                 <span
                   className={`text-xs font-semibold ${
@@ -303,7 +377,7 @@ alter table if exists public.shifts
           <div className="pt-4 border-t border-theme-primary space-y-2">
             <h2 className="text-sm font-semibold text-theme-primary">SQL fixes (copy/paste)</h2>
             <p className="text-xs text-theme-muted">
-              Use Supabase Dashboard → SQL Editor to run only the blocks you need.
+              Use Supabase Dashboard -&gt; SQL Editor to run only the blocks you need.
             </p>
             {sqlBlocks.length === 0 ? (
               <p className="text-xs text-emerald-400">No SQL changes needed.</p>

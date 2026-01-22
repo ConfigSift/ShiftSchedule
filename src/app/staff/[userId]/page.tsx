@@ -7,6 +7,7 @@ import { CalendarOff, Shield, Trash2 } from 'lucide-react';
 import { supabase } from '../../../lib/supabase/client';
 import { useAuthStore } from '../../../store/authStore';
 import { useScheduleStore } from '../../../store/scheduleStore';
+import { Toast } from '../../../components/Toast';
 import { JOB_OPTIONS } from '../../../types';
 import { getUserRole, isManagerRole } from '../../../utils/role';
 import { normalizeUserRow } from '../../../utils/userMapper';
@@ -27,7 +28,7 @@ export default function StaffProfilePage() {
   const router = useRouter();
   const userId = String(params?.userId ?? '');
 
-  const { currentUser, init, isInitialized, activeRestaurantId, updateProfile, userProfiles } = useAuthStore();
+  const { currentUser, init, isInitialized, activeRestaurantId, updateProfile, userProfiles, signOut } = useAuthStore();
   const { loadRestaurantData, getBlockedShiftsForEmployee, deleteBlockedPeriod, openModal, showToast } =
     useScheduleStore();
 
@@ -39,6 +40,7 @@ export default function StaffProfilePage() {
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [authBanner, setAuthBanner] = useState<string | null>(null);
 
   const currentRole = getUserRole(currentUser?.role);
   const isManager = isManagerRole(currentRole);
@@ -146,6 +148,7 @@ export default function StaffProfilePage() {
   const handleSave = async () => {
     if (!user || !activeRestaurantId) return;
     setError('');
+    setAuthBanner(null);
     if (!fullName.trim()) {
       setError('Full name is required.');
       return;
@@ -173,6 +176,7 @@ export default function StaffProfilePage() {
       const response = await fetch('/api/admin/update-user', {
         method: 'POST',
         credentials: 'include',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
@@ -186,7 +190,18 @@ export default function StaffProfilePage() {
 
       const payload = await response.json();
       if (!response.ok) {
-        setError(payload.error || 'Unable to update profile.');
+        if (response.status === 401) {
+          const message = 'Session expired. Please sign out and sign in again.';
+          setAuthBanner(message);
+          showToast(message, 'error');
+          setError(message);
+        } else if (response.status === 403) {
+          const message = 'You dont have permission for that action.';
+          setError(message);
+          showToast(message, 'error');
+        } else {
+          setError(payload.error || 'Unable to update profile.');
+        }
         setSaving(false);
         return;
       }
@@ -278,6 +293,30 @@ export default function StaffProfilePage() {
         </header>
 
         <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
+          {authBanner && (
+            <div className="bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <span>{authBanner}</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                  await signOut();
+                  router.push('/login?notice=signed-out');
+                }}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 text-zinc-900 text-xs font-semibold hover:bg-amber-400"
+                >
+                  Sign out
+                </button>
+                <button
+                  type="button"
+                  onClick={() => router.push('/login?notice=session-expired')}
+                  className="px-3 py-1.5 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover text-xs"
+                >
+                  Go to login
+                </button>
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             {isManagerRole(targetRole) && (
               <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/20 text-amber-500 flex items-center gap-1">
@@ -425,6 +464,7 @@ export default function StaffProfilePage() {
           )}
         </div>
       </div>
+      <Toast />
     </div>
   );
 }

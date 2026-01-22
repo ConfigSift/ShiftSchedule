@@ -85,17 +85,17 @@ export default function SetupClient() {
     }
 
     if (!password) {
-      setError('Passcode is required');
+      setError('PIN is required');
       return;
     }
 
     if (!/^\d{6}$/.test(password)) {
-      setError('Passcode must be exactly 6 digits');
+      setError('PIN must be exactly 6 digits');
       return;
     }
 
     if (password !== confirmPassword) {
-      setError('Passcodes do not match');
+      setError('PINs do not match');
       return;
     }
 
@@ -339,7 +339,7 @@ export default function SetupClient() {
 
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                Passcode
+                PIN
               </label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
@@ -358,7 +358,7 @@ export default function SetupClient() {
 
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                Confirm Passcode
+                Confirm PIN
               </label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />

@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { createSupabaseRouteHandlerClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs, serializeJobsForStorage } from '@/utils/jobs';
 import { normalizeUserRow, splitFullName } from '@/utils/userMapper';
+
+export const dynamic = 'force-dynamic';
 
 type UpdatePayload = {
   userId: string;
@@ -23,12 +25,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
   }
 
-  const supabaseServer = await createSupabaseServerClient();
-  const { data: sessionData } = await supabaseServer.auth.getSession();
+  const supabaseServer = await createSupabaseRouteHandlerClient();
+  const { data: sessionData, error: sessionError } = await supabaseServer.auth.getSession();
   const authUserId = sessionData.session?.user?.id;
 
   if (!authUserId) {
-    return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
+    const message =
+      process.env.NODE_ENV === 'production'
+        ? 'Not signed in. Please sign out/in again.'
+        : sessionError?.message || 'Unauthorized.';
+    return NextResponse.json({ error: message }, { status: 401 });
   }
 
   const { data: requesterRow, error: requesterError } = await supabaseServer
@@ -139,7 +145,7 @@ export async function POST(request: Request) {
 
   if (payload.passcode) {
     if (!/^\d{6}$/.test(payload.passcode)) {
-      return NextResponse.json({ error: 'Passcode must be exactly 6 digits.' }, { status: 400 });
+      return NextResponse.json({ error: 'PIN must be exactly 6 digits.' }, { status: 400 });
     }
     if (!target.authUserId) {
       return NextResponse.json({ error: 'Target auth user missing.' }, { status: 400 });

@@ -745,7 +745,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   createBlockedPeriod: async (employeeId, startDate, endDate, reason) => {
     const state = get();
     const currentUser = useAuthStore.getState().currentUser;
-    if (!isManagerRole(currentUser?.role)) {
+    const requesterRole = getUserRole(currentUser?.role);
+    if (!isManagerRole(requesterRole)) {
       return { success: false, error: "You don't have permission to block out days." };
     }
     if (!reason || !reason.trim()) {
@@ -754,6 +755,9 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     const employee = state.employees.find((emp) => emp.id === employeeId);
     if (!employee?.restaurantId) {
       return { success: false, error: 'Restaurant not assigned for this employee' };
+    }
+    if (employee.userRole === 'ADMIN' && requesterRole === 'MANAGER') {
+      return { success: false, error: 'Managers cannot block out admins.' };
     }
 
     const days: string[] = [];

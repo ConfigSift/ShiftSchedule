@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { createSupabaseRouteHandlerClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs } from '@/utils/jobs';
 import { normalizeUserRow, splitFullName } from '@/utils/userMapper';
+
+export const dynamic = 'force-dynamic';
 
 type CreatePayload = {
   organizationId: string;
@@ -12,7 +14,8 @@ type CreatePayload = {
   email: string;
   accountType: string;
   jobs: string[];
-  passcode: string;
+  passcode?: string;
+  pinCode?: string;
 };
 
 function isValidPasscode(passcode: string) {
@@ -31,16 +34,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
   }
 
-  if (!isValidPasscode(payload.passcode)) {
-    return NextResponse.json({ error: 'Passcode must be exactly 6 digits.' }, { status: 400 });
+  const pinValue = payload.pinCode ?? payload.passcode ?? '';
+  if (!isValidPasscode(pinValue)) {
+    return NextResponse.json({ error: 'PIN must be exactly 6 digits.' }, { status: 400 });
   }
 
-  const supabaseServer = await createSupabaseServerClient();
-  const { data: sessionData } = await supabaseServer.auth.getSession();
+  const supabaseServer = await createSupabaseRouteHandlerClient();
+  const { data: sessionData, error: sessionError } = await supabaseServer.auth.getSession();
   const authUserId = sessionData.session?.user?.id;
 
   if (!authUserId) {
-    return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
+    const message =
+      process.env.NODE_ENV === 'production'
+        ? 'Not signed in. Please sign out/in again.'
+        : sessionError?.message || 'Unauthorized.';
+    return NextResponse.json({ error: message }, { status: 401 });
   }
 
   const { data: requesterRow, error: requesterError } = await supabaseServer
@@ -82,7 +90,7 @@ export async function POST(request: Request) {
 
   const { data: createData, error: createError } = await supabaseAdmin.auth.admin.createUser({
     email: payload.email,
-    password: payload.passcode,
+    password: pinValue,
     email_confirm: true,
   });
 
@@ -103,12 +111,23 @@ export async function POST(request: Request) {
     email: payload.email,
     account_type: targetRole,
     jobs: normalizedJobs,
+    pin_code: pinValue,
   };
 
   const insertResult = await supabaseAdmin.from('users').insert(insertPayload);
 
   if (insertResult.error) {
-    if (insertResult.error.message?.toLowerCase().includes('full_name') || insertResult.error.message?.toLowerCase().includes('account_type')) {
+    const message = insertResult.error.message?.toLowerCase() ?? '';
+    if (message.includes('pin_code')) {
+      const { pin_code, ...withoutPin } = insertPayload;
+      const pinFallbackResult = await supabaseAdmin.from('users').insert(withoutPin);
+      if (pinFallbackResult.error) {
+        await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+        return NextResponse.json({ error: pinFallbackResult.error.message }, { status: 400 });
+      }
+      return NextResponse.json({ success: true });
+    }
+    if (message.includes('full_name') || message.includes('account_type')) {
       const { firstName, lastName } = splitFullName(payload.fullName);
       const legacyPayload = {
         auth_user_id: newAuthUserId,
@@ -119,9 +138,19 @@ export async function POST(request: Request) {
         email: payload.email,
         role: targetRole,
         jobs: normalizedJobs,
+        pin_code: pinValue,
       };
       const legacyResult = await supabaseAdmin.from('users').insert(legacyPayload);
       if (legacyResult.error) {
+        if (legacyResult.error.message?.toLowerCase().includes('pin_code')) {
+          const { pin_code, ...legacyNoPin } = legacyPayload;
+          const secondLegacy = await supabaseAdmin.from('users').insert(legacyNoPin);
+          if (secondLegacy.error) {
+            await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+            return NextResponse.json({ error: secondLegacy.error.message }, { status: 400 });
+          }
+          return NextResponse.json({ success: true });
+        }
         await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
         return NextResponse.json({ error: legacyResult.error.message }, { status: 400 });
       }

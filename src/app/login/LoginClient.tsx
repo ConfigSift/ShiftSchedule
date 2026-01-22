@@ -6,6 +6,7 @@ import { Calendar, Lock, Mail, Store } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase/client';
 import { getUserRole, isManagerRole } from '../../utils/role';
+import { normalizeUserRow } from '../../utils/userMapper';
 
 type LoginClientProps = {
   notice?: string | null;
@@ -22,6 +23,8 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [hasManagers, setHasManagers] = useState<boolean | null>(null);
+  const [showEmail, setShowEmail] = useState(false);
+  const isDev = process.env.NODE_ENV !== 'production';
 
   useEffect(() => {
     init();
@@ -56,7 +59,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
   const isRestaurantIdValid = /^RST-[0-9A-HJKMNP-TV-Z]{8}$/.test(normalizedRestaurantId);
   const isPasscodeValid = /^\d{6}$/.test(passcode);
   const isEmailValid = Boolean(email.trim());
-  const canSubmit = isRestaurantIdValid && isPasscodeValid && isEmailValid && !loading;
+  const canSubmit = isRestaurantIdValid && isPasscodeValid && (showEmail ? isEmailValid : true) && !loading;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,13 +67,60 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
     setLoading(true);
 
     try {
+      let loginEmail = email.trim().toLowerCase();
+      if (!showEmail) {
+        const { data: orgData, error: orgError } = (await supabase
+          .from('organizations')
+          .select('id,restaurant_code')
+          .eq('restaurant_code', normalizedRestaurantId)
+          .maybeSingle()) as {
+          data: { id: string; restaurant_code: string } | null;
+          error: { message: string } | null;
+        };
+
+        if (orgError || !orgData) {
+          setError('Invalid Restaurant ID or PIN.');
+          return;
+        }
+
+        const { data: userData, error: userError } = (await supabase
+          .from('users')
+          .select('id,email,pin_code,organization_id')
+          .eq('organization_id', orgData.id)
+          .eq('pin_code', passcode)
+          .maybeSingle()) as {
+          data: { id: string; email: string | null; pin_code?: string } | null;
+          error: { message: string } | null;
+        };
+
+        if (userError) {
+          if (userError.message?.toLowerCase().includes('pin_code')) {
+            setError(
+              isDev
+                ? `PIN login is not configured (${userError.message}).`
+                : 'PIN login is not configured. Contact your manager.'
+            );
+          } else {
+            setError(isDev ? userError.message : 'Invalid Restaurant ID or PIN.');
+          }
+          return;
+        }
+
+        if (!userData?.email) {
+          setError('Invalid Restaurant ID or PIN.');
+          return;
+        }
+
+        loginEmail = userData.email;
+      }
+
       const { error: authError } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
+        email: loginEmail,
         password: passcode,
       });
 
       if (authError) {
-        setError('Invalid email or passcode.');
+        setError('Invalid email or PIN.');
         setPasscode('');
         return;
       }
@@ -78,7 +128,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
       const { data: sessionData } = await supabase.auth.getSession();
       const authUserId = sessionData.session?.user?.id;
       if (!authUserId) {
-        setError('Invalid email or passcode.');
+        setError('Invalid email or PIN.');
         return;
       }
 
@@ -131,7 +181,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
       await init();
       setActiveOrganization(orgData.id, orgData.restaurant_code);
 
-      const accountType = getUserRole(matchingUser.account_type ?? matchingUser.role);
+      const accountType = normalizeUserRow(matchingUser).role;
       if (isManagerRole(accountType)) {
         router.push('/manager');
       } else {
@@ -209,26 +259,28 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
               )}
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                Email
-              </label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder="you@restaurant.com"
-                  required
-                />
+            {showEmail && (
+              <div>
+                <label className="block text-sm font-medium text-theme-secondary mb-1.5">
+                  Email (Manager/Admin)
+                </label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                    placeholder="you@restaurant.com"
+                    required
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                Passcode
+                PIN
               </label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
@@ -244,7 +296,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
                 />
               </div>
               {!isPasscodeValid && passcode.length > 0 && (
-                <p className="text-xs text-red-400 mt-1">Passcode must be 6 digits.</p>
+                <p className="text-xs text-red-400 mt-1">PIN must be 6 digits.</p>
               )}
             </div>
 
@@ -258,6 +310,16 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
               {loading ? 'Signing in...' : 'Sign In'}
             </button>
           </form>
+
+          <div className="mt-4 text-center">
+            <button
+              type="button"
+              onClick={() => setShowEmail((prev) => !prev)}
+              className="text-xs text-amber-400 hover:text-amber-300"
+            >
+              {showEmail ? 'Hide email login' : 'Manager/Admin login'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
