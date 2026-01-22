@@ -14,6 +14,11 @@ ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=StrongPassword123!
 ```
 
+Vercel environment variables (set these in Project Settings):
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
 After editing `.env.local`, restart the dev server to pick up changes.
 
 Quick reset (clear `.next` and restart):
@@ -83,6 +88,8 @@ After schema changes, restart the dev server:
 Remove-Item -Recurse -Force .\\.next -ErrorAction SilentlyContinue
 pnpm dev
 ```
+
+Note: `.env.local` is only used locally. Configure Vercel env vars separately.
 
 ## Learn More
 

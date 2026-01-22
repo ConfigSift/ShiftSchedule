@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
+import { normalizeUserRow } from '@/utils/userMapper';
 
 type DeletePayload = {
   userId: string;
@@ -10,7 +11,6 @@ type DeletePayload = {
 
 export async function POST(request: Request) {
   const payload = (await request.json()) as DeletePayload;
-  const allowAdminCreation = process.env.ENABLE_ADMIN_CREATION === 'true';
 
   if (!payload.userId || !payload.organizationId) {
     return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
@@ -24,49 +24,49 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   }
 
-  const { data: requester, error: requesterError } = await supabaseServer
+  const { data: requesterRow, error: requesterError } = await supabaseServer
     .from('users')
-    .select('id,organization_id,account_type,role,auth_user_id')
+    .select('*')
     .eq('auth_user_id', authUserId)
     .maybeSingle();
 
-  if (requesterError || !requester) {
+  if (requesterError || !requesterRow) {
     return NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 });
   }
 
-  const requesterRole = getUserRole(requester.account_type ?? requester.role);
+  const requester = normalizeUserRow(requesterRow);
+  const requesterRole = requester.role;
   if (!isManagerRole(requesterRole)) {
     return NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 });
   }
 
-  if (requester.organization_id !== payload.organizationId) {
+  if (requester.organizationId !== payload.organizationId) {
     return NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 });
   }
 
-  const { data: target, error: targetError } = await supabaseAdmin
+  const { data: targetRow, error: targetError } = await supabaseAdmin
     .from('users')
-    .select('id,auth_user_id,organization_id,account_type,role')
+    .select('*')
     .eq('id', payload.userId)
     .maybeSingle();
 
-  if (targetError || !target) {
+  if (targetError || !targetRow) {
     return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
   }
 
-  if (target.organization_id !== payload.organizationId) {
+  const target = normalizeUserRow(targetRow);
+
+  if (target.organizationId !== payload.organizationId) {
     return NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 });
   }
 
-  if (target.auth_user_id === authUserId) {
+  if (target.authUserId === authUserId) {
     return NextResponse.json({ error: "You can't delete your own account." }, { status: 403 });
   }
 
-  const targetRole = getUserRole(target.account_type ?? target.role);
+  const targetRole = target.role;
   if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
     return NextResponse.json({ error: 'Managers cannot delete admins.' }, { status: 403 });
-  }
-  if (targetRole === 'ADMIN' && !allowAdminCreation) {
-    return NextResponse.json({ error: 'Admin deletion is disabled.' }, { status: 403 });
   }
 
   try {
@@ -79,8 +79,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: deleteError.message }, { status: 400 });
     }
 
-    if (target.auth_user_id) {
-      const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(target.auth_user_id);
+    if (target.authUserId) {
+      const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(target.authUserId);
       if (authDeleteError) {
         return NextResponse.json({ error: authDeleteError.message }, { status: 400 });
       }

@@ -8,7 +8,7 @@ import { supabase } from '../../lib/supabase/client';
 import { useAuthStore } from '../../store/authStore';
 import { JOB_OPTIONS } from '../../types';
 import { getUserRole, isManagerRole } from '../../utils/role';
-import { normalizeJobs } from '../../utils/jobs';
+import { normalizeUserRow } from '../../utils/userMapper';
 import { StaffProfileModal } from '../../components/StaffProfileModal';
 
 interface OrgUser {
@@ -66,7 +66,6 @@ export default function StaffPage() {
     return ['MANAGER', 'EMPLOYEE'];
   }, [isAdmin, allowAdminCreation]);
 
-  const normalizeAccountType = (value: unknown) => getUserRole(value);
 
   useEffect(() => {
     init();
@@ -93,7 +92,7 @@ export default function StaffPage() {
       .from('users')
       .select('*')
       .eq('organization_id', activeRestaurantId)
-      .order('full_name', { ascending: true })) as {
+      .order('email', { ascending: true })) as {
       data: Array<Record<string, any>> | null;
       error: { message: string } | null;
     };
@@ -104,15 +103,18 @@ export default function StaffPage() {
       return;
     }
 
-    const mapped = (data || []).map((row) => ({
-      id: row.id,
-      authUserId: row.auth_user_id ?? null,
-      fullName: row.full_name ?? `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim(),
-      email: row.email ?? '',
-      phone: row.phone ?? '',
-      accountType: normalizeAccountType(row.account_type ?? row.role),
-      jobs: normalizeJobs(row.jobs),
-    }));
+    const mapped = (data || []).map((row) => {
+      const normalized = normalizeUserRow(row);
+      return {
+        id: normalized.id,
+        authUserId: normalized.authUserId ?? null,
+        fullName: normalized.fullName,
+        email: normalized.email ?? '',
+        phone: normalized.phone ?? '',
+        accountType: normalized.role,
+        jobs: normalized.jobs,
+      };
+    });
 
     setUsers(mapped);
     setLoading(false);
@@ -432,11 +434,11 @@ export default function StaffPage() {
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={closeModal} />
-          <div className="relative w-full max-w-lg bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-theme-primary">
+          <div className="relative w-full max-w-lg bg-theme-secondary border border-theme-primary rounded-2xl p-6 max-h-[90vh] overflow-hidden flex flex-col">
+            <h2 className="text-lg font-semibold text-theme-primary shrink-0">
               Add User
             </h2>
-            <div className="space-y-3">
+            <div className="space-y-3 overflow-y-auto pr-1 mt-4 flex-1">
               <div>
                 <label className="text-sm text-theme-secondary">Full name</label>
                 <input
@@ -515,7 +517,7 @@ export default function StaffPage() {
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex items-center justify-end gap-2 pt-4 shrink-0">
               <button
                 type="button"
                 onClick={closeModal}

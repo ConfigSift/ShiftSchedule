@@ -61,7 +61,7 @@ export function StaffProfileModal({
 
   const isSelf = Boolean(user?.authUserId && currentAuthUserId && user.authUserId === currentAuthUserId);
   const targetIsAdmin = getUserRole(user.accountType) === 'ADMIN';
-  const canEdit = mode === 'edit' && isManager && !(targetIsAdmin && !isAdmin) && !(targetIsAdmin && !allowAdminCreation);
+  const canEdit = mode === 'edit' && isManager && !(targetIsAdmin && !isAdmin);
   const canEditAccountType =
     canEdit && (isAdmin || isManager) && !isSelf && !(targetIsAdmin && !isAdmin);
   const requiresJobs = accountType === 'EMPLOYEE' || accountType === 'MANAGER';
@@ -84,13 +84,14 @@ export function StaffProfileModal({
     try {
       const response = await fetch('/api/admin/update-user', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
           organizationId,
           fullName: fullName.trim(),
           phone: phone.trim() || '',
-          accountType,
+          accountType: canEditAccountType ? accountType : undefined,
           jobs,
         }),
       });

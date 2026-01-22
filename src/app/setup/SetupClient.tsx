@@ -8,6 +8,7 @@ import { generateRestaurantCode, useRestaurantStore } from '../../store/restaura
 import { useAuthStore } from '../../store/authStore';
 import { getUserRole, isManagerRole } from '../../utils/role';
 import { supabase } from '../../lib/supabase/client';
+import { splitFullName } from '../../utils/userMapper';
 
 export default function SetupClient() {
   const router = useRouter();
@@ -138,7 +139,7 @@ export default function SetupClient() {
         createdByUserId: userId,
       });
 
-      const { error: userError } = await (supabase as any).from('users').insert({
+      const insertPayload = {
         auth_user_id: userId,
         organization_id: restaurant.id,
         email: email.trim().toLowerCase(),
@@ -146,11 +147,34 @@ export default function SetupClient() {
         full_name: name.trim(),
         account_type: 'MANAGER',
         jobs: ['Manager'],
-      });
+      };
 
-      if (userError) {
-        setError(formatSupabaseError(userError, 'Unable to create manager profile'));
-        return;
+      const userResult = await (supabase as any).from('users').insert(insertPayload);
+
+      if (userResult.error) {
+        if (
+          userResult.error.message?.toLowerCase().includes('full_name')
+          || userResult.error.message?.toLowerCase().includes('account_type')
+        ) {
+          const { firstName, lastName } = splitFullName(name);
+          const legacyResult = await (supabase as any).from('users').insert({
+            auth_user_id: userId,
+            organization_id: restaurant.id,
+            email: email.trim().toLowerCase(),
+            phone: phone.trim(),
+            first_name: firstName,
+            last_name: lastName,
+            role: 'MANAGER',
+            jobs: ['Manager'],
+          });
+          if (legacyResult.error) {
+            setError(formatSupabaseError(legacyResult.error, 'Unable to create manager profile'));
+            return;
+          }
+        } else {
+          setError(formatSupabaseError(userResult.error, 'Unable to create manager profile'));
+          return;
+        }
       }
 
       await init();

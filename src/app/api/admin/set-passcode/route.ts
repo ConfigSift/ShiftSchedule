@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole } from '@/utils/role';
+import { normalizeUserRow } from '@/utils/userMapper';
 
 export async function POST(req: Request) {
   try {
@@ -25,22 +26,23 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
     }
 
-    const { data: requester, error: requesterError } = await supabaseServer
+    const { data: requesterRow, error: requesterError } = await supabaseServer
       .from('users')
-      .select('id,organization_id,account_type,role')
+      .select('*')
       .eq('auth_user_id', requesterAuthId)
       .maybeSingle();
 
-    if (requesterError || !requester) {
+    if (requesterError || !requesterRow) {
       return NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 });
     }
 
-    const requesterRole = getUserRole(requester.account_type ?? requester.role);
+    const requester = normalizeUserRow(requesterRow);
+    const requesterRole = requester.role;
     if (requesterRole !== 'ADMIN') {
       return NextResponse.json({ error: 'Only admins can reset passcodes.' }, { status: 403 });
     }
 
-    if (requester.organization_id !== organizationId) {
+    if (requester.organizationId !== organizationId) {
       return NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 });
     }
 

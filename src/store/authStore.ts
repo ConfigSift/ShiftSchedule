@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase/client';
 import { UserProfile, UserRole } from '../types';
 import { clearStorage, loadFromStorage, saveToStorage, STORAGE_KEYS } from '../utils/storage';
 import { getUserRole } from '../utils/role';
-import { normalizeJobs } from '../utils/jobs';
+import { normalizeUserRow } from '../utils/userMapper';
 
 interface AuthState {
   currentUser: UserProfile | null;
@@ -56,16 +56,19 @@ async function fetchUserProfiles(authUserId: string) {
     throw error;
   }
 
-  const profiles: UserProfile[] = (data || []).map((row) => ({
-    id: row.id,
-    authUserId: row.auth_user_id,
-    organizationId: row.organization_id,
-    email: row.email,
-    phone: row.phone,
-    fullName: row.full_name ?? `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim(),
-    role: getUserRole(row.account_type ?? row.role),
-    jobs: normalizeJobs(row.jobs),
-  }));
+  const profiles: UserProfile[] = (data || []).map((row) => {
+    const normalized = normalizeUserRow(row);
+    return {
+      id: normalized.id,
+      authUserId: normalized.authUserId ?? '',
+      organizationId: normalized.organizationId,
+      email: normalized.email,
+      phone: normalized.phone,
+      fullName: normalized.fullName,
+      role: normalized.role,
+      jobs: normalized.jobs,
+    };
+  });
 
   return profiles;
 }

@@ -8,6 +8,7 @@ import { useAuthStore } from '../../store/authStore';
 import { useRestaurantStore, generateRestaurantCode } from '../../store/restaurantStore';
 import { supabase } from '../../lib/supabase/client';
 import { getUserRole, isManagerRole } from '../../utils/role';
+import { splitFullName } from '../../utils/userMapper';
 
 export default function ManagerPage() {
   const router = useRouter();
@@ -106,7 +107,7 @@ export default function ManagerPage() {
       return;
     }
 
-    const { error: userError } = await (supabase as any).from('users').insert({
+    const insertPayload = {
       auth_user_id: currentUser.authUserId,
       organization_id: newRestaurant.id,
       email: currentUser.email,
@@ -114,11 +115,34 @@ export default function ManagerPage() {
       full_name: currentUser.fullName,
       account_type: currentUser.role,
       jobs: currentUser.jobs ?? [],
-    });
+    };
 
-    if (userError) {
-      setError(userError.message);
-      return;
+    const userResult = await (supabase as any).from('users').insert(insertPayload);
+
+    if (userResult.error) {
+      if (
+        userResult.error.message?.toLowerCase().includes('full_name')
+        || userResult.error.message?.toLowerCase().includes('account_type')
+      ) {
+        const { firstName, lastName } = splitFullName(currentUser.fullName);
+        const legacyResult = await (supabase as any).from('users').insert({
+          auth_user_id: currentUser.authUserId,
+          organization_id: newRestaurant.id,
+          email: currentUser.email,
+          phone: currentUser.phone,
+          first_name: firstName,
+          last_name: lastName,
+          role: currentUser.role,
+          jobs: currentUser.jobs ?? [],
+        });
+        if (legacyResult.error) {
+          setError(legacyResult.error.message);
+          return;
+        }
+      } else {
+        setError(userResult.error.message);
+        return;
+      }
     }
 
     await refreshProfile();

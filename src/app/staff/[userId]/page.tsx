@@ -9,7 +9,7 @@ import { useAuthStore } from '../../../store/authStore';
 import { useScheduleStore } from '../../../store/scheduleStore';
 import { JOB_OPTIONS } from '../../../types';
 import { getUserRole, isManagerRole } from '../../../utils/role';
-import { normalizeJobs } from '../../../utils/jobs';
+import { normalizeUserRow } from '../../../utils/userMapper';
 import { formatDateLong } from '../../../utils/timeUtils';
 
 type ProfileUser = {
@@ -98,14 +98,15 @@ export default function StaffProfilePage() {
       return;
     }
 
+    const normalized = normalizeUserRow(data);
     const mapped: ProfileUser = {
-      id: data.id,
-      authUserId: data.auth_user_id ?? null,
-      fullName: data.full_name ?? `${data.first_name ?? ''} ${data.last_name ?? ''}`.trim(),
-      email: data.email ?? '',
-      phone: data.phone ?? '',
-      accountType: getUserRole(data.account_type ?? data.role),
-      jobs: normalizeJobs(data.jobs),
+      id: normalized.id,
+      authUserId: normalized.authUserId ?? null,
+      fullName: normalized.fullName,
+      email: normalized.email ?? '',
+      phone: normalized.phone ?? '',
+      accountType: normalized.role,
+      jobs: normalized.jobs,
     };
 
     setUser(mapped);
@@ -132,11 +133,11 @@ export default function StaffProfilePage() {
     return note.replace('[BLOCKED]', '').trim();
   };
 
-  const canEditJobs = isManager && !(targetRole === 'ADMIN' && !isAdmin) && !(targetRole === 'ADMIN' && !allowAdminCreation);
+  const canEditJobs = isAdmin || (isManager && targetRole !== 'ADMIN');
   const canEditAccountType = isAdmin && !isSelf;
   const canEditProfile = currentRole === 'EMPLOYEE'
     ? isSelf
-    : isManager && !(targetRole === 'ADMIN' && !isAdmin) && !(targetRole === 'ADMIN' && !allowAdminCreation);
+    : isManager && (isAdmin || targetRole !== 'ADMIN');
 
   const toggleJob = (job: string) => {
     setJobs((prev) => (prev.includes(job) ? prev.filter((j) => j !== job) : [...prev, job]));
@@ -178,7 +179,7 @@ export default function StaffProfilePage() {
           organizationId: activeRestaurantId,
           fullName: fullName.trim(),
           phone: phone.trim() || '',
-          accountType: canEditAccountType ? accountType : user.accountType,
+          accountType: canEditAccountType ? accountType : undefined,
           jobs: canEditJobs ? jobs : user.jobs,
         }),
       });
@@ -323,7 +324,7 @@ export default function StaffProfilePage() {
             </div>
             <div>
               <label className="text-sm text-theme-secondary">Account type</label>
-              {canEditAccountType ? (
+              {canEditAccountType && (allowAdminCreation || targetRole !== 'ADMIN') ? (
                 <select
                   value={accountType}
                   onChange={(e) => setAccountType(e.target.value)}
@@ -340,6 +341,11 @@ export default function StaffProfilePage() {
                   disabled
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary opacity-60"
                 />
+              )}
+              {!canEditAccountType && (
+                <p className="text-xs text-theme-muted mt-2">
+                  Only admins can change account type.
+                </p>
               )}
             </div>
           </div>
@@ -363,10 +369,12 @@ export default function StaffProfilePage() {
             {!canEditJobs && jobs.length === 0 && (
               <p className="text-xs text-theme-muted mt-1">No jobs assigned.</p>
             )}
-            {canEditJobs && (
+            {canEditJobs ? (
               <p className="text-xs text-theme-muted mt-2">
                 Managers and employees must have at least one job.
               </p>
+            ) : (
+              <p className="text-xs text-theme-muted mt-2">Jobs can only be edited by managers or admins.</p>
             )}
           </div>
 

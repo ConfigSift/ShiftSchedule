@@ -9,7 +9,6 @@ import {
   ChevronRight, 
   Calendar,
   Plus,
-  UserPlus,
   Sun,
   Moon,
   CalendarDays,
@@ -34,10 +33,9 @@ export function Header() {
     goToNext,
     openModal,
     getPendingTimeOffRequests,
-    showToast,
   } = useScheduleStore();
 
-  const { currentUser, signOut, activeRestaurantCode, clearActiveOrganization } = useAuthStore();
+  const { currentUser, signOut, clearActiveOrganization } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
   const currentRole = getUserRole(currentUser?.role);
 
@@ -50,16 +48,6 @@ export function Header() {
   const weekDates = getWeekDates(selectedDate);
   const pendingRequests = getPendingTimeOffRequests();
   const canSwitchRestaurant = isManagerRole(currentRole);
-
-  const handleCopyRestaurant = async () => {
-    if (!activeRestaurantCode) return;
-    try {
-      await navigator.clipboard.writeText(activeRestaurantCode);
-      showToast('Restaurant ID copied', 'success');
-    } catch {
-      showToast('Unable to copy Restaurant ID', 'error');
-    }
-  };
 
   const handleSwitchRestaurant = () => {
     clearActiveOrganization();
@@ -74,7 +62,7 @@ export function Header() {
   };
 
   return (
-    <header className="h-16 bg-theme-secondary border-b border-theme-primary flex items-center justify-between px-4 lg:px-6 shrink-0 transition-theme">
+    <header className="h-16 bg-theme-secondary border-b border-theme-primary flex flex-wrap items-center justify-between px-4 lg:px-6 shrink-0 transition-theme">
       {/* Left: Logo */}
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
@@ -143,21 +131,7 @@ export function Header() {
       </div>
 
       {/* Right: Actions */}
-      <div className="flex items-center gap-1 sm:gap-2">
-        {activeRestaurantCode && (
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-theme-tertiary text-theme-secondary text-xs">
-            <span>Restaurant:</span>
-            <span className="text-theme-primary font-semibold">{activeRestaurantCode}</span>
-            <button
-              type="button"
-              onClick={handleCopyRestaurant}
-              className="px-2 py-0.5 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors text-[10px]"
-            >
-              Copy
-            </button>
-          </div>
-        )}
-
+      <div className="flex items-center gap-1 sm:gap-2 flex-wrap justify-end">
         {canSwitchRestaurant && (
           <button
             type="button"
@@ -222,17 +196,6 @@ export function Header() {
         </button>
 
         <div className="hidden sm:block w-px h-6 bg-theme-primary mx-1" />
-
-        {/* Add Staff - Manager Only */}
-        {isManagerRole(currentRole) && (
-          <Link
-            href="/staff"
-            className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-400 transition-all hover:scale-105 hover:shadow-lg text-sm font-medium"
-          >
-            <UserPlus className="w-4 h-4" />
-            Add Staff
-          </Link>
-        )}
 
         {/* Add Shift */}
         {isManagerRole(currentRole) && (

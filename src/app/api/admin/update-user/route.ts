@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs, serializeJobsForStorage } from '@/utils/jobs';
+import { normalizeUserRow, splitFullName } from '@/utils/userMapper';
 
 type UpdatePayload = {
   userId: string;
@@ -30,41 +31,44 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   }
 
-  const { data: requester, error: requesterError } = await supabaseServer
+  const { data: requesterRow, error: requesterError } = await supabaseServer
     .from('users')
-    .select('id,organization_id,account_type,role,auth_user_id')
+    .select('*')
     .eq('auth_user_id', authUserId)
     .maybeSingle();
 
-  if (requesterError || !requester) {
+  if (requesterError || !requesterRow) {
     return NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 });
   }
 
-  const requesterRole = getUserRole(requester.account_type ?? requester.role);
+  const requester = normalizeUserRow(requesterRow);
+  const requesterRole = requester.role;
   if (!isManagerRole(requesterRole)) {
     return NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 });
   }
 
-  if (requester.organization_id !== payload.organizationId) {
+  if (requester.organizationId !== payload.organizationId) {
     return NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 });
   }
 
-  const { data: target, error: targetError } = await supabaseAdmin
+  const { data: targetRow, error: targetError } = await supabaseAdmin
     .from('users')
-    .select('id,auth_user_id,organization_id,account_type,role,jobs')
+    .select('*')
     .eq('id', payload.userId)
     .maybeSingle();
 
-  if (targetError || !target) {
+  if (targetError || !targetRow) {
     return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
   }
 
-  if (target.organization_id !== payload.organizationId) {
+  const target = normalizeUserRow(targetRow);
+
+  if (target.organizationId !== payload.organizationId) {
     return NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 });
   }
 
-  const rawRole = payload.accountType ?? target.account_type ?? target.role ?? '';
-  const targetCurrentRole = getUserRole(target.account_type ?? target.role);
+  const rawRole = payload.accountType ?? target.role ?? '';
+  const targetCurrentRole = target.role;
   const targetRole = getUserRole(rawRole);
   if (payload.accountType && !['ADMIN', 'MANAGER', 'EMPLOYEE', 'STAFF'].includes(String(payload.accountType).toUpperCase())) {
     return NextResponse.json({ error: 'Invalid account type.' }, { status: 400 });
@@ -82,46 +86,66 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Managers can only assign MANAGER or EMPLOYEE.' }, { status: 403 });
   }
 
-  if (targetRole === 'ADMIN' && !allowAdminCreation) {
+  if (payload.accountType && targetRole === 'ADMIN' && !allowAdminCreation) {
     return NextResponse.json({ error: 'Admin updates are disabled.' }, { status: 403 });
   }
 
-  if (requesterRole === 'ADMIN' && target.auth_user_id === authUserId && targetRole !== 'ADMIN') {
+  if (requesterRole === 'ADMIN' && target.authUserId === authUserId && targetRole !== 'ADMIN') {
     return NextResponse.json({ error: 'Admins cannot demote themselves.' }, { status: 403 });
   }
-  if (target.auth_user_id === authUserId && payload.accountType && targetRole !== targetCurrentRole) {
+  if (target.authUserId === authUserId && payload.accountType && targetRole !== targetCurrentRole) {
     return NextResponse.json({ error: 'You cannot change your own account type.' }, { status: 403 });
   }
 
-  const normalizedJobs = payload.jobs ? normalizeJobs(payload.jobs) : normalizeJobs(target.jobs);
+  const normalizedJobs = payload.jobs ? normalizeJobs(payload.jobs) : normalizeJobs(targetRow.jobs);
   if ((targetRole === 'EMPLOYEE' || targetRole === 'MANAGER') && normalizedJobs.length === 0) {
     return NextResponse.json({ error: 'Managers and employees must have at least one job.' }, { status: 400 });
   }
-  const jobsPayload = serializeJobsForStorage(target.jobs, normalizedJobs);
+  const jobsPayload = serializeJobsForStorage(targetRow.jobs, normalizedJobs);
 
-  const { error: updateError } = await supabaseAdmin
+  const baseUpdatePayload = {
+    full_name: payload.fullName,
+    phone: payload.phone ?? '',
+    account_type: targetRole,
+    jobs: jobsPayload,
+  };
+
+  const updateResult = await supabaseAdmin
     .from('users')
-    .update({
-      full_name: payload.fullName,
-      phone: payload.phone ?? '',
-      account_type: targetRole,
-      jobs: jobsPayload,
-    })
+    .update(baseUpdatePayload)
     .eq('id', payload.userId);
 
-  if (updateError) {
-    return NextResponse.json({ error: updateError.message }, { status: 400 });
+  if (updateResult.error) {
+    const message = updateResult.error.message?.toLowerCase() ?? '';
+    if (message.includes('full_name') || message.includes('account_type')) {
+      const { firstName, lastName } = splitFullName(payload.fullName);
+      const legacyResult = await supabaseAdmin
+        .from('users')
+        .update({
+          first_name: firstName,
+          last_name: lastName,
+          phone: payload.phone ?? '',
+          role: targetRole,
+          jobs: jobsPayload,
+        })
+        .eq('id', payload.userId);
+      if (legacyResult.error) {
+        return NextResponse.json({ error: legacyResult.error.message }, { status: 400 });
+      }
+    } else {
+      return NextResponse.json({ error: updateResult.error.message }, { status: 400 });
+    }
   }
 
   if (payload.passcode) {
     if (!/^\d{6}$/.test(payload.passcode)) {
       return NextResponse.json({ error: 'Passcode must be exactly 6 digits.' }, { status: 400 });
     }
-    if (!target.auth_user_id) {
+    if (!target.authUserId) {
       return NextResponse.json({ error: 'Target auth user missing.' }, { status: 400 });
     }
     const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(
-      target.auth_user_id,
+      target.authUserId,
       { password: payload.passcode }
     );
     if (authUpdateError) {

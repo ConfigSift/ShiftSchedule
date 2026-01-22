@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs } from '@/utils/jobs';
+import { normalizeUserRow, splitFullName } from '@/utils/userMapper';
 
 type CreatePayload = {
   organizationId: string;
@@ -42,22 +43,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   }
 
-  const { data: requester, error: requesterError } = await supabaseServer
+  const { data: requesterRow, error: requesterError } = await supabaseServer
     .from('users')
-    .select('id,organization_id,account_type,role')
+    .select('*')
     .eq('auth_user_id', authUserId)
     .maybeSingle();
 
-  if (requesterError || !requester) {
+  if (requesterError || !requesterRow) {
     return NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 });
   }
 
-  const requesterRole = getUserRole(requester.account_type ?? requester.role);
+  const requester = normalizeUserRow(requesterRow);
+  const requesterRole = requester.role;
   if (!isManagerRole(requesterRole)) {
     return NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 });
   }
 
-  if (requester.organization_id !== payload.organizationId) {
+  if (requester.organizationId !== payload.organizationId) {
     return NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 });
   }
 
@@ -93,7 +95,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Failed to create auth user.' }, { status: 500 });
   }
 
-  const { error: insertError } = await supabaseAdmin.from('users').insert({
+  const insertPayload = {
     auth_user_id: newAuthUserId,
     organization_id: payload.organizationId,
     full_name: payload.fullName,
@@ -101,11 +103,32 @@ export async function POST(request: Request) {
     email: payload.email,
     account_type: targetRole,
     jobs: normalizedJobs,
-  });
+  };
 
-  if (insertError) {
-    await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-    return NextResponse.json({ error: insertError.message }, { status: 400 });
+  const insertResult = await supabaseAdmin.from('users').insert(insertPayload);
+
+  if (insertResult.error) {
+    if (insertResult.error.message?.toLowerCase().includes('full_name') || insertResult.error.message?.toLowerCase().includes('account_type')) {
+      const { firstName, lastName } = splitFullName(payload.fullName);
+      const legacyPayload = {
+        auth_user_id: newAuthUserId,
+        organization_id: payload.organizationId,
+        first_name: firstName,
+        last_name: lastName,
+        phone: payload.phone ?? '',
+        email: payload.email,
+        role: targetRole,
+        jobs: normalizedJobs,
+      };
+      const legacyResult = await supabaseAdmin.from('users').insert(legacyPayload);
+      if (legacyResult.error) {
+        await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+        return NextResponse.json({ error: legacyResult.error.message }, { status: 400 });
+      }
+    } else {
+      await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+      return NextResponse.json({ error: insertResult.error.message }, { status: 400 });
+    }
   }
 
   return NextResponse.json({ success: true });

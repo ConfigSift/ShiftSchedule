@@ -16,7 +16,7 @@ import { STORAGE_KEYS, saveToStorage, loadFromStorage } from '../utils/storage';
 import { generateId, shiftsOverlap } from '../utils/timeUtils';
 import { supabase } from '../lib/supabase/client';
 import { getUserRole, isManagerRole } from '../utils/role';
-import { normalizeJobs } from '../utils/jobs';
+import { normalizeUserRow } from '../utils/userMapper';
 import { useAuthStore } from './authStore';
 
 function parseTimeToDecimal(value: string | number | null): number {
@@ -201,26 +201,22 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     }
 
     let employees: Employee[] = (userData || []).map((row) => {
-      const profileRole = getUserRole(row.account_type ?? row.role);
+      const normalized = normalizeUserRow(row);
+      const profileRole = normalized.role;
       const section = profileRole === 'MANAGER' || profileRole === 'ADMIN' ? 'management' : 'front';
-      const name =
-        row.full_name
-        || `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim()
-        || row.email
-        || 'Team Member';
 
       return {
-        id: row.id,
-        name,
+        id: normalized.id,
+        name: normalized.fullName,
         section,
         userRole: profileRole,
         restaurantId,
         profile: {
-          email: row.email ?? undefined,
-          phone: row.phone ?? undefined,
+          email: normalized.email ?? undefined,
+          phone: normalized.phone ?? undefined,
         },
         isActive: true,
-        jobs: normalizeJobs(row.jobs),
+        jobs: normalized.jobs,
       };
     });
 
@@ -265,29 +261,67 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       job: isValidJob(row.job) ? row.job : undefined,
     }));
 
-    let timeOffQuery = (supabase as any)
+    let timeOffData: Array<Record<string, any>> | null = null;
+    let timeOffError: { message: string } | null = null;
+
+    const baseTimeOffQuery = (supabase as any)
       .from('time_off_requests')
-      .select('id,organization_id,user_id,requester_auth_user_id,start_date,end_date,reason,status,created_at,updated_at,reviewed_by,reviewed_at,manager_note')
+      .select('*')
       .eq('organization_id', restaurantId);
 
     if (currentRole === 'EMPLOYEE' && currentUser?.authUserId) {
-      timeOffQuery = timeOffQuery.eq('requester_auth_user_id', currentUser.authUserId);
+      const primaryQuery = baseTimeOffQuery.eq('requester_auth_user_id', currentUser.authUserId);
+      const primaryResult = (await primaryQuery) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+      if (!primaryResult.error) {
+        timeOffData = primaryResult.data;
+      } else if (primaryResult.error.message?.toLowerCase().includes('requester_auth_user_id')) {
+        const fallbackQuery = baseTimeOffQuery.eq('auth_user_id', currentUser.authUserId);
+        const fallbackResult = (await fallbackQuery) as {
+          data: Array<Record<string, any>> | null;
+          error: { message: string } | null;
+        };
+        if (!fallbackResult.error) {
+          timeOffData = fallbackResult.data;
+        } else if (fallbackResult.error.message?.toLowerCase().includes('auth_user_id')) {
+          const secondFallbackQuery = baseTimeOffQuery.eq('requester_user_id', currentUser.authUserId);
+          const secondFallbackResult = (await secondFallbackQuery) as {
+            data: Array<Record<string, any>> | null;
+            error: { message: string } | null;
+          };
+          timeOffData = secondFallbackResult.data;
+          timeOffError = secondFallbackResult.error;
+        } else {
+          timeOffError = fallbackResult.error;
+        }
+      } else {
+        timeOffError = primaryResult.error;
+      }
+    } else {
+      const result = (await baseTimeOffQuery) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+      timeOffData = result.data;
+      timeOffError = result.error;
     }
-
-    const { data: timeOffData, error: timeOffError } = (await timeOffQuery) as {
-      data: Array<Record<string, any>> | null;
-      error: { message: string } | null;
-    };
 
     const timeOffRequests: TimeOffRequest[] = timeOffError
       ? []
       : (timeOffData || []).map((row) => ({
           id: row.id,
-          employeeId: row.user_id ?? row.requester_auth_user_id ?? '',
+          employeeId:
+            row.user_id
+            ?? row.requester_auth_user_id
+            ?? row.auth_user_id
+            ?? row.requester_user_id
+            ?? '',
           organizationId: row.organization_id ?? undefined,
           startDate: row.start_date,
           endDate: row.end_date,
-          reason: row.reason ?? undefined,
+          reason: row.reason ?? row.note ?? undefined,
           status: String(row.status ?? 'PENDING').toUpperCase() as TimeOffStatus,
           createdAt: row.created_at,
           updatedAt: row.updated_at ?? undefined,
@@ -553,19 +587,50 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     if (!request.reason || !String(request.reason).trim()) {
       return { success: false, error: 'Reason is required for this request' };
     }
-    const { data: insertData, error } = await (supabase as any)
+    const insertPayload = {
+      organization_id: request.organizationId,
+      user_id: request.employeeId,
+      requester_auth_user_id: request.requesterAuthUserId,
+      start_date: request.startDate,
+      end_date: request.endDate,
+      reason: request.reason ?? null,
+      status: 'PENDING',
+    };
+
+    let insertData: Record<string, any> | null = null;
+    let error: { message: string } | null = null;
+
+    const primaryResult = await (supabase as any)
       .from('time_off_requests')
-      .insert({
-        organization_id: request.organizationId,
-        user_id: request.employeeId,
-        requester_auth_user_id: request.requesterAuthUserId,
-        start_date: request.startDate,
-        end_date: request.endDate,
-        reason: request.reason ?? null,
-        status: 'PENDING',
-      })
-      .select('id,organization_id,user_id,requester_auth_user_id,start_date,end_date,reason,status,created_at,updated_at,reviewed_by,reviewed_at,manager_note')
+      .insert(insertPayload)
+      .select('*')
       .single();
+
+    if (!primaryResult.error) {
+      insertData = primaryResult.data;
+    } else if (primaryResult.error.message?.toLowerCase().includes('requester_auth_user_id')) {
+      const { requester_auth_user_id, ...fallbackPayload } = insertPayload;
+      const fallbackResult = await (supabase as any)
+        .from('time_off_requests')
+        .insert({ ...fallbackPayload, auth_user_id: request.requesterAuthUserId })
+        .select('*')
+        .single();
+      if (!fallbackResult.error) {
+        insertData = fallbackResult.data;
+      } else if (fallbackResult.error.message?.toLowerCase().includes('auth_user_id')) {
+        const secondFallbackResult = await (supabase as any)
+          .from('time_off_requests')
+          .insert({ ...fallbackPayload, requester_user_id: request.requesterAuthUserId })
+          .select('*')
+          .single();
+        insertData = secondFallbackResult.data;
+        error = secondFallbackResult.error;
+      } else {
+        error = fallbackResult.error;
+      }
+    } else {
+      error = primaryResult.error;
+    }
 
     if (error || !insertData) {
       return { success: false, error: error?.message ?? 'Failed to submit request' };
@@ -573,11 +638,16 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
     const newRequest: TimeOffRequest = {
       id: insertData.id,
-      employeeId: insertData.user_id ?? insertData.requester_auth_user_id ?? '',
+      employeeId:
+        insertData.user_id
+        ?? insertData.requester_auth_user_id
+        ?? insertData.auth_user_id
+        ?? insertData.requester_user_id
+        ?? '',
       organizationId: insertData.organization_id ?? undefined,
       startDate: insertData.start_date,
       endDate: insertData.end_date,
-      reason: insertData.reason ?? undefined,
+      reason: insertData.reason ?? insertData.note ?? undefined,
       status: String(insertData.status ?? 'PENDING').toUpperCase() as TimeOffStatus,
       createdAt: insertData.created_at,
       updatedAt: insertData.updated_at ?? undefined,

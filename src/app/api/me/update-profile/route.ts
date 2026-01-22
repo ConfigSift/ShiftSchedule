@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { splitFullName } from '@/utils/userMapper';
 
 type UpdatePayload = {
   fullName: string;
@@ -21,16 +22,33 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   }
 
-  const { error } = await supabaseServer
+  const updatePayload = {
+    full_name: payload.fullName.trim(),
+    phone: payload.phone ?? '',
+  };
+
+  const result = await supabaseServer
     .from('users')
-    .update({
-      full_name: payload.fullName.trim(),
-      phone: payload.phone ?? '',
-    })
+    .update(updatePayload)
     .eq('auth_user_id', authUserId);
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+  if (result.error) {
+    if (result.error.message?.toLowerCase().includes('full_name')) {
+      const { firstName, lastName } = splitFullName(payload.fullName);
+      const fallbackResult = await supabaseServer
+        .from('users')
+        .update({
+          first_name: firstName,
+          last_name: lastName,
+          phone: payload.phone ?? '',
+        })
+        .eq('auth_user_id', authUserId);
+      if (fallbackResult.error) {
+        return NextResponse.json({ error: fallbackResult.error.message }, { status: 400 });
+      }
+    } else {
+      return NextResponse.json({ error: result.error.message }, { status: 400 });
+    }
   }
 
   return NextResponse.json({ success: true });
