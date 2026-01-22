@@ -1,8 +1,9 @@
 'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
-import { ROLES } from '../types';
+import { SECTIONS } from '../types';
 import { getWeekDates, dateToString, isSameDay, formatHour } from '../utils/timeUtils';
+import { Palmtree } from 'lucide-react';
 
 export function WeekView() {
   const {
@@ -12,6 +13,7 @@ export function WeekView() {
     setSelectedDate,
     setViewMode,
     openModal,
+    hasApprovedTimeOff,
   } = useScheduleStore();
 
   const weekDates = getWeekDates(selectedDate);
@@ -75,7 +77,7 @@ export function WeekView() {
           </div>
         ) : (
           filteredEmployees.map((employee) => {
-            const roleConfig = ROLES[employee.role];
+            const sectionConfig = SECTIONS[employee.section];
 
             return (
               <div
@@ -86,8 +88,8 @@ export function WeekView() {
                   <div
                     className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
                     style={{
-                      backgroundColor: roleConfig.bgColor,
-                      color: roleConfig.color,
+                      backgroundColor: sectionConfig.bgColor,
+                      color: sectionConfig.color,
                     }}
                   >
                     {employee.name.split(' ').map(n => n[0]).join('')}
@@ -97,7 +99,7 @@ export function WeekView() {
                       {employee.name}
                     </p>
                     <p className="text-xs text-theme-muted truncate">
-                      {roleConfig.label}
+                      {sectionConfig.label}
                     </p>
                   </div>
                 </div>
@@ -109,29 +111,39 @@ export function WeekView() {
                       s => s.employeeId === employee.id && s.date === dateStr
                     );
                     const isToday = isSameDay(date, today);
+                    const hasTimeOff = hasApprovedTimeOff(employee.id, dateStr);
 
                     return (
                       <div
                         key={date.toISOString()}
                         className={`flex-1 border-r border-theme-primary/30 p-1 ${
                           isToday ? 'bg-amber-500/5' : ''
-                        }`}
+                        } ${hasTimeOff ? 'bg-emerald-500/5' : ''}`}
                       >
-                        {dayShifts.map((shift) => (
-                          <div
-                            key={shift.id}
-                            onClick={(e) => handleShiftClick(shift, e)}
-                            className="mb-1 px-2 py-1 rounded-md text-xs truncate cursor-pointer hover:scale-[1.02] transition-transform"
-                            style={{
-                              backgroundColor: roleConfig.bgColor,
-                              borderLeft: `3px solid ${roleConfig.color}`,
-                              color: roleConfig.color,
-                            }}
-                            title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
-                          >
-                            {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
+                        {hasTimeOff ? (
+                          <div className="h-full flex items-center justify-center">
+                            <div className="flex items-center gap-1 px-2 py-1 bg-emerald-500/20 rounded text-emerald-500">
+                              <Palmtree className="w-3 h-3" />
+                              <span className="text-xs font-medium">OFF</span>
+                            </div>
                           </div>
-                        ))}
+                        ) : (
+                          dayShifts.map((shift) => (
+                            <div
+                              key={shift.id}
+                              onClick={(e) => handleShiftClick(shift, e)}
+                              className="mb-1 px-2 py-1 rounded-md text-xs truncate cursor-pointer hover:scale-[1.02] transition-transform"
+                              style={{
+                                backgroundColor: sectionConfig.bgColor,
+                                borderLeft: `3px solid ${sectionConfig.color}`,
+                                color: sectionConfig.color,
+                              }}
+                              title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
+                            >
+                              {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
+                            </div>
+                          ))
+                        )}
                       </div>
                     );
                   })}

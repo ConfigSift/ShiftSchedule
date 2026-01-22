@@ -1,19 +1,25 @@
+// Section type for organizing employees
+export type Section = 'kitchen' | 'front' | 'bar' | 'management';
+
+// User role for permissions
+export type UserRole = 'manager' | 'staff';
+
+export interface EmployeeProfile {
+  phone?: string;
+  email?: string;
+  notes?: string;
+}
+
 export interface Employee {
   id: string;
   name: string;
-  email: string;
-  phone?: string;
-  role: Role;
-  color: string;
-  avatar?: string;
-  hireDate: string;
-  hourlyRate: number;
-  maxHoursPerWeek: number;
+  section: Section;
+  userRole: UserRole;
+  pinHash: string;
+  profile: EmployeeProfile;
   isActive: boolean;
-  pin?: string; // For simple login
+  createdAt: string;
 }
-
-export type Role = 'kitchen' | 'front' | 'bar' | 'management';
 
 export interface Shift {
   id: string;
@@ -22,44 +28,65 @@ export interface Shift {
   startHour: number; // 0-24 decimal (e.g., 9.5 = 9:30am)
   endHour: number;
   notes?: string;
-  status: 'scheduled' | 'confirmed' | 'completed' | 'cancelled';
 }
 
-export type TimeOffStatus = 'pending' | 'approved' | 'denied';
+export type TimeOffStatus = 'pending' | 'approved' | 'rejected';
 
 export interface TimeOffRequest {
   id: string;
   employeeId: string;
-  startDate: string; // YYYY-MM-DD
+  startDate: string;
   endDate: string;
-  reason: string;
+  reason?: string;
   status: TimeOffStatus;
   createdAt: string;
   reviewedBy?: string;
   reviewedAt?: string;
-  reviewNotes?: string;
 }
 
 export interface BlockedPeriod {
   id: string;
   startDate: string;
   endDate: string;
-  startHour?: number; // Optional - if not set, whole day is blocked
+  startHour?: number;
   endHour?: number;
   reason: string;
   createdBy: string;
   createdAt: string;
 }
 
-export interface RoleConfig {
-  id: Role;
+export type DropRequestStatus = 'open' | 'accepted' | 'cancelled';
+
+export interface DropShiftRequest {
+  id: string;
+  shiftId: string;
+  fromEmployeeId: string;
+  status: DropRequestStatus;
+  createdAt: string;
+  acceptedByEmployeeId?: string;
+  acceptedAt?: string;
+}
+
+export type ChatMessageType = 'message' | 'drop_request' | 'system';
+
+export interface ChatMessage {
+  id: string;
+  senderId: string;
+  createdAt: string;
+  text: string;
+  type: ChatMessageType;
+  dropRequestId?: string;
+}
+
+export interface SectionConfig {
+  id: Section;
   label: string;
   color: string;
   bgColor: string;
   borderColor: string;
 }
 
-export const ROLES: Record<Role, RoleConfig> = {
+export const SECTIONS: Record<Section, SectionConfig> = {
   kitchen: {
     id: 'kitchen',
     label: 'Kitchen',
@@ -90,6 +117,6 @@ export const ROLES: Record<Role, RoleConfig> = {
   },
 };
 
-export const HOURS_START = 6; // 6am
-export const HOURS_END = 24; // 12am (midnight)
+export const HOURS_START = 6;
+export const HOURS_END = 24;
 export const TOTAL_HOURS = HOURS_END - HOURS_START;

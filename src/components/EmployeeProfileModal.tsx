@@ -1,10 +1,11 @@
 'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
+import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
-import { ROLES } from '../types';
+import { SECTIONS } from '../types';
 import { formatDateLong } from '../utils/timeUtils';
-import { Mail, Phone, Calendar, DollarSign, Clock, Edit2 } from 'lucide-react';
+import { Mail, Phone, FileText, Edit2, Calendar, Clock, Shield } from 'lucide-react';
 
 export function EmployeeProfileModal() {
   const { 
@@ -15,23 +16,28 @@ export function EmployeeProfileModal() {
     shifts,
     timeOffRequests,
   } = useScheduleStore();
+
+  const { isManager, currentUser } = useAuthStore();
   
   const isOpen = modalType === 'employeeProfile';
   const employee = modalData;
 
   if (!isOpen || !employee) return null;
 
-  const roleConfig = ROLES[employee.role];
+  const sectionConfig = SECTIONS[employee.section];
+  const isOwnProfile = currentUser?.id === employee.id;
+  const canEdit = isManager || isOwnProfile;
   
-  // Calculate stats
+  // Stats
   const employeeShifts = shifts.filter(s => s.employeeId === employee.id);
+  const now = new Date();
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - now.getDay());
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+  
   const thisWeekShifts = employeeShifts.filter(s => {
     const shiftDate = new Date(s.date);
-    const now = new Date();
-    const weekStart = new Date(now);
-    weekStart.setDate(now.getDate() - now.getDay());
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
     return shiftDate >= weekStart && shiftDate <= weekEnd;
   });
   const weeklyHours = thisWeekShifts.reduce((sum, s) => sum + (s.endHour - s.startHour), 0);
@@ -41,8 +47,15 @@ export function EmployeeProfileModal() {
   );
 
   const handleEdit = () => {
+    if (isManager) {
+      closeModal();
+      openModal('editEmployee', employee);
+    }
+  };
+
+  const handleRequestTimeOff = () => {
     closeModal();
-    openModal('editEmployee', employee);
+    openModal('timeOffRequest', { employeeId: employee.id });
   };
 
   return (
@@ -58,8 +71,8 @@ export function EmployeeProfileModal() {
           <div
             className="w-16 h-16 rounded-xl flex items-center justify-center text-xl font-bold"
             style={{
-              backgroundColor: roleConfig.bgColor,
-              color: roleConfig.color,
+              backgroundColor: sectionConfig.bgColor,
+              color: sectionConfig.color,
             }}
           >
             {employee.name.split(' ').map((n: string) => n[0]).join('')}
@@ -72,45 +85,64 @@ export function EmployeeProfileModal() {
               <span
                 className="px-2 py-0.5 rounded-full text-xs font-medium"
                 style={{
-                  backgroundColor: roleConfig.bgColor,
-                  color: roleConfig.color,
+                  backgroundColor: sectionConfig.bgColor,
+                  color: sectionConfig.color,
                 }}
               >
-                {roleConfig.label}
+                {sectionConfig.label}
               </span>
+              {employee.userRole === 'manager' && (
+                <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/20 text-amber-500 flex items-center gap-1">
+                  <Shield className="w-3 h-3" />
+                  Manager
+                </span>
+              )}
             </div>
             <p className="text-sm text-theme-tertiary mt-1">
-              Hired {formatDateLong(employee.hireDate)}
+              {employee.isActive ? 'Active' : 'Inactive'}
             </p>
           </div>
-          <button
-            onClick={handleEdit}
-            className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
-          >
-            <Edit2 className="w-4 h-4" />
-          </button>
+          {isManager && (
+            <button
+              onClick={handleEdit}
+              className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
+            >
+              <Edit2 className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {/* Contact Info */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="flex items-center gap-3 p-3 bg-theme-tertiary rounded-lg">
             <Mail className="w-4 h-4 text-theme-tertiary" />
             <div>
               <p className="text-xs text-theme-muted">Email</p>
-              <p className="text-sm text-theme-primary">{employee.email}</p>
+              <p className="text-sm text-theme-primary">{employee.profile?.email || 'Not set'}</p>
             </div>
           </div>
           <div className="flex items-center gap-3 p-3 bg-theme-tertiary rounded-lg">
             <Phone className="w-4 h-4 text-theme-tertiary" />
             <div>
               <p className="text-xs text-theme-muted">Phone</p>
-              <p className="text-sm text-theme-primary">{employee.phone || 'Not set'}</p>
+              <p className="text-sm text-theme-primary">{employee.profile?.phone || 'Not set'}</p>
             </div>
           </div>
         </div>
 
+        {/* Notes */}
+        {employee.profile?.notes && (
+          <div className="p-3 bg-theme-tertiary rounded-lg">
+            <div className="flex items-center gap-2 mb-2">
+              <FileText className="w-4 h-4 text-theme-tertiary" />
+              <p className="text-xs text-theme-muted">Notes</p>
+            </div>
+            <p className="text-sm text-theme-primary">{employee.profile.notes}</p>
+          </div>
+        )}
+
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 gap-4">
           <div className="p-4 bg-theme-tertiary rounded-lg text-center">
             <Clock className="w-5 h-5 text-blue-400 mx-auto mb-2" />
             <p className="text-2xl font-bold text-theme-primary">{weeklyHours}h</p>
@@ -118,13 +150,8 @@ export function EmployeeProfileModal() {
           </div>
           <div className="p-4 bg-theme-tertiary rounded-lg text-center">
             <Calendar className="w-5 h-5 text-green-400 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-theme-primary">{employee.maxHoursPerWeek}h</p>
-            <p className="text-xs text-theme-muted">Max/Week</p>
-          </div>
-          <div className="p-4 bg-theme-tertiary rounded-lg text-center">
-            <DollarSign className="w-5 h-5 text-amber-400 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-theme-primary">${employee.hourlyRate}</p>
-            <p className="text-xs text-theme-muted">Per Hour</p>
+            <p className="text-2xl font-bold text-theme-primary">{employeeShifts.length}</p>
+            <p className="text-xs text-theme-muted">Total Shifts</p>
           </div>
         </div>
 
@@ -140,15 +167,28 @@ export function EmployeeProfileModal() {
                   key={request.id}
                   className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg"
                 >
-                  <p className="text-sm text-amber-400 font-medium">
+                  <p className="text-sm text-amber-500 font-medium">
                     {formatDateLong(request.startDate)}
                     {request.startDate !== request.endDate && ` - ${formatDateLong(request.endDate)}`}
                   </p>
-                  <p className="text-xs text-theme-tertiary mt-1">{request.reason}</p>
+                  {request.reason && (
+                    <p className="text-xs text-theme-tertiary mt-1">{request.reason}</p>
+                  )}
                 </div>
               ))}
             </div>
           </div>
+        )}
+
+        {/* Request Time Off Button */}
+        {(isOwnProfile || isManager) && (
+          <button
+            onClick={handleRequestTimeOff}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors font-medium"
+          >
+            <Calendar className="w-5 h-5" />
+            Request Time Off
+          </button>
         )}
 
         {/* Upcoming Shifts */}

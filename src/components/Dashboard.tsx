@@ -9,7 +9,9 @@ import { AddShiftModal } from './AddShiftModal';
 import { AddEmployeeModal } from './AddEmployeeModal';
 import { EmployeeProfileModal } from './EmployeeProfileModal';
 import { TimeOffRequestModal } from './TimeOffRequestModal';
+import { TimeOffReviewModal } from './TimeOffReviewModal';
 import { BlockedPeriodModal } from './BlockedPeriodModal';
+import { Toast } from './Toast';
 import { useScheduleStore } from '../store/scheduleStore';
 
 export function Dashboard() {
@@ -34,7 +36,9 @@ export function Dashboard() {
       <AddEmployeeModal />
       <EmployeeProfileModal />
       <TimeOffRequestModal />
+      <TimeOffReviewModal />
       <BlockedPeriodModal />
+      <Toast />
     </div>
   );
 }

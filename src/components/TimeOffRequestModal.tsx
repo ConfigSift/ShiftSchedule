@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
+import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
 import { formatDateLong } from '../utils/timeUtils';
 import { AlertTriangle } from 'lucide-react';
@@ -9,12 +10,15 @@ import { AlertTriangle } from 'lucide-react';
 export function TimeOffRequestModal() {
   const { 
     modalType, 
+    modalData,
     closeModal, 
     addTimeOffRequest,
-    currentUser,
     isDateBlocked,
     blockedPeriods,
+    showToast,
   } = useScheduleStore();
+
+  const { currentUser } = useAuthStore();
   
   const isOpen = modalType === 'timeOffRequest';
   
@@ -22,6 +26,8 @@ export function TimeOffRequestModal() {
   const [endDate, setEndDate] = useState('');
   const [reason, setReason] = useState('');
   const [blockWarning, setBlockWarning] = useState<string | null>(null);
+
+  const employeeId = modalData?.employeeId || currentUser?.id;
 
   useEffect(() => {
     if (isOpen) {
@@ -35,7 +41,6 @@ export function TimeOffRequestModal() {
   }, [isOpen]);
 
   useEffect(() => {
-    // Check for blocked periods
     if (startDate && endDate) {
       const blocked = blockedPeriods.find(bp => {
         const reqStart = new Date(startDate);
@@ -57,15 +62,24 @@ export function TimeOffRequestModal() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!startDate || !endDate || !reason || !currentUser) return;
+    if (!startDate || !endDate || !employeeId) {
+      showToast('Please fill in all required fields', 'error');
+      return;
+    }
+
+    if (blockWarning) {
+      showToast('Cannot request time off during blocked period', 'error');
+      return;
+    }
 
     addTimeOffRequest({
-      employeeId: currentUser.id,
+      employeeId,
       startDate,
       endDate,
-      reason,
+      reason: reason || undefined,
     });
     
+    showToast('Time off request submitted', 'success');
     closeModal();
   };
 
@@ -77,7 +91,6 @@ export function TimeOffRequestModal() {
       size="md"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Date Range */}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-theme-secondary mb-1.5">
@@ -112,24 +125,19 @@ export function TimeOffRequestModal() {
           </div>
         </div>
 
-        {/* Block Warning */}
         {blockWarning && (
           <div className="flex items-start gap-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
             <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
             <div>
               <p className="text-sm font-medium text-red-400">Blocked Period</p>
               <p className="text-xs text-red-400/80 mt-0.5">{blockWarning}</p>
-              <p className="text-xs text-theme-muted mt-1">
-                Your request may be automatically denied.
-              </p>
             </div>
           </div>
         )}
 
-        {/* Reason */}
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Reason
+            Reason (optional)
           </label>
           <textarea
             value={reason}
@@ -137,11 +145,9 @@ export function TimeOffRequestModal() {
             rows={3}
             className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50 resize-none"
             placeholder="Why do you need this time off?"
-            required
           />
         </div>
 
-        {/* Summary */}
         <div className="p-3 bg-theme-tertiary rounded-lg">
           <p className="text-sm text-theme-secondary">
             Requesting time off from{' '}
@@ -159,7 +165,6 @@ export function TimeOffRequestModal() {
           </p>
         </div>
 
-        {/* Actions */}
         <div className="flex gap-3 pt-2">
           <div className="flex-1" />
           <button
@@ -172,7 +177,7 @@ export function TimeOffRequestModal() {
           <button
             type="submit"
             disabled={!!blockWarning}
-            className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-400 transition-all hover:scale-105 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
           >
             Submit Request
           </button>

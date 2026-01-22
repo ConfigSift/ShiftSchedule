@@ -41,13 +41,6 @@ export function getShiftPosition(startHour: number, endHour: number): { left: st
   };
 }
 
-export function getHourFromPosition(position: number, containerWidth: number): number {
-  const percentage = position / containerWidth;
-  const hour = HOURS_START + (percentage * TOTAL_HOURS);
-  // Round to nearest 15 minutes (0.25 hours)
-  return Math.round(hour * 4) / 4;
-}
-
 export function formatDateHeader(date: Date): string {
   return date.toLocaleDateString('en-US', {
     weekday: 'short',
@@ -72,7 +65,7 @@ export function formatDateRange(startDate: Date, endDate: Date): string {
 export function getWeekDates(baseDate: Date): Date[] {
   const dates: Date[] = [];
   const start = new Date(baseDate);
-  start.setDate(start.getDate() - start.getDay()); // Start from Sunday
+  start.setDate(start.getDate() - start.getDay());
   
   for (let i = 0; i < 7; i++) {
     const date = new Date(start);
@@ -95,11 +88,60 @@ export function dateToString(date: Date): string {
   return date.toISOString().split('T')[0];
 }
 
-export function formatDateLong(date: string): string {
-  return new Date(date + 'T00:00:00').toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
+export function formatDateLong(dateStr: string): string {
+  const date = new Date(dateStr + 'T00:00:00');
+  return date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
     day: 'numeric',
-    year: 'numeric',
   });
+}
+
+export function formatTimestamp(isoString: string): string {
+  const date = new Date(isoString);
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+// PIN Hashing using Web Crypto API
+export async function hashPin(pin: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(pin + 'shiftflow-salt');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function verifyPin(pin: string, hash: string): Promise<boolean> {
+  const inputHash = await hashPin(pin);
+  return inputHash === hash;
+}
+
+// Check if date ranges overlap
+export function datesOverlap(
+  start1: string,
+  end1: string,
+  start2: string,
+  end2: string
+): boolean {
+  return start1 <= end2 && end1 >= start2;
+}
+
+// Check if time ranges overlap on same day
+export function shiftsOverlap(
+  start1: number,
+  end1: number,
+  start2: number,
+  end2: number
+): boolean {
+  return start1 < end2 && end1 > start2;
+}
+
+// Generate unique ID
+export function generateId(prefix: string = 'id'): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }

@@ -1,16 +1,17 @@
 'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
-import { ROLES, Role } from '../types';
-import { Users, ChevronDown, Check, Eye, EyeOff, User } from 'lucide-react';
+import { useAuthStore } from '../store/authStore';
+import { SECTIONS, Section } from '../types';
+import { Users, ChevronDown, Check, Eye, EyeOff, User, Calendar } from 'lucide-react';
 import { useState } from 'react';
 
 export function StaffSidebar() {
   const {
     employees,
-    selectedRoles,
+    selectedSections,
     selectedEmployeeIds,
-    toggleRole,
+    setSectionSelected,
     toggleEmployee,
     selectAllEmployees,
     deselectAllEmployees,
@@ -19,27 +20,51 @@ export function StaffSidebar() {
     openModal,
   } = useScheduleStore();
 
-  const [expandedRoles, setExpandedRoles] = useState<Role[]>(['kitchen', 'front', 'bar', 'management']);
+  const { isManager } = useAuthStore();
 
-  const toggleExpanded = (role: Role) => {
-    setExpandedRoles(prev =>
-      prev.includes(role) ? prev.filter(r => r !== role) : [...prev, role]
+  const [expandedSections, setExpandedSections] = useState<Section[]>(['kitchen', 'front', 'bar', 'management']);
+
+  const toggleExpanded = (section: Section) => {
+    setExpandedSections(prev =>
+      prev.includes(section) ? prev.filter(s => s !== section) : [...prev, section]
     );
   };
 
   const dateString = selectedDate.toISOString().split('T')[0];
 
-  const employeesByRole = employees.reduce((acc, emp) => {
-    if (!acc[emp.role]) acc[emp.role] = [];
-    acc[emp.role].push(emp);
+  const employeesBySection = employees.reduce((acc, emp) => {
+    if (!emp.isActive) return acc;
+    if (!acc[emp.section]) acc[emp.section] = [];
+    acc[emp.section].push(emp);
     return acc;
-  }, {} as Record<Role, typeof employees>);
+  }, {} as Record<Section, typeof employees>);
 
   const hasShiftToday = (employeeId: string) => {
     return shifts.some(s => s.employeeId === employeeId && s.date === dateString);
   };
 
-  const allSelected = selectedEmployeeIds.length === employees.filter(e => selectedRoles.includes(e.role)).length;
+  const activeEmployees = employees.filter(e => e.isActive);
+  const allSelected = selectedEmployeeIds.length === activeEmployees.length && activeEmployees.length > 0;
+
+  // Check if all employees in a section are selected
+  const isSectionFullySelected = (section: Section) => {
+    const sectionEmps = employeesBySection[section] || [];
+    if (sectionEmps.length === 0) return false;
+    return sectionEmps.every(e => selectedEmployeeIds.includes(e.id));
+  };
+
+  // Check if some (but not all) employees in a section are selected
+  const isSectionPartiallySelected = (section: Section) => {
+    const sectionEmps = employeesBySection[section] || [];
+    if (sectionEmps.length === 0) return false;
+    const selectedCount = sectionEmps.filter(e => selectedEmployeeIds.includes(e.id)).length;
+    return selectedCount > 0 && selectedCount < sectionEmps.length;
+  };
+
+  const handleSectionToggle = (section: Section) => {
+    const isFullySelected = isSectionFullySelected(section);
+    setSectionSelected(section, !isFullySelected);
+  };
 
   return (
     <aside className="w-64 bg-theme-secondary border-r border-theme-primary flex flex-col shrink-0 transition-theme">
@@ -50,7 +75,7 @@ export function StaffSidebar() {
             <span className="font-medium text-theme-primary text-sm">Staff</span>
           </div>
           <span className="text-xs text-theme-muted">
-            {selectedEmployeeIds.length} shown
+            {selectedEmployeeIds.length} / {activeEmployees.length}
           </span>
         </div>
 
@@ -66,65 +91,69 @@ export function StaffSidebar() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
-        {(Object.keys(ROLES) as Role[]).map(role => {
-          const roleConfig = ROLES[role];
-          const roleEmployees = employeesByRole[role] || [];
-          const isExpanded = expandedRoles.includes(role);
-          const isRoleSelected = selectedRoles.includes(role);
-          const selectedCount = roleEmployees.filter(e => selectedEmployeeIds.includes(e.id)).length;
+        {(Object.keys(SECTIONS) as Section[]).map(section => {
+          const sectionConfig = SECTIONS[section];
+          const sectionEmployees = employeesBySection[section] || [];
+          const isExpanded = expandedSections.includes(section);
+          const isFullySelected = isSectionFullySelected(section);
+          const isPartiallySelected = isSectionPartiallySelected(section);
+          const selectedCount = sectionEmployees.filter(e => selectedEmployeeIds.includes(e.id)).length;
+
+          if (sectionEmployees.length === 0) return null;
 
           return (
-            <div key={role} className="mb-1">
-              <button
-                onClick={() => toggleExpanded(role)}
-                className="w-full flex items-center justify-between p-2 rounded-lg hover:bg-theme-hover transition-colors group"
-              >
-                <div className="flex items-center gap-2">
+            <div key={section} className="mb-1">
+              {/* Section Header */}
+              <div className="flex items-center gap-1">
+                {/* Section Checkbox */}
+                <button
+                  onClick={() => handleSectionToggle(section)}
+                  className="p-2 rounded-lg hover:bg-theme-hover transition-colors"
+                >
                   <div
-                    className="w-2.5 h-2.5 rounded-full"
-                    style={{ backgroundColor: roleConfig.color }}
-                  />
-                  <span className="text-sm font-medium text-theme-secondary">
-                    {roleConfig.label}
-                  </span>
-                  <span className="text-xs text-theme-muted">
-                    {selectedCount}/{roleEmployees.length}
-                  </span>
-                </div>
-                <ChevronDown
-                  className={`w-4 h-4 text-theme-muted transition-transform ${
-                    isExpanded ? 'rotate-180' : ''
-                  }`}
-                />
-              </button>
-
-              {isExpanded && (
-                <div className="ml-2 mb-1">
-                  <button
-                    onClick={() => toggleRole(role)}
-                    className={`w-full flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
-                      isRoleSelected
-                        ? 'bg-theme-tertiary text-theme-secondary'
-                        : 'text-theme-muted hover:bg-theme-hover'
+                    className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${
+                      isFullySelected
+                        ? 'border-amber-500 bg-amber-500'
+                        : isPartiallySelected
+                        ? 'border-amber-500 bg-amber-500/50'
+                        : 'border-theme-secondary'
                     }`}
                   >
-                    <div
-                      className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${
-                        isRoleSelected
-                          ? 'border-amber-500 bg-amber-500'
-                          : 'border-theme-secondary'
-                      }`}
-                    >
-                      {isRoleSelected && <Check className="w-3 h-3 text-zinc-900" />}
-                    </div>
-                    Show all {roleConfig.label.toLowerCase()}
-                  </button>
-                </div>
-              )}
+                    {(isFullySelected || isPartiallySelected) && (
+                      <Check className="w-3 h-3 text-zinc-900" />
+                    )}
+                  </div>
+                </button>
 
-              {isExpanded && isRoleSelected && (
+                {/* Section Expand Toggle */}
+                <button
+                  onClick={() => toggleExpanded(section)}
+                  className="flex-1 flex items-center justify-between p-2 rounded-lg hover:bg-theme-hover transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="w-2.5 h-2.5 rounded-full"
+                      style={{ backgroundColor: sectionConfig.color }}
+                    />
+                    <span className="text-sm font-medium text-theme-secondary">
+                      {sectionConfig.label}
+                    </span>
+                    <span className="text-xs text-theme-muted">
+                      {selectedCount}/{sectionEmployees.length}
+                    </span>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-theme-muted transition-transform ${
+                      isExpanded ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* Employees */}
+              {isExpanded && (
                 <div className="ml-2 space-y-0.5">
-                  {roleEmployees.map(employee => {
+                  {sectionEmployees.map(employee => {
                     const isSelected = selectedEmployeeIds.includes(employee.id);
                     const hasShift = hasShiftToday(employee.id);
 
@@ -154,8 +183,8 @@ export function StaffSidebar() {
                           <div
                             className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium"
                             style={{ 
-                              backgroundColor: roleConfig.bgColor,
-                              color: roleConfig.color,
+                              backgroundColor: sectionConfig.bgColor,
+                              color: sectionConfig.color,
                             }}
                           >
                             {employee.name.split(' ').map(n => n[0]).join('')}
@@ -168,7 +197,7 @@ export function StaffSidebar() {
                           {hasShift && (
                             <div
                               className="w-1.5 h-1.5 rounded-full"
-                              style={{ backgroundColor: roleConfig.color }}
+                              style={{ backgroundColor: sectionConfig.color }}
                               title="Working today"
                             />
                           )}

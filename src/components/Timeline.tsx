@@ -1,9 +1,10 @@
 'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
-import { HOURS_START, HOURS_END, ROLES } from '../types';
+import { HOURS_START, HOURS_END, SECTIONS } from '../types';
 import { formatHourShort, getShiftPosition, formatHour, formatShiftDuration } from '../utils/timeUtils';
 import { useState, useRef, useCallback } from 'react';
+import { Palmtree } from 'lucide-react';
 
 export function Timeline() {
   const {
@@ -15,17 +16,18 @@ export function Timeline() {
     setHoveredShift,
     updateShift,
     openModal,
-    draggingShift,
-    startDragging,
-    stopDragging,
+    hasApprovedTimeOff,
+    getTimeOffForDate,
   } = useScheduleStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
-  const [tooltipData, setTooltipData] = useState<{
+  const [dragging, setDragging] = useState<{
     shiftId: string;
-    x: number;
-    y: number;
+    edge: 'start' | 'end' | 'move';
+    startX: number;
+    originalStart: number;
+    originalEnd: number;
   } | null>(null);
 
   const dateString = selectedDate.toISOString().split('T')[0];
@@ -44,70 +46,63 @@ export function Timeline() {
     const rect = timelineRef.current.getBoundingClientRect();
     const percentage = (clientX - rect.left) / rect.width;
     const hour = HOURS_START + percentage * (HOURS_END - HOURS_START);
-    // Round to nearest 15 minutes
     return Math.max(HOURS_START, Math.min(HOURS_END, Math.round(hour * 4) / 4));
   }, []);
 
   const handleMouseDown = (e: React.MouseEvent, shiftId: string, edge: 'start' | 'end' | 'move') => {
     e.preventDefault();
     e.stopPropagation();
-    startDragging(shiftId, edge);
+    const shift = shifts.find(s => s.id === shiftId);
+    if (!shift) return;
+    
+    setDragging({
+      shiftId,
+      edge,
+      startX: e.clientX,
+      originalStart: shift.startHour,
+      originalEnd: shift.endHour,
+    });
   };
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!draggingShift) return;
+    if (!dragging) return;
 
-    const shift = shifts.find(s => s.id === draggingShift.shiftId);
+    const shift = shifts.find(s => s.id === dragging.shiftId);
     if (!shift) return;
 
     const newHour = getHourFromClientX(e.clientX);
-    const duration = shift.endHour - shift.startHour;
+    const duration = dragging.originalEnd - dragging.originalStart;
 
-    if (draggingShift.edge === 'start') {
+    if (dragging.edge === 'start') {
       if (newHour < shift.endHour - 0.5) {
         updateShift(shift.id, { startHour: newHour });
       }
-    } else if (draggingShift.edge === 'end') {
+    } else if (dragging.edge === 'end') {
       if (newHour > shift.startHour + 0.5) {
         updateShift(shift.id, { endHour: newHour });
       }
-    } else if (draggingShift.edge === 'move') {
+    } else if (dragging.edge === 'move') {
       const newStart = Math.max(HOURS_START, Math.min(HOURS_END - duration, newHour - duration / 2));
       updateShift(shift.id, { 
         startHour: Math.round(newStart * 4) / 4,
         endHour: Math.round((newStart + duration) * 4) / 4,
       });
     }
-  }, [draggingShift, shifts, getHourFromClientX, updateShift]);
+  }, [dragging, shifts, getHourFromClientX, updateShift]);
 
   const handleMouseUp = useCallback(() => {
-    stopDragging();
-  }, [stopDragging]);
-
-  const handleShiftHover = (shiftId: string | null, event?: React.MouseEvent) => {
-    if (draggingShift) return;
-    setHoveredShift(shiftId);
-    if (shiftId && event) {
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (rect) {
-        setTooltipData({
-          shiftId,
-          x: event.clientX - rect.left,
-          y: event.clientY - rect.top,
-        });
-      }
-    } else {
-      setTooltipData(null);
-    }
-  };
+    setDragging(null);
+  }, []);
 
   const handleShiftClick = (shift: typeof shifts[0]) => {
-    if (!draggingShift) {
+    if (!dragging) {
       openModal('editShift', shift);
     }
   };
 
   const handleEmptyClick = (employeeId: string, e: React.MouseEvent) => {
+    if (hasApprovedTimeOff(employeeId, dateString)) return;
+    
     const hour = getHourFromClientX(e.clientX);
     openModal('addShift', {
       employeeId,
@@ -121,9 +116,9 @@ export function Timeline() {
     <div 
       ref={containerRef} 
       className="flex-1 flex flex-col bg-theme-timeline overflow-hidden relative transition-theme"
-      onMouseMove={draggingShift ? handleMouseMove : undefined}
-      onMouseUp={draggingShift ? handleMouseUp : undefined}
-      onMouseLeave={draggingShift ? handleMouseUp : undefined}
+      onMouseMove={dragging ? handleMouseMove : undefined}
+      onMouseUp={dragging ? handleMouseUp : undefined}
+      onMouseLeave={dragging ? handleMouseUp : undefined}
     >
       {/* Hour Headers */}
       <div className="h-10 border-b border-theme-primary flex shrink-0">
@@ -155,22 +150,26 @@ export function Timeline() {
           </div>
         ) : (
           filteredEmployees.map((employee) => {
-            const roleConfig = ROLES[employee.role];
+            const sectionConfig = SECTIONS[employee.section];
             const employeeShifts = shifts.filter(
               s => s.employeeId === employee.id && s.date === dateString
             );
+            const hasTimeOff = hasApprovedTimeOff(employee.id, dateString);
+            const timeOff = getTimeOffForDate(employee.id, dateString);
 
             return (
               <div
                 key={employee.id}
-                className="flex h-14 border-b border-theme-primary/50 hover:bg-theme-hover/50 transition-colors group"
+                className={`flex h-14 border-b border-theme-primary/50 transition-colors group ${
+                  hasTimeOff ? 'bg-emerald-500/5' : 'hover:bg-theme-hover/50'
+                }`}
               >
                 <div className="w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3">
                   <div
                     className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
                     style={{
-                      backgroundColor: roleConfig.bgColor,
-                      color: roleConfig.color,
+                      backgroundColor: sectionConfig.bgColor,
+                      color: sectionConfig.color,
                     }}
                   >
                     {employee.name.split(' ').map(n => n[0]).join('')}
@@ -180,7 +179,7 @@ export function Timeline() {
                       {employee.name}
                     </p>
                     <p className="text-xs text-theme-muted truncate">
-                      {roleConfig.label}
+                      {sectionConfig.label}
                     </p>
                   </div>
                 </div>
@@ -188,7 +187,7 @@ export function Timeline() {
                 <div 
                   ref={timelineRef}
                   className="flex-1 relative"
-                  onClick={(e) => employeeShifts.length === 0 && handleEmptyClick(employee.id, e)}
+                  onClick={(e) => !hasTimeOff && employeeShifts.length === 0 && handleEmptyClick(employee.id, e)}
                 >
                   {/* Grid lines */}
                   <div className="absolute inset-0 flex pointer-events-none">
@@ -207,11 +206,19 @@ export function Timeline() {
                     </div>
                   )}
 
+                  {/* Time Off Indicator */}
+                  {hasTimeOff && (
+                    <div className="absolute inset-2 bg-emerald-500/20 border-2 border-dashed border-emerald-500/50 rounded-lg flex items-center justify-center gap-2 z-5">
+                      <Palmtree className="w-4 h-4 text-emerald-500" />
+                      <span className="text-xs font-medium text-emerald-500">TIME OFF</span>
+                    </div>
+                  )}
+
                   {/* Shifts */}
-                  {employeeShifts.map((shift) => {
+                  {!hasTimeOff && employeeShifts.map((shift) => {
                     const position = getShiftPosition(shift.startHour, shift.endHour);
                     const isHovered = hoveredShiftId === shift.id;
-                    const isDragging = draggingShift?.shiftId === shift.id;
+                    const isDragging = dragging?.shiftId === shift.id;
 
                     return (
                       <div
@@ -222,22 +229,20 @@ export function Timeline() {
                         style={{
                           left: position.left,
                           width: position.width,
-                          backgroundColor: isHovered || isDragging ? roleConfig.color : roleConfig.bgColor,
+                          backgroundColor: isHovered || isDragging ? sectionConfig.color : sectionConfig.bgColor,
                           borderWidth: '2px',
-                          borderColor: roleConfig.color,
+                          borderColor: sectionConfig.color,
                           transform: isHovered && !isDragging ? 'scale(1.02)' : 'scale(1)',
                         }}
-                        onMouseEnter={(e) => handleShiftHover(shift.id, e)}
-                        onMouseLeave={() => handleShiftHover(null)}
+                        onMouseEnter={() => setHoveredShift(shift.id)}
+                        onMouseLeave={() => setHoveredShift(null)}
                         onClick={() => handleShiftClick(shift)}
                       >
-                        {/* Left resize handle */}
                         <div
                           className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/20 rounded-l-lg"
                           onMouseDown={(e) => handleMouseDown(e, shift.id, 'start')}
                         />
                         
-                        {/* Move handle (center) */}
                         <div
                           className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing"
                           onMouseDown={(e) => handleMouseDown(e, shift.id, 'move')}
@@ -247,14 +252,13 @@ export function Timeline() {
                               className={`text-xs font-medium truncate ${
                                 isHovered || isDragging ? 'text-white' : ''
                               }`}
-                              style={{ color: isHovered || isDragging ? 'white' : roleConfig.color }}
+                              style={{ color: isHovered || isDragging ? 'white' : sectionConfig.color }}
                             >
                               {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
                             </span>
                           </div>
                         </div>
                         
-                        {/* Right resize handle */}
                         <div
                           className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/20 rounded-r-lg"
                           onMouseDown={(e) => handleMouseDown(e, shift.id, 'end')}
@@ -264,7 +268,7 @@ export function Timeline() {
                   })}
 
                   {/* Empty state */}
-                  {employeeShifts.length === 0 && (
+                  {!hasTimeOff && employeeShifts.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
                       <span className="text-xs text-theme-muted">Click to add shift</span>
                     </div>
@@ -275,56 +279,6 @@ export function Timeline() {
           })
         )}
       </div>
-
-      {/* Tooltip */}
-      {tooltipData && !draggingShift && (
-        <ShiftTooltip shiftId={tooltipData.shiftId} x={tooltipData.x} y={tooltipData.y} />
-      )}
-    </div>
-  );
-}
-
-function ShiftTooltip({ shiftId, x, y }: { shiftId: string; x: number; y: number }) {
-  const { shifts, getEmployeeById } = useScheduleStore();
-  const shift = shifts.find(s => s.id === shiftId);
-  if (!shift) return null;
-
-  const employee = getEmployeeById(shift.employeeId);
-  if (!employee) return null;
-
-  const roleConfig = ROLES[employee.role];
-  const duration = formatShiftDuration(shift.startHour, shift.endHour);
-
-  return (
-    <div
-      className="absolute z-50 bg-theme-secondary rounded-xl shadow-xl border border-theme-primary p-3 pointer-events-none transition-theme"
-      style={{
-        left: Math.min(x + 10, window.innerWidth - 200),
-        top: y - 10,
-        transform: 'translateY(-100%)',
-      }}
-    >
-      <div className="flex items-center gap-2 mb-2">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold"
-          style={{ backgroundColor: roleConfig.bgColor, color: roleConfig.color }}
-        >
-          {employee.name.split(' ').map(n => n[0]).join('')}
-        </div>
-        <div>
-          <p className="text-sm font-medium text-theme-primary">{employee.name}</p>
-          <p className="text-xs text-theme-muted">{roleConfig.label}</p>
-        </div>
-      </div>
-      <div className="flex items-center gap-3 text-sm">
-        <span className="text-theme-primary font-medium">
-          {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
-        </span>
-        <span className="text-theme-muted">{duration}</span>
-      </div>
-      <p className="text-xs text-theme-tertiary mt-2">
-        Drag edges to resize • Drag center to move • Click to edit
-      </p>
     </div>
   );
 }

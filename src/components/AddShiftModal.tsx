@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { Modal } from './Modal';
-import { ROLES, Role } from '../types';
+import { SECTIONS, Section } from '../types';
 import { formatHour } from '../utils/timeUtils';
 
 export function AddShiftModal() {
@@ -15,7 +15,9 @@ export function AddShiftModal() {
     addShift, 
     updateShift,
     deleteShift,
-    selectedDate 
+    selectedDate,
+    showToast,
+    hasApprovedTimeOff,
   } = useScheduleStore();
   
   const isOpen = modalType === 'addShift' || modalType === 'editShift';
@@ -48,25 +50,42 @@ export function AddShiftModal() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!employeeId || !date || startHour >= endHour) return;
+    if (!employeeId || !date || startHour >= endHour) {
+      showToast('Please fill in all fields correctly', 'error');
+      return;
+    }
+
+    if (hasApprovedTimeOff(employeeId, date)) {
+      showToast('Employee has approved time off on this date', 'error');
+      return;
+    }
 
     if (isEditing && modalData?.id) {
-      updateShift(modalData.id, {
+      const result = updateShift(modalData.id, {
         employeeId,
         date,
         startHour,
         endHour,
         notes: notes || undefined,
       });
+      if (!result.success) {
+        showToast(result.error || 'Failed to update shift', 'error');
+        return;
+      }
+      showToast('Shift updated successfully', 'success');
     } else {
-      addShift({
+      const result = addShift({
         employeeId,
         date,
         startHour,
         endHour,
         notes: notes || undefined,
-        status: 'scheduled',
       });
+      if (!result.success) {
+        showToast(result.error || 'Failed to add shift', 'error');
+        return;
+      }
+      showToast('Shift added successfully', 'success');
     }
     
     closeModal();
@@ -75,19 +94,19 @@ export function AddShiftModal() {
   const handleDelete = () => {
     if (isEditing && modalData?.id) {
       deleteShift(modalData.id);
+      showToast('Shift deleted', 'success');
       closeModal();
     }
   };
 
-  // Group employees by role
-  const employeesByRole = employees.reduce((acc, emp) => {
-    if (!acc[emp.role]) acc[emp.role] = [];
-    acc[emp.role].push(emp);
+  const activeEmployees = employees.filter(e => e.isActive);
+  const employeesBySection = activeEmployees.reduce((acc, emp) => {
+    if (!acc[emp.section]) acc[emp.section] = [];
+    acc[emp.section].push(emp);
     return acc;
-  }, {} as Record<Role, typeof employees>);
+  }, {} as Record<Section, typeof employees>);
 
-  // Generate hour options
-  const hourOptions = Array.from({ length: 19 }, (_, i) => i + 6); // 6am to 12am
+  const hourOptions = Array.from({ length: 19 }, (_, i) => i + 6);
 
   return (
     <Modal 
@@ -97,11 +116,8 @@ export function AddShiftModal() {
       size="md"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Employee Select */}
         <div>
-          <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Employee
-          </label>
+          <label className="block text-sm font-medium text-theme-secondary mb-1.5">Employee</label>
           <select
             value={employeeId}
             onChange={(e) => setEmployeeId(e.target.value)}
@@ -109,23 +125,18 @@ export function AddShiftModal() {
             required
           >
             <option value="">Select employee...</option>
-            {(Object.keys(ROLES) as Role[]).map(role => (
-              <optgroup key={role} label={ROLES[role].label}>
-                {employeesByRole[role]?.map(emp => (
-                  <option key={emp.id} value={emp.id}>
-                    {emp.name}
-                  </option>
+            {(Object.keys(SECTIONS) as Section[]).map(section => (
+              <optgroup key={section} label={SECTIONS[section].label}>
+                {employeesBySection[section]?.map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.name}</option>
                 ))}
               </optgroup>
             ))}
           </select>
         </div>
 
-        {/* Date */}
         <div>
-          <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Date
-          </label>
+          <label className="block text-sm font-medium text-theme-secondary mb-1.5">Date</label>
           <input
             type="date"
             value={date}
@@ -135,53 +146,38 @@ export function AddShiftModal() {
           />
         </div>
 
-        {/* Time Range */}
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-              Start Time
-            </label>
+            <label className="block text-sm font-medium text-theme-secondary mb-1.5">Start Time</label>
             <select
               value={startHour}
               onChange={(e) => setStartHour(Number(e.target.value))}
               className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
             >
               {hourOptions.map(hour => (
-                <option key={hour} value={hour}>
-                  {formatHour(hour)}
-                </option>
+                <option key={hour} value={hour}>{formatHour(hour)}</option>
               ))}
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-              End Time
-            </label>
+            <label className="block text-sm font-medium text-theme-secondary mb-1.5">End Time</label>
             <select
               value={endHour}
               onChange={(e) => setEndHour(Number(e.target.value))}
               className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
             >
               {hourOptions.map(hour => (
-                <option key={hour} value={hour} disabled={hour <= startHour}>
-                  {formatHour(hour)}
-                </option>
+                <option key={hour} value={hour} disabled={hour <= startHour}>{formatHour(hour)}</option>
               ))}
               <option value={24}>12am (midnight)</option>
             </select>
           </div>
         </div>
 
-        {/* Duration display */}
-        <div className="text-sm text-theme-tertiary">
-          Duration: {endHour - startHour} hours
-        </div>
+        <div className="text-sm text-theme-tertiary">Duration: {endHour - startHour} hours</div>
 
-        {/* Notes */}
         <div>
-          <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Notes (optional)
-          </label>
+          <label className="block text-sm font-medium text-theme-secondary mb-1.5">Notes (optional)</label>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
@@ -191,7 +187,6 @@ export function AddShiftModal() {
           />
         </div>
 
-        {/* Actions */}
         <div className="flex gap-3 pt-2">
           {isEditing && (
             <button
@@ -212,7 +207,7 @@ export function AddShiftModal() {
           </button>
           <button
             type="submit"
-            className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-sm font-medium"
+            className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:scale-105 text-sm font-medium"
           >
             {isEditing ? 'Save Changes' : 'Add Shift'}
           </button>

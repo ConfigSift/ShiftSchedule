@@ -1,6 +1,7 @@
 'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
+import { useAuthStore } from '../store/authStore';
 import { useThemeStore } from '../store/themeStore';
 import { formatDateHeader, formatDateRange, getWeekDates, isSameDay } from '../utils/timeUtils';
 import { 
@@ -12,12 +13,17 @@ import {
   Sun,
   Moon,
   CalendarDays,
-  CalendarOff,
   Bell,
-  Clock,
+  MessageSquare,
+  User,
+  LogOut,
+  CalendarOff,
 } from 'lucide-react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
 export function Header() {
+  const router = useRouter();
   const { 
     selectedDate, 
     viewMode,
@@ -27,10 +33,15 @@ export function Header() {
     goToNext,
     openModal,
     getPendingTimeOffRequests,
-    isManager,
   } = useScheduleStore();
 
+  const { currentUser, isManager, logout } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
+
+  const handleLogout = () => {
+    logout();
+    router.push('/login');
+  };
 
   const isToday = isSameDay(selectedDate, new Date());
   const weekDates = getWeekDates(selectedDate);
@@ -44,33 +55,31 @@ export function Header() {
   };
 
   return (
-    <header className="h-16 bg-theme-secondary border-b border-theme-primary flex items-center justify-between px-6 shrink-0 transition-theme">
-      {/* Left: Logo & Brand */}
+    <header className="h-16 bg-theme-secondary border-b border-theme-primary flex items-center justify-between px-4 lg:px-6 shrink-0 transition-theme">
+      {/* Left: Logo */}
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
           <Calendar className="w-4 h-4 text-zinc-900" />
         </div>
-        <span className="font-semibold text-lg tracking-tight text-theme-primary">ShiftFlow</span>
+        <span className="font-semibold text-lg tracking-tight text-theme-primary hidden sm:block">ShiftFlow</span>
       </div>
 
       {/* Center: Date Navigation */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1 sm:gap-2">
         <button
           onClick={goToPrevious}
           className="p-2 rounded-lg hover:bg-theme-hover text-theme-tertiary hover:text-theme-primary transition-colors"
-          aria-label="Previous"
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
 
-        <div className="flex items-center gap-3 px-4 py-2 bg-theme-tertiary rounded-xl min-w-[200px] justify-center transition-theme">
-          <span className="text-theme-primary font-medium">{getDateDisplay()}</span>
+        <div className="flex items-center gap-3 px-3 sm:px-4 py-2 bg-theme-tertiary rounded-xl min-w-[140px] sm:min-w-[200px] justify-center">
+          <span className="text-theme-primary font-medium text-sm sm:text-base">{getDateDisplay()}</span>
         </div>
 
         <button
           onClick={goToNext}
           className="p-2 rounded-lg hover:bg-theme-hover text-theme-tertiary hover:text-theme-primary transition-colors"
-          aria-label="Next"
         >
           <ChevronRight className="w-5 h-5" />
         </button>
@@ -78,17 +87,17 @@ export function Header() {
         <button
           onClick={goToToday}
           disabled={isToday}
-          className={`ml-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+          className={`ml-1 sm:ml-2 px-2 sm:px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
             isToday 
               ? 'bg-theme-tertiary text-theme-muted cursor-not-allowed' 
-              : 'bg-accent-bg text-accent-primary hover:bg-amber-500/20'
+              : 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
           }`}
         >
           Today
         </button>
 
         {/* View Mode Toggle */}
-        <div className="ml-4 flex items-center bg-theme-tertiary rounded-lg p-1 transition-theme">
+        <div className="hidden md:flex ml-2 items-center bg-theme-tertiary rounded-lg p-1">
           <button
             onClick={() => setViewMode('day')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
@@ -115,37 +124,40 @@ export function Header() {
       </div>
 
       {/* Right: Actions */}
-      <div className="flex items-center gap-2">
-        {/* Time Off Request (for employees) */}
-        <button
-          onClick={() => openModal('timeOffRequest')}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
-          title="Request Time Off"
+      <div className="flex items-center gap-1 sm:gap-2">
+        {/* Chat Link */}
+        <Link
+          href="/chat"
+          className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
+          title="Team Chat"
         >
-          <Clock className="w-4 h-4" />
-        </button>
+          <MessageSquare className="w-5 h-5" />
+        </Link>
 
-        {/* Pending Requests Indicator (for managers) */}
-        {isManager && pendingRequests.length > 0 && (
+        {/* Manager Only: Notifications */}
+        {isManager && (
           <button
-            className="relative p-2 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
-            title={`${pendingRequests.length} pending time-off requests`}
+            onClick={() => openModal('timeOffReview')}
+            className="relative p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
+            title="Time Off Requests"
           >
             <Bell className="w-5 h-5" />
-            <span className="absolute -top-1 -right-1 w-5 h-5 bg-amber-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
-              {pendingRequests.length}
-            </span>
+            {pendingRequests.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-amber-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
+                {pendingRequests.length}
+              </span>
+            )}
           </button>
         )}
 
-        {/* Blocked Periods (managers only) */}
+        {/* Manager Only: Blocked Periods */}
         {isManager && (
           <button
             onClick={() => openModal('blockedPeriod')}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
-            title="Manage Blocked Periods"
+            className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
+            title="Blocked Periods"
           >
-            <CalendarOff className="w-4 h-4" />
+            <CalendarOff className="w-5 h-5" />
           </button>
         )}
 
@@ -153,26 +165,48 @@ export function Header() {
         <button
           onClick={toggleTheme}
           className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
-          aria-label="Toggle theme"
         >
           {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </button>
 
-        <div className="w-px h-6 bg-theme-primary mx-1" />
+        <div className="hidden sm:block w-px h-6 bg-theme-primary mx-1" />
 
-        <button 
-          onClick={() => openModal('addEmployee')}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
-        >
-          <UserPlus className="w-4 h-4" />
-          Add Staff
-        </button>
+        {/* Add Staff - Manager Only */}
+        {isManager && (
+          <button 
+            onClick={() => openModal('addEmployee')}
+            className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-400 transition-all hover:scale-105 hover:shadow-lg text-sm font-medium"
+          >
+            <UserPlus className="w-4 h-4" />
+            Add Staff
+          </button>
+        )}
+
+        {/* Add Shift */}
         <button 
           onClick={() => openModal('addShift')}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-sm font-medium"
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:scale-105 hover:shadow-lg text-sm font-medium"
         >
           <Plus className="w-4 h-4" />
-          Add Shift
+          <span className="hidden sm:inline">Add Shift</span>
+        </button>
+
+        {/* Profile */}
+        <Link
+          href="/profile"
+          className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
+          title="My Profile"
+        >
+          <User className="w-5 h-5" />
+        </Link>
+
+        {/* Logout */}
+        <button
+          onClick={handleLogout}
+          className="p-2 rounded-lg hover:bg-red-500/20 text-theme-secondary hover:text-red-400 transition-colors"
+          title="Logout"
+        >
+          <LogOut className="w-5 h-5" />
         </button>
       </div>
     </header>

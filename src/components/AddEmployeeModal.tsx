@@ -2,8 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
+import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
-import { ROLES, Role } from '../types';
+import { SECTIONS, Section, UserRole } from '../types';
+import { hashPin } from '../utils/timeUtils';
 
 export function AddEmployeeModal() {
   const { 
@@ -12,64 +14,88 @@ export function AddEmployeeModal() {
     closeModal, 
     addEmployee, 
     updateEmployee,
+    updateEmployeePin,
     deleteEmployee,
+    showToast,
   } = useScheduleStore();
+
+  const { isManager } = useAuthStore();
   
   const isOpen = modalType === 'addEmployee' || modalType === 'editEmployee';
   const isEditing = modalType === 'editEmployee';
   
   const [name, setName] = useState('');
+  const [section, setSection] = useState<Section>('front');
+  const [userRole, setUserRole] = useState<UserRole>('staff');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [role, setRole] = useState<Role>('front');
-  const [hourlyRate, setHourlyRate] = useState(15);
-  const [maxHoursPerWeek, setMaxHoursPerWeek] = useState(40);
+  const [notes, setNotes] = useState('');
   const [pin, setPin] = useState('');
+  const [isActive, setIsActive] = useState(true);
 
   useEffect(() => {
     if (isOpen) {
       if (isEditing && modalData) {
         setName(modalData.name);
-        setEmail(modalData.email);
-        setPhone(modalData.phone || '');
-        setRole(modalData.role);
-        setHourlyRate(modalData.hourlyRate);
-        setMaxHoursPerWeek(modalData.maxHoursPerWeek);
-        setPin(modalData.pin || '');
+        setSection(modalData.section);
+        setUserRole(modalData.userRole);
+        setEmail(modalData.profile?.email || '');
+        setPhone(modalData.profile?.phone || '');
+        setNotes(modalData.profile?.notes || '');
+        setPin('');
+        setIsActive(modalData.isActive);
       } else {
         setName('');
+        setSection('front');
+        setUserRole('staff');
         setEmail('');
         setPhone('');
-        setRole('front');
-        setHourlyRate(15);
-        setMaxHoursPerWeek(40);
+        setNotes('');
         setPin('');
+        setIsActive(true);
       }
     }
   }, [isOpen, isEditing, modalData]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!name || !email || !role) return;
+    if (!name || !section) {
+      showToast('Please fill in required fields', 'error');
+      return;
+    }
 
-    const employeeData = {
-      name,
-      email,
-      phone: phone || undefined,
-      role,
-      color: ROLES[role].color,
-      hourlyRate,
-      maxHoursPerWeek,
-      hireDate: new Date().toISOString().split('T')[0],
-      isActive: true,
-      pin: pin || undefined,
-    };
+    if (!isEditing && (!pin || pin.length !== 4)) {
+      showToast('PIN must be 4 digits', 'error');
+      return;
+    }
 
     if (isEditing && modalData?.id) {
-      updateEmployee(modalData.id, employeeData);
+      updateEmployee(modalData.id, {
+        name,
+        section,
+        userRole,
+        isActive,
+        profile: { email, phone, notes },
+      });
+      
+      // Update PIN if provided
+      if (pin && pin.length === 4) {
+        await updateEmployeePin(modalData.id, pin);
+      }
+      
+      showToast('Employee updated successfully', 'success');
     } else {
-      addEmployee(employeeData);
+      const pinHash = await hashPin(pin);
+      addEmployee({
+        name,
+        section,
+        userRole,
+        pinHash,
+        isActive: true,
+        profile: { email, phone, notes },
+      });
+      showToast('Employee added successfully', 'success');
     }
     
     closeModal();
@@ -78,9 +104,12 @@ export function AddEmployeeModal() {
   const handleDelete = () => {
     if (isEditing && modalData?.id) {
       deleteEmployee(modalData.id);
+      showToast('Employee deleted', 'success');
       closeModal();
     }
   };
+
+  if (!isManager) return null;
 
   return (
     <Modal 
@@ -90,10 +119,9 @@ export function AddEmployeeModal() {
       size="md"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Name */}
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Full Name
+            Full Name *
           </label>
           <input
             type="text"
@@ -105,7 +133,38 @@ export function AddEmployeeModal() {
           />
         </div>
 
-        {/* Email */}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-theme-secondary mb-1.5">
+              Section *
+            </label>
+            <select
+              value={section}
+              onChange={(e) => setSection(e.target.value as Section)}
+              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+            >
+              {(Object.keys(SECTIONS) as Section[]).map(s => (
+                <option key={s} value={s}>
+                  {SECTIONS[s].label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-theme-secondary mb-1.5">
+              Role *
+            </label>
+            <select
+              value={userRole}
+              onChange={(e) => setUserRole(e.target.value as UserRole)}
+              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+            >
+              <option value="staff">Staff</option>
+              <option value="manager">Manager</option>
+            </select>
+          </div>
+        </div>
+
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">
             Email
@@ -116,14 +175,12 @@ export function AddEmployeeModal() {
             onChange={(e) => setEmail(e.target.value)}
             className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
             placeholder="john@restaurant.com"
-            required
           />
         </div>
 
-        {/* Phone */}
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Phone (optional)
+            Phone
           </label>
           <input
             type="tel"
@@ -134,69 +191,53 @@ export function AddEmployeeModal() {
           />
         </div>
 
-        {/* Role */}
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Role
-          </label>
-          <select
-            value={role}
-            onChange={(e) => setRole(e.target.value as Role)}
-            className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-          >
-            {(Object.keys(ROLES) as Role[]).map(r => (
-              <option key={r} value={r}>
-                {ROLES[r].label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Hourly Rate & Max Hours */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-              Hourly Rate ($)
-            </label>
-            <input
-              type="number"
-              value={hourlyRate}
-              onChange={(e) => setHourlyRate(Number(e.target.value))}
-              min={1}
-              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-              Max Hours/Week
-            </label>
-            <input
-              type="number"
-              value={maxHoursPerWeek}
-              onChange={(e) => setMaxHoursPerWeek(Number(e.target.value))}
-              min={1}
-              max={60}
-              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-            />
-          </div>
-        </div>
-
-        {/* PIN */}
-        <div>
-          <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Login PIN (4 digits)
+            {isEditing ? 'New PIN (leave blank to keep current)' : 'PIN *'} (4 digits)
           </label>
           <input
-            type="text"
+            type="password"
             value={pin}
             onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
             className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-            placeholder="1234"
+            placeholder="••••"
             maxLength={4}
+            required={!isEditing}
           />
         </div>
 
-        {/* Actions */}
+        <div>
+          <label className="block text-sm font-medium text-theme-secondary mb-1.5">
+            Notes
+          </label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50 resize-none"
+            placeholder="Any additional notes..."
+          />
+        </div>
+
+        {isEditing && (
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setIsActive(!isActive)}
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                isActive ? 'bg-green-500' : 'bg-theme-tertiary'
+              }`}
+            >
+              <span
+                className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                  isActive ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+            <span className="text-sm text-theme-secondary">Active Employee</span>
+          </div>
+        )}
+
         <div className="flex gap-3 pt-2">
           {isEditing && (
             <button
@@ -217,7 +258,7 @@ export function AddEmployeeModal() {
           </button>
           <button
             type="submit"
-            className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-sm font-medium"
+            className="px-4 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-400 transition-all hover:scale-105 text-sm font-medium"
           >
             {isEditing ? 'Save Changes' : 'Add Employee'}
           </button>

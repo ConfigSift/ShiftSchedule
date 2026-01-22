@@ -1,11 +1,32 @@
 'use client';
 
 import { create } from 'zustand';
-import { Employee, Shift, Role, TimeOffRequest, BlockedPeriod, TimeOffStatus } from '../types';
-import { mockEmployees, mockShifts, mockTimeOffRequests, mockBlockedPeriods } from '../data/mockData';
+import { 
+  Employee, 
+  Shift, 
+  Section, 
+  TimeOffRequest, 
+  BlockedPeriod,
+  DropShiftRequest,
+  ChatMessage,
+  TimeOffStatus,
+  DropRequestStatus,
+} from '../types';
+import { STORAGE_KEYS, saveToStorage, loadFromStorage } from '../utils/storage';
+import { generateId, datesOverlap, shiftsOverlap, hashPin } from '../utils/timeUtils';
 
 type ViewMode = 'day' | 'week';
-type ModalType = 'addShift' | 'editShift' | 'addEmployee' | 'editEmployee' | 'employeeProfile' | 'timeOffRequest' | 'blockedPeriod' | null;
+type ModalType = 
+  | 'addShift' 
+  | 'editShift' 
+  | 'addEmployee' 
+  | 'editEmployee' 
+  | 'employeeProfile'
+  | 'timeOffRequest'
+  | 'blockedPeriod'
+  | 'timeOffReview'
+  | 'dropShift'
+  | null;
 
 interface ScheduleState {
   // Data
@@ -13,67 +34,75 @@ interface ScheduleState {
   shifts: Shift[];
   timeOffRequests: TimeOffRequest[];
   blockedPeriods: BlockedPeriod[];
-  
-  // Current user (for employee view)
-  currentUser: Employee | null;
-  isManager: boolean;
+  dropRequests: DropShiftRequest[];
+  chatMessages: ChatMessage[];
   
   // UI State
   selectedDate: Date;
   viewMode: ViewMode;
-  selectedRoles: Role[];
+  selectedSections: Section[];
   selectedEmployeeIds: string[];
   hoveredShiftId: string | null;
-  editingShiftId: string | null;
   
   // Modal State
   modalType: ModalType;
   modalData: any;
   
-  // Drag State
-  draggingShift: { shiftId: string; edge: 'start' | 'end' | 'move' } | null;
+  // Toast
+  toast: { message: string; type: 'success' | 'error' } | null;
+  
+  // Initialization
+  isHydrated: boolean;
   
   // Actions
+  hydrate: () => void;
   setSelectedDate: (date: Date) => void;
   setViewMode: (mode: ViewMode) => void;
-  toggleRole: (role: Role) => void;
+  toggleSection: (section: Section) => void;
+  setSectionSelected: (section: Section, selected: boolean) => void;
   toggleEmployee: (employeeId: string) => void;
   selectAllEmployees: () => void;
   deselectAllEmployees: () => void;
   setHoveredShift: (shiftId: string | null) => void;
-  setEditingShift: (shiftId: string | null) => void;
   
-  // Modal Actions
+  // Modal
   openModal: (type: ModalType, data?: any) => void;
   closeModal: () => void;
   
-  // Drag Actions
-  startDragging: (shiftId: string, edge: 'start' | 'end' | 'move') => void;
-  stopDragging: () => void;
-  
-  // Shift CRUD
-  addShift: (shift: Omit<Shift, 'id'>) => void;
-  updateShift: (shiftId: string, updates: Partial<Shift>) => void;
-  deleteShift: (shiftId: string) => void;
+  // Toast
+  showToast: (message: string, type: 'success' | 'error') => void;
+  clearToast: () => void;
   
   // Employee CRUD
-  addEmployee: (employee: Omit<Employee, 'id'>) => void;
-  updateEmployee: (employeeId: string, updates: Partial<Employee>) => void;
-  deleteEmployee: (employeeId: string) => void;
+  addEmployee: (employee: Omit<Employee, 'id' | 'createdAt'>) => void;
+  updateEmployee: (id: string, updates: Partial<Employee>) => void;
+  updateEmployeePin: (id: string, newPin: string) => Promise<void>;
+  deleteEmployee: (id: string) => void;
+  getEmployeeById: (id: string) => Employee | undefined;
   
-  // Time Off Requests
+  // Shift CRUD
+  addShift: (shift: Omit<Shift, 'id'>) => { success: boolean; error?: string };
+  updateShift: (id: string, updates: Partial<Shift>) => { success: boolean; error?: string };
+  deleteShift: (id: string) => void;
+  
+  // Time Off
   addTimeOffRequest: (request: Omit<TimeOffRequest, 'id' | 'createdAt' | 'status'>) => void;
-  updateTimeOffRequest: (requestId: string, status: TimeOffStatus, reviewNotes?: string) => void;
-  deleteTimeOffRequest: (requestId: string) => void;
+  reviewTimeOffRequest: (id: string, status: TimeOffStatus, reviewerId: string) => void;
+  getTimeOffForDate: (employeeId: string, date: string) => TimeOffRequest | undefined;
+  hasApprovedTimeOff: (employeeId: string, date: string) => boolean;
   
-  // Blocked Periods
+  // Blocked Periods (Manager only)
   addBlockedPeriod: (period: Omit<BlockedPeriod, 'id' | 'createdAt'>) => void;
-  deleteBlockedPeriod: (periodId: string) => void;
-  isDateBlocked: (date: string, hour?: number) => boolean;
+  deleteBlockedPeriod: (id: string) => void;
+  isDateBlocked: (date: string) => boolean;
   
-  // Auth
-  login: (pin: string) => boolean;
-  logout: () => void;
+  // Drop Shift Requests
+  createDropRequest: (shiftId: string, employeeId: string) => void;
+  acceptDropRequest: (requestId: string, acceptingEmployeeId: string) => { success: boolean; error?: string };
+  cancelDropRequest: (requestId: string) => void;
+  
+  // Chat
+  sendChatMessage: (senderId: string, text: string, type?: ChatMessage['type'], dropRequestId?: string) => void;
   
   // Navigation
   goToToday: () => void;
@@ -82,60 +111,108 @@ interface ScheduleState {
   
   // Computed
   getFilteredEmployees: () => Employee[];
-  getShiftsForDate: (date: string) => Shift[];
-  getShiftsForEmployee: (employeeId: string, date: string) => Shift[];
-  getTotalHoursForDate: (date: string) => number;
-  getEmployeeById: (id: string) => Employee | undefined;
-  getTimeOffRequestsForEmployee: (employeeId: string) => TimeOffRequest[];
   getPendingTimeOffRequests: () => TimeOffRequest[];
+  getOpenDropRequests: () => DropShiftRequest[];
 }
+
+const initialEmployees: Employee[] = [];
+const initialShifts: Shift[] = [];
 
 export const useScheduleStore = create<ScheduleState>((set, get) => ({
   // Initial data
-  employees: mockEmployees,
-  shifts: mockShifts,
-  timeOffRequests: mockTimeOffRequests,
-  blockedPeriods: mockBlockedPeriods,
+  employees: initialEmployees,
+  shifts: initialShifts,
+  timeOffRequests: [],
+  blockedPeriods: [],
+  dropRequests: [],
+  chatMessages: [],
   
-  // Current user
-  currentUser: mockEmployees.find(e => e.role === 'management') || null, // Default to manager for demo
-  isManager: true,
-  
-  // Initial UI state
+  // UI State
   selectedDate: new Date(),
   viewMode: 'day',
-  selectedRoles: ['kitchen', 'front', 'bar', 'management'],
-  selectedEmployeeIds: mockEmployees.map(e => e.id),
+  selectedSections: ['kitchen', 'front', 'bar', 'management'],
+  selectedEmployeeIds: [],
   hoveredShiftId: null,
-  editingShiftId: null,
   
-  // Modal state
+  // Modal
   modalType: null,
   modalData: null,
   
-  // Drag state
-  draggingShift: null,
+  // Toast
+  toast: null,
   
-  // Actions
+  // Hydration
+  isHydrated: false,
+  
+  hydrate: () => {
+    const employees = loadFromStorage<Employee[]>(STORAGE_KEYS.EMPLOYEES, []);
+    const shifts = loadFromStorage<Shift[]>(STORAGE_KEYS.SHIFTS, []);
+    const timeOffRequests = loadFromStorage<TimeOffRequest[]>(STORAGE_KEYS.TIME_OFF_REQUESTS, []);
+    const blockedPeriods = loadFromStorage<BlockedPeriod[]>(STORAGE_KEYS.BLOCKED_PERIODS, []);
+    const dropRequests = loadFromStorage<DropShiftRequest[]>(STORAGE_KEYS.DROP_REQUESTS, []);
+    const chatMessages = loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT_MESSAGES, []);
+    
+    set({
+      employees,
+      shifts,
+      timeOffRequests,
+      blockedPeriods,
+      dropRequests,
+      chatMessages,
+      selectedEmployeeIds: employees.map(e => e.id),
+      isHydrated: true,
+    });
+  },
+  
+  // UI Actions
   setSelectedDate: (date) => set({ selectedDate: date }),
-  
   setViewMode: (mode) => set({ viewMode: mode }),
   
-  toggleRole: (role) => set((state) => {
-    const isSelected = state.selectedRoles.includes(role);
-    const newRoles = isSelected
-      ? state.selectedRoles.filter(r => r !== role)
-      : [...state.selectedRoles, role];
+  toggleSection: (section) => set((state) => {
+    const isSelected = state.selectedSections.includes(section);
+    const newSections = isSelected
+      ? state.selectedSections.filter(s => s !== section)
+      : [...state.selectedSections, section];
     
-    const employeesInRoles = state.employees
-      .filter(e => newRoles.includes(e.role))
-      .map(e => e.id);
+    // Get all employees in the toggled section
+    const sectionEmployees = state.employees.filter(e => e.section === section);
+    const sectionEmployeeIds = sectionEmployees.map(e => e.id);
+    
+    let newSelectedIds: string[];
+    if (isSelected) {
+      // Removing section: remove all employees from that section
+      newSelectedIds = state.selectedEmployeeIds.filter(id => !sectionEmployeeIds.includes(id));
+    } else {
+      // Adding section: add all employees from that section
+      newSelectedIds = [...new Set([...state.selectedEmployeeIds, ...sectionEmployeeIds])];
+    }
     
     return {
-      selectedRoles: newRoles,
-      selectedEmployeeIds: state.selectedEmployeeIds.filter(id => 
-        employeesInRoles.includes(id)
-      ),
+      selectedSections: newSections,
+      selectedEmployeeIds: newSelectedIds,
+    };
+  }),
+  
+  setSectionSelected: (section, selected) => set((state) => {
+    const sectionEmployees = state.employees.filter(e => e.section === section);
+    const sectionEmployeeIds = sectionEmployees.map(e => e.id);
+    
+    let newSelectedIds: string[];
+    let newSections: Section[];
+    
+    if (selected) {
+      newSelectedIds = [...new Set([...state.selectedEmployeeIds, ...sectionEmployeeIds])];
+      newSections = state.selectedSections.includes(section) 
+        ? state.selectedSections 
+        : [...state.selectedSections, section];
+    } else {
+      newSelectedIds = state.selectedEmployeeIds.filter(id => !sectionEmployeeIds.includes(id));
+      newSections = state.selectedSections.filter(s => s !== section);
+    }
+    
+    return {
+      selectedSections: newSections,
+      selectedEmployeeIds: newSelectedIds,
     };
   }),
   
@@ -147,7 +224,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   
   selectAllEmployees: () => set((state) => ({
     selectedEmployeeIds: state.employees
-      .filter(e => state.selectedRoles.includes(e.role))
+      .filter(e => state.selectedSections.includes(e.section) && e.isActive)
       .map(e => e.id),
   })),
   
@@ -155,178 +232,356 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   
   setHoveredShift: (shiftId) => set({ hoveredShiftId: shiftId }),
   
-  setEditingShift: (shiftId) => set({ editingShiftId: shiftId }),
-  
-  // Modal Actions
+  // Modal
   openModal: (type, data = null) => set({ modalType: type, modalData: data }),
   closeModal: () => set({ modalType: null, modalData: null }),
   
-  // Drag Actions
-  startDragging: (shiftId, edge) => set({ draggingShift: { shiftId, edge } }),
-  stopDragging: () => set({ draggingShift: null }),
-  
-  // Shift CRUD
-  addShift: (shift) => set((state) => ({
-    shifts: [...state.shifts, { ...shift, id: `shift-${Date.now()}` }],
-  })),
-  
-  updateShift: (shiftId, updates) => set((state) => ({
-    shifts: state.shifts.map(s => 
-      s.id === shiftId ? { ...s, ...updates } : s
-    ),
-  })),
-  
-  deleteShift: (shiftId) => set((state) => ({
-    shifts: state.shifts.filter(s => s.id !== shiftId),
-  })),
+  // Toast
+  showToast: (message, type) => {
+    set({ toast: { message, type } });
+    setTimeout(() => set({ toast: null }), 3000);
+  },
+  clearToast: () => set({ toast: null }),
   
   // Employee CRUD
-  addEmployee: (employee) => set((state) => {
-    const newEmployee = { ...employee, id: `emp-${Date.now()}` } as Employee;
-    return {
-      employees: [...state.employees, newEmployee],
-      selectedEmployeeIds: [...state.selectedEmployeeIds, newEmployee.id],
+  addEmployee: (employee) => {
+    const newEmployee: Employee = {
+      ...employee,
+      id: generateId('emp'),
+      createdAt: new Date().toISOString(),
     };
-  }),
-  
-  updateEmployee: (employeeId, updates) => set((state) => ({
-    employees: state.employees.map(e => 
-      e.id === employeeId ? { ...e, ...updates } : e
-    ),
-  })),
-  
-  deleteEmployee: (employeeId) => set((state) => ({
-    employees: state.employees.filter(e => e.id !== employeeId),
-    shifts: state.shifts.filter(s => s.employeeId !== employeeId),
-    selectedEmployeeIds: state.selectedEmployeeIds.filter(id => id !== employeeId),
-  })),
-  
-  // Time Off Requests
-  addTimeOffRequest: (request) => set((state) => ({
-    timeOffRequests: [...state.timeOffRequests, {
-      ...request,
-      id: `tor-${Date.now()}`,
-      createdAt: new Date().toISOString().split('T')[0],
-      status: 'pending' as TimeOffStatus,
-    }],
-  })),
-  
-  updateTimeOffRequest: (requestId, status, reviewNotes) => set((state) => ({
-    timeOffRequests: state.timeOffRequests.map(r =>
-      r.id === requestId ? {
-        ...r,
-        status,
-        reviewedBy: state.currentUser?.id,
-        reviewedAt: new Date().toISOString().split('T')[0],
-        reviewNotes,
-      } : r
-    ),
-  })),
-  
-  deleteTimeOffRequest: (requestId) => set((state) => ({
-    timeOffRequests: state.timeOffRequests.filter(r => r.id !== requestId),
-  })),
-  
-  // Blocked Periods
-  addBlockedPeriod: (period) => set((state) => ({
-    blockedPeriods: [...state.blockedPeriods, {
-      ...period,
-      id: `bp-${Date.now()}`,
-      createdAt: new Date().toISOString().split('T')[0],
-    }],
-  })),
-  
-  deleteBlockedPeriod: (periodId) => set((state) => ({
-    blockedPeriods: state.blockedPeriods.filter(p => p.id !== periodId),
-  })),
-  
-  isDateBlocked: (date, hour) => {
-    const state = get();
-    return state.blockedPeriods.some(period => {
-      if (date < period.startDate || date > period.endDate) return false;
-      if (hour !== undefined && period.startHour !== undefined && period.endHour !== undefined) {
-        return hour >= period.startHour && hour < period.endHour;
-      }
-      return true;
+    
+    set((state) => {
+      const newEmployees = [...state.employees, newEmployee];
+      saveToStorage(STORAGE_KEYS.EMPLOYEES, newEmployees);
+      return {
+        employees: newEmployees,
+        selectedEmployeeIds: [...state.selectedEmployeeIds, newEmployee.id],
+      };
     });
   },
   
-  // Auth
-  login: (pin) => {
-    const state = get();
-    const employee = state.employees.find(e => e.pin === pin);
-    if (employee) {
-      set({
-        currentUser: employee,
-        isManager: employee.role === 'management',
-      });
-      return true;
-    }
-    return false;
+  updateEmployee: (id, updates) => set((state) => {
+    const newEmployees = state.employees.map(e => 
+      e.id === id ? { ...e, ...updates } : e
+    );
+    saveToStorage(STORAGE_KEYS.EMPLOYEES, newEmployees);
+    return { employees: newEmployees };
+  }),
+  
+  updateEmployeePin: async (id, newPin) => {
+    const pinHash = await hashPin(newPin);
+    set((state) => {
+      const newEmployees = state.employees.map(e => 
+        e.id === id ? { ...e, pinHash } : e
+      );
+      saveToStorage(STORAGE_KEYS.EMPLOYEES, newEmployees);
+      return { employees: newEmployees };
+    });
   },
   
-  logout: () => set({ currentUser: null, isManager: false }),
+  deleteEmployee: (id) => set((state) => {
+    const newEmployees = state.employees.filter(e => e.id !== id);
+    const newShifts = state.shifts.filter(s => s.employeeId !== id);
+    saveToStorage(STORAGE_KEYS.EMPLOYEES, newEmployees);
+    saveToStorage(STORAGE_KEYS.SHIFTS, newShifts);
+    return {
+      employees: newEmployees,
+      shifts: newShifts,
+      selectedEmployeeIds: state.selectedEmployeeIds.filter(eid => eid !== id),
+    };
+  }),
+  
+  getEmployeeById: (id) => get().employees.find(e => e.id === id),
+  
+  // Shift CRUD
+  addShift: (shift) => {
+    const state = get();
+    
+    // Check if employee has approved time off
+    if (state.hasApprovedTimeOff(shift.employeeId, shift.date)) {
+      return { success: false, error: 'Employee has approved time off on this date' };
+    }
+    
+    // Check for overlapping shifts
+    const existingShifts = state.shifts.filter(
+      s => s.employeeId === shift.employeeId && s.date === shift.date
+    );
+    
+    for (const existing of existingShifts) {
+      if (shiftsOverlap(shift.startHour, shift.endHour, existing.startHour, existing.endHour)) {
+        return { success: false, error: 'Shift overlaps with existing shift' };
+      }
+    }
+    
+    const newShift: Shift = {
+      ...shift,
+      id: generateId('shift'),
+    };
+    
+    const newShifts = [...state.shifts, newShift];
+    saveToStorage(STORAGE_KEYS.SHIFTS, newShifts);
+    set({ shifts: newShifts });
+    
+    return { success: true };
+  },
+  
+  updateShift: (id, updates) => {
+    const state = get();
+    const shift = state.shifts.find(s => s.id === id);
+    if (!shift) return { success: false, error: 'Shift not found' };
+    
+    const updatedShift = { ...shift, ...updates };
+    
+    // Check time off if date or employee changed
+    if (state.hasApprovedTimeOff(updatedShift.employeeId, updatedShift.date)) {
+      return { success: false, error: 'Employee has approved time off on this date' };
+    }
+    
+    // Check for overlapping shifts (excluding current shift)
+    const existingShifts = state.shifts.filter(
+      s => s.id !== id && s.employeeId === updatedShift.employeeId && s.date === updatedShift.date
+    );
+    
+    for (const existing of existingShifts) {
+      if (shiftsOverlap(updatedShift.startHour, updatedShift.endHour, existing.startHour, existing.endHour)) {
+        return { success: false, error: 'Shift overlaps with existing shift' };
+      }
+    }
+    
+    const newShifts = state.shifts.map(s => s.id === id ? updatedShift : s);
+    saveToStorage(STORAGE_KEYS.SHIFTS, newShifts);
+    set({ shifts: newShifts });
+    
+    return { success: true };
+  },
+  
+  deleteShift: (id) => set((state) => {
+    const newShifts = state.shifts.filter(s => s.id !== id);
+    saveToStorage(STORAGE_KEYS.SHIFTS, newShifts);
+    return { shifts: newShifts };
+  }),
+  
+  // Time Off
+  addTimeOffRequest: (request) => set((state) => {
+    const newRequest: TimeOffRequest = {
+      ...request,
+      id: generateId('tor'),
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    };
+    const newRequests = [...state.timeOffRequests, newRequest];
+    saveToStorage(STORAGE_KEYS.TIME_OFF_REQUESTS, newRequests);
+    return { timeOffRequests: newRequests };
+  }),
+  
+  reviewTimeOffRequest: (id, status, reviewerId) => set((state) => {
+    const newRequests = state.timeOffRequests.map(r =>
+      r.id === id ? { 
+        ...r, 
+        status, 
+        reviewedBy: reviewerId,
+        reviewedAt: new Date().toISOString(),
+      } : r
+    );
+    saveToStorage(STORAGE_KEYS.TIME_OFF_REQUESTS, newRequests);
+    return { timeOffRequests: newRequests };
+  }),
+  
+  getTimeOffForDate: (employeeId, date) => {
+    return get().timeOffRequests.find(r =>
+      r.employeeId === employeeId &&
+      r.status === 'approved' &&
+      date >= r.startDate &&
+      date <= r.endDate
+    );
+  },
+  
+  hasApprovedTimeOff: (employeeId, date) => {
+    return get().timeOffRequests.some(r =>
+      r.employeeId === employeeId &&
+      r.status === 'approved' &&
+      date >= r.startDate &&
+      date <= r.endDate
+    );
+  },
+  
+  // Blocked Periods
+  addBlockedPeriod: (period) => set((state) => {
+    const newPeriod: BlockedPeriod = {
+      ...period,
+      id: generateId('bp'),
+      createdAt: new Date().toISOString(),
+    };
+    const newPeriods = [...state.blockedPeriods, newPeriod];
+    saveToStorage(STORAGE_KEYS.BLOCKED_PERIODS, newPeriods);
+    return { blockedPeriods: newPeriods };
+  }),
+  
+  deleteBlockedPeriod: (id) => set((state) => {
+    const newPeriods = state.blockedPeriods.filter(p => p.id !== id);
+    saveToStorage(STORAGE_KEYS.BLOCKED_PERIODS, newPeriods);
+    return { blockedPeriods: newPeriods };
+  }),
+  
+  isDateBlocked: (date) => {
+    return get().blockedPeriods.some(p =>
+      date >= p.startDate && date <= p.endDate
+    );
+  },
+  
+  // Drop Shift Requests
+  createDropRequest: (shiftId, employeeId) => {
+    const state = get();
+    const shift = state.shifts.find(s => s.id === shiftId);
+    if (!shift) return;
+    
+    const newRequest: DropShiftRequest = {
+      id: generateId('drop'),
+      shiftId,
+      fromEmployeeId: employeeId,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    };
+    
+    const newRequests = [...state.dropRequests, newRequest];
+    saveToStorage(STORAGE_KEYS.DROP_REQUESTS, newRequests);
+    
+    // Also post to chat
+    const employee = state.getEmployeeById(employeeId);
+    const chatMessage: ChatMessage = {
+      id: generateId('msg'),
+      senderId: employeeId,
+      createdAt: new Date().toISOString(),
+      text: `${employee?.name || 'Someone'} is looking to drop their shift on ${shift.date} (${shift.startHour}:00 - ${shift.endHour}:00)`,
+      type: 'drop_request',
+      dropRequestId: newRequest.id,
+    };
+    
+    const newMessages = [...state.chatMessages, chatMessage];
+    saveToStorage(STORAGE_KEYS.CHAT_MESSAGES, newMessages);
+    
+    set({ dropRequests: newRequests, chatMessages: newMessages });
+  },
+  
+  acceptDropRequest: (requestId, acceptingEmployeeId) => {
+    const state = get();
+    const request = state.dropRequests.find(r => r.id === requestId);
+    if (!request || request.status !== 'open') {
+      return { success: false, error: 'Request no longer available' };
+    }
+    
+    const shift = state.shifts.find(s => s.id === request.shiftId);
+    if (!shift) {
+      return { success: false, error: 'Shift not found' };
+    }
+    
+    // Check if accepting employee has approved time off
+    if (state.hasApprovedTimeOff(acceptingEmployeeId, shift.date)) {
+      return { success: false, error: 'You have approved time off on this date' };
+    }
+    
+    // Check for overlapping shifts
+    const existingShifts = state.shifts.filter(
+      s => s.employeeId === acceptingEmployeeId && s.date === shift.date && s.id !== shift.id
+    );
+    
+    for (const existing of existingShifts) {
+      if (shiftsOverlap(shift.startHour, shift.endHour, existing.startHour, existing.endHour)) {
+        return { success: false, error: 'You have a conflicting shift at this time' };
+      }
+    }
+    
+    // Update the shift to the new employee
+    const newShifts = state.shifts.map(s =>
+      s.id === shift.id ? { ...s, employeeId: acceptingEmployeeId } : s
+    );
+    
+    // Update the drop request
+    const newRequests = state.dropRequests.map(r =>
+      r.id === requestId ? {
+        ...r,
+        status: 'accepted' as DropRequestStatus,
+        acceptedByEmployeeId: acceptingEmployeeId,
+        acceptedAt: new Date().toISOString(),
+      } : r
+    );
+    
+    saveToStorage(STORAGE_KEYS.SHIFTS, newShifts);
+    saveToStorage(STORAGE_KEYS.DROP_REQUESTS, newRequests);
+    
+    // Post confirmation to chat
+    const acceptor = state.getEmployeeById(acceptingEmployeeId);
+    const original = state.getEmployeeById(request.fromEmployeeId);
+    const chatMessage: ChatMessage = {
+      id: generateId('msg'),
+      senderId: 'system',
+      createdAt: new Date().toISOString(),
+      text: `✓ ${acceptor?.name} accepted ${original?.name}'s shift on ${shift.date}`,
+      type: 'system',
+    };
+    
+    const newMessages = [...state.chatMessages, chatMessage];
+    saveToStorage(STORAGE_KEYS.CHAT_MESSAGES, newMessages);
+    
+    set({ shifts: newShifts, dropRequests: newRequests, chatMessages: newMessages });
+    
+    return { success: true };
+  },
+  
+  cancelDropRequest: (requestId) => set((state) => {
+    const newRequests = state.dropRequests.map(r =>
+      r.id === requestId ? { ...r, status: 'cancelled' as DropRequestStatus } : r
+    );
+    saveToStorage(STORAGE_KEYS.DROP_REQUESTS, newRequests);
+    return { dropRequests: newRequests };
+  }),
+  
+  // Chat
+  sendChatMessage: (senderId, text, type = 'message', dropRequestId) => set((state) => {
+    const newMessage: ChatMessage = {
+      id: generateId('msg'),
+      senderId,
+      createdAt: new Date().toISOString(),
+      text,
+      type,
+      dropRequestId,
+    };
+    const newMessages = [...state.chatMessages, newMessage];
+    saveToStorage(STORAGE_KEYS.CHAT_MESSAGES, newMessages);
+    return { chatMessages: newMessages };
+  }),
   
   // Navigation
   goToToday: () => set({ selectedDate: new Date() }),
   
   goToPrevious: () => set((state) => {
     const newDate = new Date(state.selectedDate);
-    if (state.viewMode === 'day') {
-      newDate.setDate(newDate.getDate() - 1);
-    } else {
-      newDate.setDate(newDate.getDate() - 7);
-    }
+    newDate.setDate(newDate.getDate() - (state.viewMode === 'day' ? 1 : 7));
     return { selectedDate: newDate };
   }),
   
   goToNext: () => set((state) => {
     const newDate = new Date(state.selectedDate);
-    if (state.viewMode === 'day') {
-      newDate.setDate(newDate.getDate() + 1);
-    } else {
-      newDate.setDate(newDate.getDate() + 7);
-    }
+    newDate.setDate(newDate.getDate() + (state.viewMode === 'day' ? 1 : 7));
     return { selectedDate: newDate };
   }),
   
   // Computed
   getFilteredEmployees: () => {
     const state = get();
-    return state.employees.filter(
-      e => state.selectedRoles.includes(e.role) && 
-           state.selectedEmployeeIds.includes(e.id)
+    return state.employees.filter(e =>
+      e.isActive &&
+      state.selectedSections.includes(e.section) &&
+      state.selectedEmployeeIds.includes(e.id)
     );
-  },
-  
-  getShiftsForDate: (date) => {
-    const state = get();
-    return state.shifts.filter(s => s.date === date);
-  },
-  
-  getShiftsForEmployee: (employeeId, date) => {
-    const state = get();
-    return state.shifts.filter(
-      s => s.employeeId === employeeId && s.date === date
-    );
-  },
-  
-  getTotalHoursForDate: (date) => {
-    const state = get();
-    return state.shifts
-      .filter(s => s.date === date)
-      .reduce((total, shift) => total + (shift.endHour - shift.startHour), 0);
-  },
-  
-  getEmployeeById: (id) => {
-    return get().employees.find(e => e.id === id);
-  },
-  
-  getTimeOffRequestsForEmployee: (employeeId) => {
-    return get().timeOffRequests.filter(r => r.employeeId === employeeId);
   },
   
   getPendingTimeOffRequests: () => {
     return get().timeOffRequests.filter(r => r.status === 'pending');
+  },
+  
+  getOpenDropRequests: () => {
+    return get().dropRequests.filter(r => r.status === 'open');
   },
 }));

@@ -6,26 +6,43 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "predb:migrate": "node prisma/precheck.js",
+    "db:migrate": "node prisma/migrate.js",
+    "predb:seed": "node prisma/precheck.js",
+    "db:seed": "prisma db seed",
+    "predb:reset": "node prisma/precheck.js",
+    "db:generate": "prisma generate",
+    "db:check": "node prisma/check.js",
+    "db:reset": "prisma migrate reset --force --skip-generate --skip-seed && npm run db:seed"
   },
   "dependencies": {
     "@supabase/auth-helpers-nextjs": "^0.15.0",
     "@supabase/supabase-js": "^2.91.0",
+    "@prisma/client": "^6.16.1",
+    "@next-auth/prisma-adapter": "^1.0.7",
+    "bcryptjs": "^3.0.2",
     "date-fns": "^4.1.0",
     "lucide-react": "^0.562.0",
     "next": "16.1.4",
+    "next-auth": "^4.24.11",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "zustand": "^5.0.10"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.4",
+    "prisma": "^6.16.1",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   }
 }
