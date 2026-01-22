@@ -1,36 +1,42 @@
-import { NextResponse } from 'next/server';
-import { createSupabaseRouteHandlerClient } from '@/lib/supabase/route';
+import { NextRequest, NextResponse } from 'next/server';
+import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { normalizeUserRow } from '@/utils/userMapper';
 
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createSupabaseRouteHandlerClient();
-    const { data, error } = await supabase.auth.getSession();
+    const { supabase, response } = createSupabaseRouteClient(request);
+    const cookiePresent = request.cookies.getAll().some((cookie) => cookie.name.startsWith('sb-'));
+    const { data, error } = await supabase.auth.getUser();
     if (error) {
-      return NextResponse.json(
-        {
-          hasSession: false,
-          authUserId: null,
-          email: null,
-          organizationId: null,
-          role: null,
-          userRowFound: false,
-          error: process.env.NODE_ENV === 'production' ? undefined : error.message,
-        },
-        { status: 200 }
+      return applySupabaseCookies(
+        NextResponse.json(
+          {
+            hasSession: false,
+            authUserId: null,
+            email: null,
+            organizationId: null,
+            role: null,
+            userRowFound: false,
+            cookiePresent,
+            error: process.env.NODE_ENV === 'production' ? undefined : error.message,
+          },
+          { status: 200 }
+        ),
+        response
       );
     }
-    const session = data.session;
+    const user = data.user;
     let organizationId: string | null = null;
     let role: string | null = null;
     let userRowFound = false;
-    if (session?.user?.id) {
+    if (user?.id) {
       const { data: row, error: userError } = await supabase
         .from('users')
         .select('*')
-        .eq('auth_user_id', session.user.id)
+        .eq('auth_user_id', user.id)
         .maybeSingle();
       if (!userError && row) {
         const normalized = normalizeUserRow(row);
@@ -39,16 +45,21 @@ export async function GET() {
         userRowFound = true;
       }
     }
-    return NextResponse.json({
-      hasSession: Boolean(session),
-      authUserId: session?.user?.id ?? null,
-      email: session?.user?.email ?? null,
-      organizationId,
-      role,
-      userRowFound,
-    });
+    return applySupabaseCookies(
+      NextResponse.json({
+        hasSession: Boolean(user),
+        authUserId: user?.id ?? null,
+        email: user?.email ?? null,
+        organizationId,
+        role,
+        userRowFound,
+        cookiePresent,
+      }),
+      response
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unable to read session.';
+    const cookiePresent = request.cookies.getAll().some((cookie) => cookie.name.startsWith('sb-'));
     return NextResponse.json(
       {
         hasSession: false,
@@ -57,6 +68,7 @@ export async function GET() {
         organizationId: null,
         role: null,
         userRowFound: false,
+        cookiePresent,
         error: process.env.NODE_ENV === 'production' ? undefined : message,
       },
       { status: 200 }

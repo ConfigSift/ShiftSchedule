@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { splitFullName } from '@/utils/userMapper';
 
 type UpdatePayload = {
@@ -7,19 +7,25 @@ type UpdatePayload = {
   phone?: string | null;
 };
 
-export async function POST(request: Request) {
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+export async function POST(request: NextRequest) {
   const payload = (await request.json()) as UpdatePayload;
 
   if (!payload.fullName || !payload.fullName.trim()) {
     return NextResponse.json({ error: 'Full name is required.' }, { status: 400 });
   }
 
-  const supabaseServer = await createSupabaseServerClient();
-  const { data: sessionData } = await supabaseServer.auth.getSession();
+  const { supabase, response } = createSupabaseRouteClient(request);
+  const { data: sessionData } = await supabase.auth.getSession();
   const authUserId = sessionData.session?.user?.id;
 
   if (!authUserId) {
-    return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Unauthorized.' }, { status: 401 }),
+      response
+    );
   }
 
   const updatePayload = {
@@ -27,7 +33,7 @@ export async function POST(request: Request) {
     phone: payload.phone ?? '',
   };
 
-  const result = await supabaseServer
+  const result = await supabase
     .from('users')
     .update(updatePayload)
     .eq('auth_user_id', authUserId);
@@ -35,7 +41,7 @@ export async function POST(request: Request) {
   if (result.error) {
     if (result.error.message?.toLowerCase().includes('full_name')) {
       const { firstName, lastName } = splitFullName(payload.fullName);
-      const fallbackResult = await supabaseServer
+      const fallbackResult = await supabase
         .from('users')
         .update({
           first_name: firstName,
@@ -44,12 +50,18 @@ export async function POST(request: Request) {
         })
         .eq('auth_user_id', authUserId);
       if (fallbackResult.error) {
-        return NextResponse.json({ error: fallbackResult.error.message }, { status: 400 });
+        return applySupabaseCookies(
+          NextResponse.json({ error: fallbackResult.error.message }, { status: 400 }),
+          response
+        );
       }
     } else {
-      return NextResponse.json({ error: result.error.message }, { status: 400 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: result.error.message }, { status: 400 }),
+        response
+      );
     }
   }
 
-  return NextResponse.json({ success: true });
+  return applySupabaseCookies(NextResponse.json({ success: true }), response);
 }

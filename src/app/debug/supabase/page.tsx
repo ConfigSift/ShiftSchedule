@@ -28,7 +28,9 @@ export default function SupabaseDebugPage() {
     organizationId: string | null;
     role: string | null;
     userRowFound: boolean;
+    cookiePresent?: boolean;
   } | null>(null);
+  const [browserSessionExists, setBrowserSessionExists] = useState<boolean | null>(null);
   const [orgLookupCode, setOrgLookupCode] = useState(activeRestaurantCode || '');
   const [error, setError] = useState<string | null>(null);
   const [jobsInfo, setJobsInfo] = useState<{ type: string; jobs: string[] } | null>(null);
@@ -173,6 +175,8 @@ export default function SupabaseDebugPage() {
     setError(null);
     setWhoAmIStatus('Checking...');
     try {
+      const browserSession = await getSupabaseClient().auth.getSession();
+      setBrowserSessionExists(Boolean(browserSession.data.session));
       const response = await fetch('/api/me', { cache: 'no-store', credentials: 'include' });
       const data = await response.json();
       if (!response.ok) {
@@ -182,7 +186,7 @@ export default function SupabaseDebugPage() {
       }
       if (!data?.hasSession) {
         setWhoAmIStatus('No session');
-        setWhoAmIData(null);
+        setWhoAmIData(data);
         return;
       }
       setWhoAmIData(data);
@@ -191,6 +195,7 @@ export default function SupabaseDebugPage() {
       const message = err instanceof Error ? err.message : 'Who am I failed';
       setWhoAmIStatus(null);
       setWhoAmIData(null);
+      setBrowserSessionExists(null);
       setError(message);
     }
   };
@@ -334,6 +339,12 @@ export default function SupabaseDebugPage() {
               <p>Email: {whoAmIData.email || '-'}</p>
               <p>Organization ID: {whoAmIData.organizationId || '-'}</p>
               <p>Role: {whoAmIData.role || '-'}</p>
+              <p>Cookie present: {whoAmIData.cookiePresent ? 'yes' : 'no'}</p>
+              {browserSessionExists && !whoAmIData.hasSession && (
+                <p className="text-red-400">
+                  Browser has a session but the server does not. Check SSR cookies/middleware.
+                </p>
+              )}
               {!whoAmIData.userRowFound && (
                 <p className="text-red-400">
                   Missing users row. Visit /setup or create a profile in /staff.

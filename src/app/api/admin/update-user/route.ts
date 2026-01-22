@@ -1,11 +1,12 @@
-import { NextResponse } from 'next/server';
-import { createSupabaseRouteHandlerClient } from '@/lib/supabase/route';
+import { NextRequest, NextResponse } from 'next/server';
+import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs, serializeJobsForStorage } from '@/utils/jobs';
 import { normalizeUserRow, splitFullName } from '@/utils/userMapper';
 
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 type UpdatePayload = {
   userId: string;
@@ -17,7 +18,7 @@ type UpdatePayload = {
   passcode?: string;
 };
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   const payload = (await request.json()) as UpdatePayload;
   const allowAdminCreation = process.env.ENABLE_ADMIN_CREATION === 'true';
 
@@ -25,8 +26,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
   }
 
-  const supabaseServer = await createSupabaseRouteHandlerClient();
-  const { data: sessionData, error: sessionError } = await supabaseServer.auth.getSession();
+  const { supabase, response } = createSupabaseRouteClient(request);
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   const authUserId = sessionData.session?.user?.id;
 
   if (!authUserId) {
@@ -34,27 +35,36 @@ export async function POST(request: Request) {
       process.env.NODE_ENV === 'production'
         ? 'Not signed in. Please sign out/in again.'
         : sessionError?.message || 'Unauthorized.';
-    return NextResponse.json({ error: message }, { status: 401 });
+    return applySupabaseCookies(NextResponse.json({ error: message }, { status: 401 }), response);
   }
 
-  const { data: requesterRow, error: requesterError } = await supabaseServer
+  const { data: requesterRow, error: requesterError } = await supabase
     .from('users')
     .select('*')
     .eq('auth_user_id', authUserId)
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
-    return NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 }),
+      response
+    );
   }
 
   const requester = normalizeUserRow(requesterRow);
   const requesterRole = requester.role;
   if (!isManagerRole(requesterRole)) {
-    return NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 }),
+      response
+    );
   }
 
   if (requester.organizationId !== payload.organizationId) {
-    return NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 }),
+      response
+    );
   }
 
   const { data: targetRow, error: targetError } = await supabaseAdmin
@@ -64,48 +74,78 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (targetError || !targetRow) {
-    return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Target user not found.' }, { status: 404 }),
+      response
+    );
   }
 
   const target = normalizeUserRow(targetRow);
 
   if (target.organizationId !== payload.organizationId) {
-    return NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 }),
+      response
+    );
   }
 
   const rawRole = payload.accountType ?? target.role ?? '';
   const targetCurrentRole = target.role;
   const targetRole = getUserRole(rawRole);
   if (payload.accountType && !['ADMIN', 'MANAGER', 'EMPLOYEE', 'STAFF'].includes(String(payload.accountType).toUpperCase())) {
-    return NextResponse.json({ error: 'Invalid account type.' }, { status: 400 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Invalid account type.' }, { status: 400 }),
+      response
+    );
   }
 
   if (requesterRole === 'MANAGER' && targetCurrentRole === 'ADMIN') {
-    return NextResponse.json({ error: 'Managers cannot edit admins.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Managers cannot edit admins.' }, { status: 403 }),
+      response
+    );
   }
 
   if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
-    return NextResponse.json({ error: 'Managers cannot assign ADMIN.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Managers cannot assign ADMIN.' }, { status: 403 }),
+      response
+    );
   }
 
   if (requesterRole === 'MANAGER' && targetRole !== 'MANAGER' && targetRole !== 'EMPLOYEE') {
-    return NextResponse.json({ error: 'Managers can only assign MANAGER or EMPLOYEE.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Managers can only assign MANAGER or EMPLOYEE.' }, { status: 403 }),
+      response
+    );
   }
 
   if (payload.accountType && targetRole === 'ADMIN' && !allowAdminCreation) {
-    return NextResponse.json({ error: 'Admin updates are disabled.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Admin updates are disabled.' }, { status: 403 }),
+      response
+    );
   }
 
   if (requesterRole === 'ADMIN' && target.authUserId === authUserId && targetRole !== 'ADMIN') {
-    return NextResponse.json({ error: 'Admins cannot demote themselves.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Admins cannot demote themselves.' }, { status: 403 }),
+      response
+    );
   }
   if (target.authUserId === authUserId && payload.accountType && targetRole !== targetCurrentRole) {
-    return NextResponse.json({ error: 'You cannot change your own account type.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You cannot change your own account type.' }, { status: 403 }),
+      response
+    );
   }
 
   const normalizedJobs = payload.jobs ? normalizeJobs(payload.jobs) : normalizeJobs(targetRow.jobs);
   if ((targetRole === 'EMPLOYEE' || targetRole === 'MANAGER') && normalizedJobs.length === 0) {
-    return NextResponse.json({ error: 'Managers and employees must have at least one job.' }, { status: 400 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Managers and employees must have at least one job.' }, { status: 400 }),
+      response
+    );
   }
   const jobsPayload = serializeJobsForStorage(targetRow.jobs, normalizedJobs);
 
@@ -136,28 +176,43 @@ export async function POST(request: Request) {
         })
         .eq('id', payload.userId);
       if (legacyResult.error) {
-        return NextResponse.json({ error: legacyResult.error.message }, { status: 400 });
+        return applySupabaseCookies(
+          NextResponse.json({ error: legacyResult.error.message }, { status: 400 }),
+          response
+        );
       }
     } else {
-      return NextResponse.json({ error: updateResult.error.message }, { status: 400 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: updateResult.error.message }, { status: 400 }),
+        response
+      );
     }
   }
 
   if (payload.passcode) {
     if (!/^\d{6}$/.test(payload.passcode)) {
-      return NextResponse.json({ error: 'PIN must be exactly 6 digits.' }, { status: 400 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'PIN must be exactly 6 digits.' }, { status: 400 }),
+        response
+      );
     }
     if (!target.authUserId) {
-      return NextResponse.json({ error: 'Target auth user missing.' }, { status: 400 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Target auth user missing.' }, { status: 400 }),
+        response
+      );
     }
     const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(
       target.authUserId,
       { password: payload.passcode }
     );
     if (authUpdateError) {
-      return NextResponse.json({ error: authUpdateError.message }, { status: 400 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: authUpdateError.message }, { status: 400 }),
+        response
+      );
     }
   }
 
-  return NextResponse.json({ success: true });
+  return applySupabaseCookies(NextResponse.json({ success: true }), response);
 }

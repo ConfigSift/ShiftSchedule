@@ -1,11 +1,12 @@
-import { NextResponse } from 'next/server';
-import { createSupabaseRouteHandlerClient } from '@/lib/supabase/route';
+import { NextRequest, NextResponse } from 'next/server';
+import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs } from '@/utils/jobs';
 import { normalizeUserRow, splitFullName } from '@/utils/userMapper';
 
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 type CreatePayload = {
   organizationId: string;
@@ -26,7 +27,7 @@ function sanitizeJobs(jobs: string[]) {
   return normalizeJobs(jobs);
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   const payload = (await request.json()) as CreatePayload;
   const allowAdminCreation = process.env.ENABLE_ADMIN_CREATION === 'true';
 
@@ -39,8 +40,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'PIN must be exactly 6 digits.' }, { status: 400 });
   }
 
-  const supabaseServer = await createSupabaseRouteHandlerClient();
-  const { data: sessionData, error: sessionError } = await supabaseServer.auth.getSession();
+  const { supabase, response } = createSupabaseRouteClient(request);
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   const authUserId = sessionData.session?.user?.id;
 
   if (!authUserId) {
@@ -48,44 +49,65 @@ export async function POST(request: Request) {
       process.env.NODE_ENV === 'production'
         ? 'Not signed in. Please sign out/in again.'
         : sessionError?.message || 'Unauthorized.';
-    return NextResponse.json({ error: message }, { status: 401 });
+    return applySupabaseCookies(NextResponse.json({ error: message }, { status: 401 }), response);
   }
 
-  const { data: requesterRow, error: requesterError } = await supabaseServer
+  const { data: requesterRow, error: requesterError } = await supabase
     .from('users')
     .select('*')
     .eq('auth_user_id', authUserId)
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
-    return NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 }),
+      response
+    );
   }
 
   const requester = normalizeUserRow(requesterRow);
   const requesterRole = requester.role;
   if (!isManagerRole(requesterRole)) {
-    return NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 }),
+      response
+    );
   }
 
   if (requester.organizationId !== payload.organizationId) {
-    return NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 }),
+      response
+    );
   }
 
   const rawRole = String(payload.accountType ?? '').trim();
   const targetRole = getUserRole(rawRole);
   if (!rawRole || !['ADMIN', 'MANAGER', 'EMPLOYEE', 'STAFF'].includes(rawRole.toUpperCase())) {
-    return NextResponse.json({ error: 'Invalid account type.' }, { status: 400 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Invalid account type.' }, { status: 400 }),
+      response
+    );
   }
   if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
-    return NextResponse.json({ error: 'Managers cannot create admins.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Managers cannot create admins.' }, { status: 403 }),
+      response
+    );
   }
   if (targetRole === 'ADMIN' && !allowAdminCreation) {
-    return NextResponse.json({ error: 'Admin creation is disabled.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Admin creation is disabled.' }, { status: 403 }),
+      response
+    );
   }
 
   const normalizedJobs = sanitizeJobs(payload.jobs ?? []);
   if ((targetRole === 'EMPLOYEE' || targetRole === 'MANAGER') && normalizedJobs.length === 0) {
-    return NextResponse.json({ error: 'Managers and employees must have at least one job.' }, { status: 400 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Managers and employees must have at least one job.' }, { status: 400 }),
+      response
+    );
   }
 
   const { data: createData, error: createError } = await supabaseAdmin.auth.admin.createUser({
@@ -95,12 +117,12 @@ export async function POST(request: Request) {
   });
 
   if (createError) {
-    return NextResponse.json({ error: createError.message }, { status: 400 });
+    return applySupabaseCookies(NextResponse.json({ error: createError.message }, { status: 400 }), response);
   }
 
   const newAuthUserId = createData.user?.id;
   if (!newAuthUserId) {
-    return NextResponse.json({ error: 'Failed to create auth user.' }, { status: 500 });
+    return applySupabaseCookies(NextResponse.json({ error: 'Failed to create auth user.' }, { status: 500 }), response);
   }
 
   const insertPayload = {
@@ -123,9 +145,12 @@ export async function POST(request: Request) {
       const pinFallbackResult = await supabaseAdmin.from('users').insert(withoutPin);
       if (pinFallbackResult.error) {
         await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-        return NextResponse.json({ error: pinFallbackResult.error.message }, { status: 400 });
+        return applySupabaseCookies(
+          NextResponse.json({ error: pinFallbackResult.error.message }, { status: 400 }),
+          response
+        );
       }
-      return NextResponse.json({ success: true });
+      return applySupabaseCookies(NextResponse.json({ success: true }), response);
     }
     if (message.includes('full_name') || message.includes('account_type')) {
       const { firstName, lastName } = splitFullName(payload.fullName);
@@ -147,18 +172,27 @@ export async function POST(request: Request) {
           const secondLegacy = await supabaseAdmin.from('users').insert(legacyNoPin);
           if (secondLegacy.error) {
             await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-            return NextResponse.json({ error: secondLegacy.error.message }, { status: 400 });
+            return applySupabaseCookies(
+              NextResponse.json({ error: secondLegacy.error.message }, { status: 400 }),
+              response
+            );
           }
-          return NextResponse.json({ success: true });
+          return applySupabaseCookies(NextResponse.json({ success: true }), response);
         }
         await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-        return NextResponse.json({ error: legacyResult.error.message }, { status: 400 });
+        return applySupabaseCookies(
+          NextResponse.json({ error: legacyResult.error.message }, { status: 400 }),
+          response
+        );
       }
     } else {
       await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-      return NextResponse.json({ error: insertResult.error.message }, { status: 400 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: insertResult.error.message }, { status: 400 }),
+        response
+      );
     }
   }
 
-  return NextResponse.json({ success: true });
+  return applySupabaseCookies(NextResponse.json({ success: true }), response);
 }

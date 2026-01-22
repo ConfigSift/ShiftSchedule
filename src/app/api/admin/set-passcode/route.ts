@@ -1,12 +1,12 @@
-import { NextResponse } from 'next/server';
-import { createSupabaseRouteHandlerClient } from '@/lib/supabase/route';
+import { NextRequest, NextResponse } from 'next/server';
+import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { getUserRole } from '@/utils/role';
 import { normalizeUserRow } from '@/utils/userMapper';
 
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
     const { email, authUserId, passcode, pinCode, organizationId } = await req.json();
     const pinValue = pinCode ?? passcode;
@@ -22,31 +22,37 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'PIN must be exactly 6 digits.' }, { status: 400 });
     }
 
-    const supabaseServer = await createSupabaseRouteHandlerClient();
-    const { data: sessionData, error: sessionError } = await supabaseServer.auth.getSession();
+    const { supabase, response } = createSupabaseRouteClient(req);
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
     const requesterAuthId = sessionData.session?.user?.id;
     if (!requesterAuthId) {
       const message =
         process.env.NODE_ENV === 'production'
           ? 'Not signed in. Please sign out/in again.'
           : sessionError?.message || 'Unauthorized.';
-      return NextResponse.json({ error: message }, { status: 401 });
+      return applySupabaseCookies(NextResponse.json({ error: message }, { status: 401 }), response);
     }
 
-    const { data: requesterRow, error: requesterError } = await supabaseServer
+    const { data: requesterRow, error: requesterError } = await supabase
       .from('users')
       .select('*')
       .eq('auth_user_id', requesterAuthId)
       .maybeSingle();
 
     if (requesterError || !requesterRow) {
-      return NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 }),
+        response
+      );
     }
 
     const requester = normalizeUserRow(requesterRow);
     const requesterRole = requester.role;
     if (requester.organizationId !== organizationId) {
-      return NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 }),
+        response
+      );
     }
 
     let resolvedAuthId = authUserId as string | undefined;
@@ -55,17 +61,30 @@ export async function POST(req: Request) {
         page: 1,
         perPage: 200,
       });
-      if (listErr) return NextResponse.json({ error: listErr.message }, { status: 500 });
+      if (listErr) {
+        return applySupabaseCookies(
+          NextResponse.json({ error: listErr.message }, { status: 500 }),
+          response
+        );
+      }
 
       const user = list.users.find(
         (u) => (u.email || '').toLowerCase() === String(email).toLowerCase()
       );
-      if (!user) return NextResponse.json({ error: 'Auth user not found.' }, { status: 404 });
+      if (!user) {
+        return applySupabaseCookies(
+          NextResponse.json({ error: 'Auth user not found.' }, { status: 404 }),
+          response
+        );
+      }
       resolvedAuthId = user.id;
     }
 
     if (!resolvedAuthId) {
-      return NextResponse.json({ error: 'Auth user not found.' }, { status: 404 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Auth user not found.' }, { status: 404 }),
+        response
+      );
     }
 
     const { data: targetUser, error: targetError } = await supabaseAdmin
@@ -75,11 +94,17 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (targetError || !targetUser) {
-      return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Target user not found.' }, { status: 404 }),
+        response
+      );
     }
 
     if (targetUser.organization_id !== organizationId) {
-      return NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 }),
+        response
+      );
     }
 
     const { data: targetRow, error: targetRowError } = await supabaseAdmin
@@ -89,23 +114,37 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (targetRowError || !targetRow) {
-      return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Target user not found.' }, { status: 404 }),
+        response
+      );
     }
 
     const target = normalizeUserRow(targetRow);
 
     if (requesterRole === 'MANAGER' && target.role === 'ADMIN') {
-      return NextResponse.json({ error: 'Managers cannot reset admin PINs.' }, { status: 403 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Managers cannot reset admin PINs.' }, { status: 403 }),
+        response
+      );
     }
 
     if (requesterRole !== 'ADMIN' && requesterRole !== 'MANAGER') {
-      return NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 }),
+        response
+      );
     }
 
     const { error: updErr } = await supabaseAdmin.auth.admin.updateUserById(resolvedAuthId, {
       password: pinValue,
     });
-    if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 });
+    if (updErr) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: updErr.message }, { status: 500 }),
+        response
+      );
+    }
 
     const pinResult = await supabaseAdmin
       .from('users')
@@ -114,15 +153,24 @@ export async function POST(req: Request) {
 
     if (pinResult.error) {
       if (pinResult.error.message?.toLowerCase().includes('pin_code')) {
-        return NextResponse.json(
-          { error: 'pin_code column missing. Run /debug/db and apply SQL fixes.' },
-          { status: 400 }
+        return applySupabaseCookies(
+          NextResponse.json(
+            { error: 'pin_code column missing. Run /debug/db and apply SQL fixes.' },
+            { status: 400 }
+          ),
+          response
         );
       }
-      return NextResponse.json({ error: pinResult.error.message }, { status: 400 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: pinResult.error.message }, { status: 400 }),
+        response
+      );
     }
 
-    return NextResponse.json({ ok: true, userId: resolvedAuthId });
+    return applySupabaseCookies(
+      NextResponse.json({ ok: true, userId: resolvedAuthId }),
+      response
+    );
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? 'Unknown error.' }, { status: 500 });
   }

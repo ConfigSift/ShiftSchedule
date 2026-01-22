@@ -1,25 +1,26 @@
-import { NextResponse } from 'next/server';
-import { createSupabaseRouteHandlerClient } from '@/lib/supabase/route';
+import { NextRequest, NextResponse } from 'next/server';
+import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { getUserRole, isManagerRole } from '@/utils/role';
+import { isManagerRole } from '@/utils/role';
 import { normalizeUserRow } from '@/utils/userMapper';
 
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 type DeletePayload = {
   userId: string;
   organizationId: string;
 };
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   const payload = (await request.json()) as DeletePayload;
 
   if (!payload.userId || !payload.organizationId) {
     return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
   }
 
-  const supabaseServer = await createSupabaseRouteHandlerClient();
-  const { data: sessionData, error: sessionError } = await supabaseServer.auth.getSession();
+  const { supabase, response } = createSupabaseRouteClient(request);
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   const authUserId = sessionData.session?.user?.id;
 
   if (!authUserId) {
@@ -27,27 +28,36 @@ export async function POST(request: Request) {
       process.env.NODE_ENV === 'production'
         ? 'Not signed in. Please sign out/in again.'
         : sessionError?.message || 'Unauthorized.';
-    return NextResponse.json({ error: message }, { status: 401 });
+    return applySupabaseCookies(NextResponse.json({ error: message }, { status: 401 }), response);
   }
 
-  const { data: requesterRow, error: requesterError } = await supabaseServer
+  const { data: requesterRow, error: requesterError } = await supabase
     .from('users')
     .select('*')
     .eq('auth_user_id', authUserId)
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
-    return NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Requester profile not found.' }, { status: 403 }),
+      response
+    );
   }
 
   const requester = normalizeUserRow(requesterRow);
   const requesterRole = requester.role;
   if (!isManagerRole(requesterRole)) {
-    return NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 }),
+      response
+    );
   }
 
   if (requester.organizationId !== payload.organizationId) {
-    return NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Organization mismatch.' }, { status: 403 }),
+      response
+    );
   }
 
   const { data: targetRow, error: targetError } = await supabaseAdmin
@@ -57,22 +67,34 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (targetError || !targetRow) {
-    return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Target user not found.' }, { status: 404 }),
+      response
+    );
   }
 
   const target = normalizeUserRow(targetRow);
 
   if (target.organizationId !== payload.organizationId) {
-    return NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Target not in this organization.' }, { status: 403 }),
+      response
+    );
   }
 
   if (target.authUserId === authUserId) {
-    return NextResponse.json({ error: "You can't delete your own account." }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: "You can't delete your own account." }, { status: 403 }),
+      response
+    );
   }
 
   const targetRole = target.role;
   if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
-    return NextResponse.json({ error: 'Managers cannot delete admins.' }, { status: 403 });
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Managers cannot delete admins.' }, { status: 403 }),
+      response
+    );
   }
 
   try {
@@ -82,21 +104,30 @@ export async function POST(request: Request) {
       .eq('id', payload.userId);
 
     if (deleteError) {
-      return NextResponse.json({ error: deleteError.message }, { status: 400 });
+      return applySupabaseCookies(
+        NextResponse.json({ error: deleteError.message }, { status: 400 }),
+        response
+      );
     }
 
     if (target.authUserId) {
       const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(target.authUserId);
       if (authDeleteError) {
-        return NextResponse.json({ error: authDeleteError.message }, { status: 400 });
+        return applySupabaseCookies(
+          NextResponse.json({ error: authDeleteError.message }, { status: 400 }),
+          response
+        );
       }
     }
   } catch {
-    return NextResponse.json(
-      { error: 'Unable to delete user. Check for related shifts or constraints.' },
-      { status: 400 }
+    return applySupabaseCookies(
+      NextResponse.json(
+        { error: 'Unable to delete user. Check for related shifts or constraints.' },
+        { status: 400 }
+      ),
+      response
     );
   }
 
-  return NextResponse.json({ success: true });
+  return applySupabaseCookies(NextResponse.json({ success: true }), response);
 }
