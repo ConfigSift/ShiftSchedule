@@ -108,19 +108,7 @@ export function formatTimestamp(isoString: string): string {
 }
 
 // PIN Hashing using Web Crypto API
-export async function hashPin(pin: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(pin + 'shiftflow-salt');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-export async function verifyPin(pin: string, hash: string): Promise<boolean> {
-  const inputHash = await hashPin(pin);
-  return inputHash === hash;
-}
-
+// Password hashing using Web Crypto API (client-side only)
 // Check if date ranges overlap
 export function datesOverlap(
   start1: string,

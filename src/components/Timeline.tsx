@@ -1,23 +1,25 @@
 'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
+import { useAuthStore } from '../store/authStore';
 import { HOURS_START, HOURS_END, SECTIONS } from '../types';
 import { formatHourShort, getShiftPosition, formatHour, formatShiftDuration } from '../utils/timeUtils';
 import { useState, useRef, useCallback } from 'react';
 import { Palmtree } from 'lucide-react';
+import { getUserRole, isManagerRole } from '../utils/role';
 
 export function Timeline() {
   const {
     selectedDate,
-    getFilteredEmployees,
-    shifts,
-    getEmployeeById,
+    getFilteredEmployeesForRestaurant,
+    getShiftsForRestaurant,
     hoveredShiftId,
     setHoveredShift,
     updateShift,
     openModal,
     hasApprovedTimeOff,
     getTimeOffForDate,
+    hasBlockedShiftOnDate,
   } = useScheduleStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -30,8 +32,11 @@ export function Timeline() {
     originalEnd: number;
   } | null>(null);
 
+  const { activeRestaurantId, currentUser } = useAuthStore();
+  const isManager = isManagerRole(getUserRole(currentUser?.role));
   const dateString = selectedDate.toISOString().split('T')[0];
-  const filteredEmployees = getFilteredEmployees();
+  const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
+  const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const hours = Array.from({ length: HOURS_END - HOURS_START + 1 }, (_, i) => HOURS_START + i);
 
   const now = new Date();
@@ -50,9 +55,10 @@ export function Timeline() {
   }, []);
 
   const handleMouseDown = (e: React.MouseEvent, shiftId: string, edge: 'start' | 'end' | 'move') => {
+    if (!isManager) return;
     e.preventDefault();
     e.stopPropagation();
-    const shift = shifts.find(s => s.id === shiftId);
+    const shift = scopedShifts.find(s => s.id === shiftId);
     if (!shift) return;
     
     setDragging({
@@ -67,7 +73,7 @@ export function Timeline() {
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!dragging) return;
 
-    const shift = shifts.find(s => s.id === dragging.shiftId);
+    const shift = scopedShifts.find(s => s.id === dragging.shiftId);
     if (!shift) return;
 
     const newHour = getHourFromClientX(e.clientX);
@@ -88,20 +94,22 @@ export function Timeline() {
         endHour: Math.round((newStart + duration) * 4) / 4,
       });
     }
-  }, [dragging, shifts, getHourFromClientX, updateShift]);
+  }, [dragging, scopedShifts, getHourFromClientX, updateShift]);
 
   const handleMouseUp = useCallback(() => {
     setDragging(null);
   }, []);
 
-  const handleShiftClick = (shift: typeof shifts[0]) => {
+  const handleShiftClick = (shift: typeof scopedShifts[0]) => {
     if (!dragging) {
+      if (shift.isBlocked) return;
+      if (!isManager) return;
       openModal('editShift', shift);
     }
   };
 
   const handleEmptyClick = (employeeId: string, e: React.MouseEvent) => {
-    if (hasApprovedTimeOff(employeeId, dateString)) return;
+    if (!isManager) return;
     
     const hour = getHourFromClientX(e.clientX);
     openModal('addShift', {
@@ -151,17 +159,20 @@ export function Timeline() {
         ) : (
           filteredEmployees.map((employee) => {
             const sectionConfig = SECTIONS[employee.section];
-            const employeeShifts = shifts.filter(
-              s => s.employeeId === employee.id && s.date === dateString
+            const employeeShifts = scopedShifts.filter(
+              s => s.employeeId === employee.id && s.date === dateString && !s.isBlocked
+            );
+            const employeeBlocked = scopedShifts.filter(
+              s => s.employeeId === employee.id && s.date === dateString && s.isBlocked
             );
             const hasTimeOff = hasApprovedTimeOff(employee.id, dateString);
-            const timeOff = getTimeOffForDate(employee.id, dateString);
+            const hasBlocked = employeeBlocked.length > 0;
 
             return (
               <div
                 key={employee.id}
                 className={`flex h-14 border-b border-theme-primary/50 transition-colors group ${
-                  hasTimeOff ? 'bg-emerald-500/5' : 'hover:bg-theme-hover/50'
+                  hasTimeOff ? 'bg-emerald-500/5' : hasBlocked ? 'bg-red-500/5' : 'hover:bg-theme-hover/50'
                 }`}
               >
                 <div className="w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3">
@@ -213,9 +224,14 @@ export function Timeline() {
                       <span className="text-xs font-medium text-emerald-500">TIME OFF</span>
                     </div>
                   )}
+                  {!hasTimeOff && hasBlocked && (
+                    <div className="absolute inset-2 bg-red-500/15 border-2 border-dashed border-red-500/50 rounded-lg flex items-center justify-center gap-2 z-5">
+                      <span className="text-xs font-medium text-red-400">BLOCKED</span>
+                    </div>
+                  )}
 
                   {/* Shifts */}
-                  {!hasTimeOff && employeeShifts.map((shift) => {
+                  {!hasTimeOff && !hasBlocked && employeeShifts.map((shift) => {
                     const position = getShiftPosition(shift.startHour, shift.endHour);
                     const isHovered = hoveredShiftId === shift.id;
                     const isDragging = dragging?.shiftId === shift.id;
@@ -256,6 +272,15 @@ export function Timeline() {
                             >
                               {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
                             </span>
+                            {(shift.job || isManager) && (
+                              <span
+                                className={`text-[11px] truncate ${
+                                  isHovered || isDragging ? 'text-white/90' : 'text-theme-muted'
+                                }`}
+                              >
+                                {shift.job || '(No job)'}
+                              </span>
+                            )}
                           </div>
                         </div>
                         
@@ -268,7 +293,7 @@ export function Timeline() {
                   })}
 
                   {/* Empty state */}
-                  {!hasTimeOff && employeeShifts.length === 0 && (
+                  {!hasTimeOff && !hasBlocked && employeeShifts.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
                       <span className="text-xs text-theme-muted">Click to add shift</span>
                     </div>

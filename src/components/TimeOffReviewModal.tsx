@@ -5,6 +5,7 @@ import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
 import { formatDateLong, formatTimestamp } from '../utils/timeUtils';
 import { Check, X, Clock, Calendar } from 'lucide-react';
+import { getUserRole, isManagerRole } from '../utils/role';
 
 export function TimeOffReviewModal() {
   const { 
@@ -16,28 +17,37 @@ export function TimeOffReviewModal() {
     showToast,
   } = useScheduleStore();
 
-  const { currentUser, isManager } = useAuthStore();
+  const { currentUser } = useAuthStore();
+  const isManager = isManagerRole(getUserRole(currentUser?.role));
   
   const isOpen = modalType === 'timeOffReview';
 
   if (!isOpen || !isManager) return null;
 
-  const pendingRequests = timeOffRequests.filter(r => r.status === 'pending');
+  const pendingRequests = timeOffRequests.filter(r => r.status === 'PENDING');
   const recentRequests = timeOffRequests
-    .filter(r => r.status !== 'pending')
+    .filter(r => r.status !== 'PENDING')
     .sort((a, b) => (b.reviewedAt || b.createdAt).localeCompare(a.reviewedAt || a.createdAt))
     .slice(0, 5);
 
-  const handleApprove = (requestId: string) => {
+  const handleApprove = async (requestId: string) => {
     if (!currentUser) return;
-    reviewTimeOffRequest(requestId, 'approved', currentUser.id);
+    const result = await reviewTimeOffRequest(requestId, 'APPROVED', currentUser.id);
+    if (!result.success) {
+      showToast(result.error || 'Unable to approve request', 'error');
+      return;
+    }
     showToast('Time off approved', 'success');
   };
 
-  const handleReject = (requestId: string) => {
+  const handleReject = async (requestId: string) => {
     if (!currentUser) return;
-    reviewTimeOffRequest(requestId, 'rejected', currentUser.id);
-    showToast('Time off rejected', 'success');
+    const result = await reviewTimeOffRequest(requestId, 'DENIED', currentUser.id);
+    if (!result.success) {
+      showToast(result.error || 'Unable to deny request', 'error');
+      return;
+    }
+    showToast('Time off denied', 'success');
   };
 
   return (
@@ -131,7 +141,7 @@ export function TimeOffReviewModal() {
                   <div
                     key={request.id}
                     className={`p-3 rounded-lg ${
-                      request.status === 'approved' 
+                      request.status === 'APPROVED' 
                         ? 'bg-green-500/10 border border-green-500/30' 
                         : 'bg-red-500/10 border border-red-500/30'
                     }`}
@@ -145,15 +155,15 @@ export function TimeOffReviewModal() {
                           )}
                         </p>
                         <p className="text-xs text-theme-muted mt-1">
-                          {request.status === 'approved' ? 'Approved' : 'Rejected'} by {reviewer?.name || 'Unknown'}
+                          {request.status === 'APPROVED' ? 'Approved' : 'Denied'} by {reviewer?.name || 'Unknown'}
                         </p>
                       </div>
                       <span className={`text-xs font-medium px-2 py-1 rounded ${
-                        request.status === 'approved' 
+                        request.status === 'APPROVED' 
                           ? 'bg-green-500/20 text-green-400' 
                           : 'bg-red-500/20 text-red-400'
                       }`}>
-                        {request.status.toUpperCase()}
+                        {request.status}
                       </span>
                     </div>
                   </div>

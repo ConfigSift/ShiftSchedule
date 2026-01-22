@@ -2,7 +2,7 @@
 export type Section = 'kitchen' | 'front' | 'bar' | 'management';
 
 // User role for permissions
-export type UserRole = 'manager' | 'staff';
+export type UserRole = 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
 
 export interface EmployeeProfile {
   phone?: string;
@@ -15,33 +15,58 @@ export interface Employee {
   name: string;
   section: Section;
   userRole: UserRole;
-  pinHash: string;
+  restaurantId?: string;
   profile: EmployeeProfile;
   isActive: boolean;
+  jobs?: string[];
+}
+
+export interface Restaurant {
+  id: string;
+  name: string;
+  restaurantCode: string;
   createdAt: string;
+  createdByUserId: string;
+}
+
+export interface UserProfile {
+  id: string;
+  authUserId: string;
+  organizationId: string;
+  email: string | null;
+  phone: string | null;
+  fullName: string;
+  role: UserRole;
+  jobs: string[];
 }
 
 export interface Shift {
   id: string;
   employeeId: string;
+  restaurantId: string;
   date: string; // YYYY-MM-DD
   startHour: number; // 0-24 decimal (e.g., 9.5 = 9:30am)
   endHour: number;
   notes?: string;
+  isBlocked?: boolean;
+  job?: string;
 }
 
-export type TimeOffStatus = 'pending' | 'approved' | 'rejected';
+export type TimeOffStatus = 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED';
 
 export interface TimeOffRequest {
   id: string;
   employeeId: string;
+  organizationId?: string;
   startDate: string;
   endDate: string;
   reason?: string;
   status: TimeOffStatus;
   createdAt: string;
+  updatedAt?: string;
   reviewedBy?: string;
   reviewedAt?: string;
+  managerNote?: string;
 }
 
 export interface BlockedPeriod {
@@ -120,3 +145,22 @@ export const SECTIONS: Record<Section, SectionConfig> = {
 export const HOURS_START = 6;
 export const HOURS_END = 24;
 export const TOTAL_HOURS = HOURS_END - HOURS_START;
+
+export const JOB_OPTIONS = [
+  'Admin',
+  'Bartender',
+  'Bartender Training',
+  'BOH Train',
+  'Busser',
+  'Cook',
+  'Dishwasher',
+  'FOH Train',
+  'Food Run',
+  'Food Runner',
+  'Ghost Bar1',
+  'Ghost Bar 2',
+  'Host',
+  'Manager',
+  'Server',
+  'Server Training',
+] as const;

@@ -6,6 +6,8 @@ const STORAGE_KEYS = {
   DROP_REQUESTS: 'shiftflow_drop_requests',
   CHAT_MESSAGES: 'shiftflow_chat',
   CURRENT_USER: 'shiftflow_current_user',
+  ACTIVE_RESTAURANT: 'shiftflow_active_restaurant',
+  RESTAURANTS: 'shiftflow_restaurants',
   INITIALIZED: 'shiftflow_initialized',
 };
 

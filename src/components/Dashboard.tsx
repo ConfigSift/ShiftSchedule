@@ -7,15 +7,22 @@ import { WeekView } from './WeekView';
 import { StatsFooter } from './StatsFooter';
 import { AddShiftModal } from './AddShiftModal';
 import { AddEmployeeModal } from './AddEmployeeModal';
-import { EmployeeProfileModal } from './EmployeeProfileModal';
 import { TimeOffRequestModal } from './TimeOffRequestModal';
 import { TimeOffReviewModal } from './TimeOffReviewModal';
 import { BlockedPeriodModal } from './BlockedPeriodModal';
 import { Toast } from './Toast';
+import { useEffect } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
+import { useAuthStore } from '../store/authStore';
 
 export function Dashboard() {
-  const { viewMode } = useScheduleStore();
+  const { viewMode, applyRestaurantScope, loadRestaurantData } = useScheduleStore();
+  const { activeRestaurantId } = useAuthStore();
+
+  useEffect(() => {
+    applyRestaurantScope(activeRestaurantId);
+    loadRestaurantData(activeRestaurantId);
+  }, [activeRestaurantId, applyRestaurantScope, loadRestaurantData]);
 
   return (
     <div className="h-screen flex flex-col bg-theme-primary text-theme-primary overflow-hidden transition-theme">
@@ -34,7 +41,6 @@ export function Dashboard() {
       {/* Modals */}
       <AddShiftModal />
       <AddEmployeeModal />
-      <EmployeeProfileModal />
       <TimeOffRequestModal />
       <TimeOffReviewModal />
       <BlockedPeriodModal />

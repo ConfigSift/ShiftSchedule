@@ -25,8 +25,8 @@ export default function ChatPage() {
   const { 
     hydrate, 
     isHydrated, 
-    employees, 
-    shifts,
+    getEmployeesForRestaurant,
+    getShiftsForRestaurant,
     chatMessages,
     dropRequests,
     sendChatMessage,
@@ -34,9 +34,10 @@ export default function ChatPage() {
     cancelDropRequest,
     getEmployeeById,
     showToast,
+    loadRestaurantData,
   } = useScheduleStore();
   
-  const { currentUser, checkSession, isInitialized } = useAuthStore();
+  const { currentUser, init, isInitialized, activeRestaurantId } = useAuthStore();
 
   const [message, setMessage] = useState('');
   const [showDropModal, setShowDropModal] = useState(false);
@@ -48,9 +49,13 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (isHydrated) {
-      checkSession(employees);
+      init();
     }
-  }, [isHydrated, employees, checkSession]);
+  }, [isHydrated, init]);
+
+  useEffect(() => {
+    loadRestaurantData(activeRestaurantId);
+  }, [activeRestaurantId, loadRestaurantData]);
 
   useEffect(() => {
     if (isHydrated && isInitialized && !currentUser) {
@@ -88,8 +93,8 @@ export default function ChatPage() {
     showToast('Drop request posted', 'success');
   };
 
-  const handleAcceptDrop = (requestId: string) => {
-    const result = acceptDropRequest(requestId, currentUser.id);
+  const handleAcceptDrop = async (requestId: string) => {
+    const result = await acceptDropRequest(requestId, currentUser.id);
     if (result.success) {
       showToast('Shift accepted! It has been assigned to you.', 'success');
     } else {
@@ -103,8 +108,9 @@ export default function ChatPage() {
   };
 
   // Get user's upcoming shifts for drop modal
-  const myUpcomingShifts = shifts.filter(s => 
+  const myUpcomingShifts = getShiftsForRestaurant(activeRestaurantId).filter(s => 
     s.employeeId === currentUser.id && 
+    !s.isBlocked &&
     new Date(s.date) >= new Date()
   ).sort((a, b) => a.date.localeCompare(b.date));
 
@@ -159,7 +165,7 @@ export default function ChatPage() {
             }
 
             if (isDropRequest && dropRequest) {
-              const shift = shifts.find(s => s.id === dropRequest.shiftId);
+              const shift = getShiftsForRestaurant(activeRestaurantId).find(s => s.id === dropRequest.shiftId);
               const fromEmployee = getEmployeeById(dropRequest.fromEmployeeId);
               const sectionConfig = fromEmployee ? SECTIONS[fromEmployee.section] : null;
               const isOpen = dropRequest.status === 'open';

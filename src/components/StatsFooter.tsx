@@ -1,21 +1,25 @@
 'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
+import { useAuthStore } from '../store/authStore';
 import { SECTIONS, Section } from '../types';
 import { Clock, Users, AlertTriangle, DollarSign } from 'lucide-react';
 
 export function StatsFooter() {
-  const { selectedDate, shifts, employees } = useScheduleStore();
+  const { selectedDate, getShiftsForRestaurant, getEmployeesForRestaurant } = useScheduleStore();
+  const { activeRestaurantId } = useAuthStore();
 
   const dateString = selectedDate.toISOString().split('T')[0];
-  const activeEmployees = employees.filter(e => e.isActive);
+  const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
+  const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
+  const activeEmployees = scopedEmployees.filter(e => e.isActive);
 
-  const todayShifts = shifts.filter(s => s.date === dateString);
+  const todayShifts = scopedShifts.filter(s => s.date === dateString && !s.isBlocked);
   const totalHours = todayShifts.reduce((sum, s) => sum + (s.endHour - s.startHour), 0);
   const workingCount = new Set(todayShifts.map(s => s.employeeId)).size;
 
   const shiftsBySection = todayShifts.reduce((acc, shift) => {
-    const employee = employees.find(e => e.id === shift.employeeId);
+    const employee = scopedEmployees.find(e => e.id === shift.employeeId);
     if (employee) {
       acc[employee.section] = (acc[employee.section] || 0) + 1;
     }

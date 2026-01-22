@@ -2,38 +2,38 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
+import { getUserRole, isManagerRole } from '../utils/role';
 
 export default function Home() {
   const router = useRouter();
-  const { employees, isHydrated, hydrate } = useScheduleStore();
-  const { currentUser, checkSession, isInitialized } = useAuthStore();
+  const { currentUser, isInitialized, activeRestaurantId, init, userProfiles } = useAuthStore();
 
   useEffect(() => {
-    hydrate();
-  }, [hydrate]);
+    init();
+  }, [init]);
 
   useEffect(() => {
-    if (isHydrated) {
-      checkSession(employees);
-    }
-  }, [isHydrated, employees, checkSession]);
-
-  useEffect(() => {
-    if (isHydrated && isInitialized) {
-      if (employees.length === 0) {
-        // No employees exist, go to setup
-        router.push('/login?setup=true');
-      } else if (currentUser) {
-        // Logged in, go to dashboard
-        router.push('/dashboard');
-      } else {
-        // Not logged in, go to login
+    if (isInitialized) {
+      if (!currentUser) {
         router.push('/login');
+        return;
       }
+
+      const role = getUserRole(currentUser.role);
+      if (isManagerRole(role) && !activeRestaurantId) {
+        router.push('/manager');
+        return;
+      }
+
+      if (!activeRestaurantId) {
+        router.push(role === 'EMPLOYEE' ? '/login' : '/manager');
+        return;
+      }
+
+      router.push('/dashboard');
     }
-  }, [isHydrated, isInitialized, employees, currentUser, router]);
+  }, [isInitialized, currentUser, activeRestaurantId, userProfiles, router]);
 
   return (
     <div className="min-h-screen bg-theme-primary flex items-center justify-center">

@@ -7,14 +7,15 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "seed:admin": "tsx scripts/seed-admin.ts",
+    "seed:restaurant": "tsx scripts/seed-restaurant.ts",
+    "seed:initial-admin": "tsx scripts/seed-initial-admin.ts",
     "predb:migrate": "node prisma/precheck.js",
     "db:migrate": "node prisma/migrate.js",
-    "predb:seed": "node prisma/precheck.js",
-    "db:seed": "prisma db seed",
     "predb:reset": "node prisma/precheck.js",
     "db:generate": "prisma generate",
     "db:check": "node prisma/check.js",
-    "db:reset": "prisma migrate reset --force --skip-generate --skip-seed && npm run db:seed"
+    "db:reset": "prisma migrate reset --force --skip-generate --skip-seed"
   },
   "dependencies": {
     "@supabase/auth-helpers-nextjs": "^0.15.0",
@@ -40,9 +41,8 @@
     "eslint-config-next": "16.1.4",
     "prisma": "^6.16.1",
     "tailwindcss": "^4",
+    "tsx": "^4.20.2",
     "typescript": "^5"
   },
-  "prisma": {
-    "seed": "node prisma/seed.js"
-  }
+  "prisma": {}
 }

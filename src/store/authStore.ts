@@ -1,92 +1,201 @@
 'use client';
 
 import { create } from 'zustand';
-import { Employee } from '../types';
-import { verifyPin } from '../utils/timeUtils';
-import { STORAGE_KEYS, saveToStorage, loadFromStorage } from '../utils/storage';
+import { supabase } from '../lib/supabase/client';
+import { UserProfile, UserRole } from '../types';
+import { clearStorage, loadFromStorage, saveToStorage, STORAGE_KEYS } from '../utils/storage';
+import { getUserRole } from '../utils/role';
+import { normalizeJobs } from '../utils/jobs';
 
 interface AuthState {
-  currentUser: Employee | null;
-  isManager: boolean;
+  currentUser: UserProfile | null;
+  userProfiles: UserProfile[];
   isInitialized: boolean;
-  
-  // Actions
-  login: (employees: Employee[], pin: string) => Promise<Employee | null>;
-  loginById: (employees: Employee[], employeeId: string, pin: string) => Promise<boolean>;
-  logout: () => void;
-  setCurrentUser: (user: Employee | null) => void;
-  checkSession: (employees: Employee[]) => void;
+  activeRestaurantId: string | null;
+  activeRestaurantCode: string | null;
+
+  init: () => Promise<void>;
+  signIn: (email: string, password: string) => Promise<{ error?: string }>;
+  signOut: () => Promise<void>;
+  setActiveOrganization: (organizationId: string | null, restaurantCode?: string | null) => void;
+  clearActiveOrganization: () => void;
+  refreshProfile: () => Promise<void>;
+  updateProfile: (data: { fullName: string; phone?: string | null }) => Promise<{ success: boolean; error?: string }>;
+}
+
+function resolveActiveRestaurantId(
+  profile: UserProfile,
+  profiles: UserProfile[],
+  current: string | null
+): string | null {
+  if (current && profiles.some((p) => p.organizationId === current)) {
+    return current;
+  }
+
+  if (profiles.length === 1) {
+    return profiles[0].organizationId;
+  }
+
+  if (getUserRole(profile.role) === 'EMPLOYEE') {
+    return profiles[0]?.organizationId ?? null;
+  }
+
+  return null;
+}
+
+async function fetchUserProfiles(authUserId: string) {
+  const { data, error } = (await supabase
+    .from('users')
+    .select('*')
+    .eq('auth_user_id', authUserId)) as {
+    data: Array<Record<string, any>> | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    throw error;
+  }
+
+  const profiles: UserProfile[] = (data || []).map((row) => ({
+    id: row.id,
+    authUserId: row.auth_user_id,
+    organizationId: row.organization_id,
+    email: row.email,
+    phone: row.phone,
+    fullName: row.full_name ?? `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim(),
+    role: getUserRole(row.account_type ?? row.role),
+    jobs: normalizeJobs(row.jobs),
+  }));
+
+  return profiles;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   currentUser: null,
-  isManager: false,
+  userProfiles: [],
   isInitialized: false,
-  
-  login: async (employees, pin) => {
-    // Try to find any employee with this PIN
-    for (const emp of employees) {
-      if (!emp.isActive) continue;
-      const valid = await verifyPin(pin, emp.pinHash);
-      if (valid) {
-        set({ 
-          currentUser: emp, 
-          isManager: emp.userRole === 'manager',
-          isInitialized: true,
-        });
-        saveToStorage(STORAGE_KEYS.CURRENT_USER, emp.id);
-        return emp;
-      }
-    }
-    return null;
-  },
-  
-  loginById: async (employees, employeeId, pin) => {
-    const emp = employees.find(e => e.id === employeeId);
-    if (!emp || !emp.isActive) return false;
-    
-    const valid = await verifyPin(pin, emp.pinHash);
-    if (valid) {
-      set({ 
-        currentUser: emp, 
-        isManager: emp.userRole === 'manager',
+  activeRestaurantId: loadFromStorage<{ id: string | null; code: string | null }>(
+    STORAGE_KEYS.ACTIVE_RESTAURANT,
+    { id: null, code: null }
+  ).id,
+  activeRestaurantCode: loadFromStorage<{ id: string | null; code: string | null }>(
+    STORAGE_KEYS.ACTIVE_RESTAURANT,
+    { id: null, code: null }
+  ).code,
+
+  init: async () => {
+    const { data } = await supabase.auth.getSession();
+    const sessionUser = data.session?.user ?? null;
+    if (!sessionUser) {
+      set({
+        currentUser: null,
+        userProfiles: [],
         isInitialized: true,
+        activeRestaurantId: null,
+        activeRestaurantCode: null,
       });
-      saveToStorage(STORAGE_KEYS.CURRENT_USER, emp.id);
-      return true;
+      return;
     }
-    return false;
-  },
-  
-  logout: () => {
-    set({ currentUser: null, isManager: false });
-    saveToStorage(STORAGE_KEYS.CURRENT_USER, null);
-  },
-  
-  setCurrentUser: (user) => {
-    set({ 
-      currentUser: user, 
-      isManager: user?.userRole === 'manager' || false,
-      isInitialized: true,
-    });
-    if (user) {
-      saveToStorage(STORAGE_KEYS.CURRENT_USER, user.id);
-    }
-  },
-  
-  checkSession: (employees) => {
-    const storedUserId = loadFromStorage<string | null>(STORAGE_KEYS.CURRENT_USER, null);
-    if (storedUserId) {
-      const user = employees.find(e => e.id === storedUserId && e.isActive);
-      if (user) {
-        set({ 
-          currentUser: user, 
-          isManager: user.userRole === 'manager',
+
+    try {
+      const profiles = await fetchUserProfiles(sessionUser.id);
+      const primaryProfile = profiles[0] ?? null;
+      if (!primaryProfile) {
+        set({
+          currentUser: null,
+          userProfiles: [],
           isInitialized: true,
+          activeRestaurantId: null,
+          activeRestaurantCode: null,
         });
         return;
       }
+      const activeRestaurantId = resolveActiveRestaurantId(primaryProfile, profiles, get().activeRestaurantId);
+      const activeProfile =
+        profiles.find((profile) => profile.organizationId === activeRestaurantId) ?? primaryProfile;
+      set({
+        currentUser: activeProfile,
+        userProfiles: profiles,
+        isInitialized: true,
+        activeRestaurantId,
+      });
+    } catch {
+      set({
+        currentUser: null,
+        userProfiles: [],
+        isInitialized: true,
+        activeRestaurantId: null,
+        activeRestaurantCode: null,
+      });
     }
-    set({ isInitialized: true });
+  },
+
+  refreshProfile: async () => {
+    const authUserId = get().currentUser?.authUserId;
+    if (!authUserId) return;
+
+    const profiles = await fetchUserProfiles(authUserId);
+    const primaryProfile = profiles[0] ?? null;
+    if (!primaryProfile) return;
+    const activeRestaurantId = resolveActiveRestaurantId(primaryProfile, profiles, get().activeRestaurantId);
+    const activeProfile =
+      profiles.find((profile) => profile.organizationId === activeRestaurantId) ?? primaryProfile;
+    set({ currentUser: activeProfile, userProfiles: profiles, activeRestaurantId });
+  },
+
+  signIn: async (email, password) => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      return { error: error.message };
+    }
+
+    await get().init();
+    return {};
+  },
+
+  signOut: async () => {
+    await supabase.auth.signOut();
+    clearStorage();
+    set({
+      currentUser: null,
+      userProfiles: [],
+      isInitialized: true,
+      activeRestaurantId: null,
+      activeRestaurantCode: null,
+    });
+  },
+
+  setActiveOrganization: (organizationId, restaurantCode = null) => {
+    saveToStorage(STORAGE_KEYS.ACTIVE_RESTAURANT, {
+      id: organizationId,
+      code: restaurantCode ?? null,
+    });
+    set({ activeRestaurantId: organizationId, activeRestaurantCode: restaurantCode ?? null });
+  },
+  clearActiveOrganization: () => {
+    saveToStorage(STORAGE_KEYS.ACTIVE_RESTAURANT, {
+      id: null,
+      code: null,
+    });
+    set({ activeRestaurantId: null, activeRestaurantCode: null });
+  },
+  updateProfile: async (data) => {
+    const current = get().currentUser;
+    if (!current) return { success: false, error: 'No user session.' };
+    const response = await fetch('/api/me/update-profile', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fullName: data.fullName,
+        phone: data.phone ?? '',
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      return { success: false, error: payload.error || 'Unable to update profile.' };
+    }
+    await get().refreshProfile();
+    return { success: true };
   },
 }));

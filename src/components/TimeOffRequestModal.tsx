@@ -5,7 +5,6 @@ import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
 import { formatDateLong } from '../utils/timeUtils';
-import { AlertTriangle } from 'lucide-react';
 
 export function TimeOffRequestModal() {
   const { 
@@ -13,20 +12,17 @@ export function TimeOffRequestModal() {
     modalData,
     closeModal, 
     addTimeOffRequest,
-    isDateBlocked,
-    blockedPeriods,
     showToast,
   } = useScheduleStore();
 
-  const { currentUser } = useAuthStore();
+  const { currentUser, activeRestaurantId } = useAuthStore();
   
   const isOpen = modalType === 'timeOffRequest';
   
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [reason, setReason] = useState('');
-  const [blockWarning, setBlockWarning] = useState<string | null>(null);
-
+  const [note, setNote] = useState('');
   const employeeId = modalData?.employeeId || currentUser?.id;
 
   useEffect(() => {
@@ -36,50 +32,49 @@ export function TimeOffRequestModal() {
       setStartDate(tomorrow.toISOString().split('T')[0]);
       setEndDate(tomorrow.toISOString().split('T')[0]);
       setReason('');
-      setBlockWarning(null);
+      setNote('');
     }
   }, [isOpen]);
 
-  useEffect(() => {
-    if (startDate && endDate) {
-      const blocked = blockedPeriods.find(bp => {
-        const reqStart = new Date(startDate);
-        const reqEnd = new Date(endDate);
-        const blockStart = new Date(bp.startDate);
-        const blockEnd = new Date(bp.endDate);
-        
-        return (reqStart <= blockEnd && reqEnd >= blockStart);
-      });
-      
-      if (blocked) {
-        setBlockWarning(`This period overlaps with a blocked date: ${blocked.reason}`);
-      } else {
-        setBlockWarning(null);
-      }
-    }
-  }, [startDate, endDate, blockedPeriods]);
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!startDate || !endDate || !employeeId) {
+    if (!startDate || !endDate || !employeeId || !currentUser || !activeRestaurantId) {
       showToast('Please fill in all required fields', 'error');
       return;
     }
 
-    if (blockWarning) {
-      showToast('Cannot request time off during blocked period', 'error');
+    if (endDate < startDate) {
+      showToast('End date must be on or after the start date', 'error');
       return;
     }
 
-    addTimeOffRequest({
+    if (!reason.trim()) {
+      showToast('Please add a reason for this request', 'error');
+      return;
+    }
+
+    const trimmedReason = reason.trim();
+    const trimmedNote = note.trim();
+    const combinedReason = trimmedNote
+      ? `${trimmedReason}\n\nNote: ${trimmedNote}`
+      : trimmedReason;
+
+    const result = await addTimeOffRequest({
       employeeId,
+      requesterAuthUserId: currentUser.authUserId,
+      organizationId: activeRestaurantId,
       startDate,
       endDate,
-      reason: reason || undefined,
+      reason: combinedReason,
     });
-    
-    showToast('Time off request submitted', 'success');
+
+    if (!result.success) {
+      showToast(result.error || 'Unable to submit request', 'error');
+      return;
+    }
+
+    showToast('Request submitted', 'success');
     closeModal();
   };
 
@@ -125,19 +120,9 @@ export function TimeOffRequestModal() {
           </div>
         </div>
 
-        {blockWarning && (
-          <div className="flex items-start gap-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-medium text-red-400">Blocked Period</p>
-              <p className="text-xs text-red-400/80 mt-0.5">{blockWarning}</p>
-            </div>
-          </div>
-        )}
-
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-            Reason (optional)
+            Reason (required)
           </label>
           <textarea
             value={reason}
@@ -145,6 +130,19 @@ export function TimeOffRequestModal() {
             rows={3}
             className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50 resize-none"
             placeholder="Why do you need this time off?"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-theme-secondary mb-1.5">
+            Note (optional)
+          </label>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50 resize-none"
+            placeholder="Additional context for your manager"
           />
         </div>
 
@@ -176,7 +174,7 @@ export function TimeOffRequestModal() {
           </button>
           <button
             type="submit"
-            disabled={!!blockWarning}
+            disabled={false}
             className="px-4 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-400 transition-all hover:scale-105 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
           >
             Submit Request

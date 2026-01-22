@@ -1,112 +1,123 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
 import { formatDateLong } from '../utils/timeUtils';
-import { Trash2, CalendarOff } from 'lucide-react';
+import { CalendarOff } from 'lucide-react';
+import { getUserRole, isManagerRole } from '../utils/role';
 
 export function BlockedPeriodModal() {
-  const { 
-    modalType, 
-    closeModal, 
-    addBlockedPeriod,
-    deleteBlockedPeriod,
-    blockedPeriods,
+  const {
+    modalType,
+    modalData,
+    closeModal,
+    createBlockedPeriod,
+    getBlockedShiftsForEmployee,
     showToast,
+    getEmployeesForRestaurant,
   } = useScheduleStore();
+  const { currentUser, activeRestaurantId } = useAuthStore();
 
-  const { currentUser, isManager } = useAuthStore();
-  
+  const isManager = isManagerRole(getUserRole(currentUser?.role));
   const isOpen = modalType === 'blockedPeriod';
-  
+  const modalEmployeeId = modalData?.employeeId as string | undefined;
+
+  const employees = getEmployeesForRestaurant(activeRestaurantId);
+  const [employeeId, setEmployeeId] = useState(modalEmployeeId || '');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [reason, setReason] = useState('');
+  const [note, setNote] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
       const nextWeek = new Date();
       nextWeek.setDate(nextWeek.getDate() + 7);
-      setStartDate(nextWeek.toISOString().split('T')[0]);
-      setEndDate(nextWeek.toISOString().split('T')[0]);
-      setReason('');
+      const nextWeekStr = nextWeek.toISOString().split('T')[0];
+      setEmployeeId(modalEmployeeId || '');
+      setStartDate(nextWeekStr);
+      setEndDate(nextWeekStr);
+      setNote('');
     }
-  }, [isOpen]);
+  }, [isOpen, modalEmployeeId]);
+
+  const blockedShifts = useMemo(() => {
+    if (!employeeId) return [];
+    return getBlockedShiftsForEmployee(employeeId);
+  }, [employeeId, getBlockedShiftsForEmployee]);
 
   if (!isManager) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!startDate || !endDate || !reason || !currentUser) {
-      showToast('Please fill in all fields', 'error');
+    if (!employeeId || !startDate || !endDate || !note.trim()) {
+      showToast('Select an employee, dates, and add a reason', 'error');
       return;
     }
-
-    addBlockedPeriod({
-      startDate,
-      endDate,
-      reason,
-      createdBy: currentUser.id,
-    });
-    
-    showToast('Blocked period added', 'success');
-    setStartDate('');
-    setEndDate('');
-    setReason('');
-  };
-
-  const handleDelete = (id: string) => {
-    deleteBlockedPeriod(id);
-    showToast('Blocked period removed', 'success');
+    setSubmitting(true);
+    const result = await createBlockedPeriod(employeeId, startDate, endDate, note.trim());
+    if (!result.success) {
+      showToast(result.error || 'Unable to block out days', 'error');
+      setSubmitting(false);
+      return;
+    }
+    showToast('Blocked days added', 'success');
+    closeModal();
+    setSubmitting(false);
   };
 
   return (
-    <Modal 
-      isOpen={isOpen} 
-      onClose={closeModal} 
-      title="Manage Blocked Periods"
-      size="lg"
-    >
+    <Modal isOpen={isOpen} onClose={closeModal} title="Block Out Days" size="lg">
       <div className="space-y-6">
-        {/* Existing Blocked Periods */}
-        {blockedPeriods.length > 0 && (
+        <div>
+          <label className="block text-sm font-medium text-theme-secondary mb-1.5">
+            Employee
+          </label>
+          <select
+            value={employeeId}
+            onChange={(e) => setEmployeeId(e.target.value)}
+            className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+          >
+            <option value="">Select employee...</option>
+            {employees.map((employee) => (
+              <option key={employee.id} value={employee.id}>
+                {employee.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {employeeId && blockedShifts.length > 0 && (
           <div>
             <h4 className="text-sm font-medium text-theme-secondary mb-2 flex items-center gap-2">
               <CalendarOff className="w-4 h-4" />
-              Current Blocked Periods
+              Current Blocks
             </h4>
             <div className="space-y-2 max-h-48 overflow-y-auto">
-              {blockedPeriods.map(period => (
+              {blockedShifts.map((shift) => (
                 <div
-                  key={period.id}
+                  key={shift.id}
                   className="flex items-center justify-between p-3 bg-red-500/10 border border-red-500/30 rounded-lg"
                 >
                   <div>
                     <p className="text-sm text-red-400 font-medium">
-                      {formatDateLong(period.startDate)}
-                      {period.startDate !== period.endDate && ` - ${formatDateLong(period.endDate)}`}
+                      {formatDateLong(shift.date)}
                     </p>
-                    <p className="text-xs text-theme-tertiary mt-1">{period.reason}</p>
+                    {shift.notes && (
+                      <p className="text-xs text-theme-tertiary mt-1">{shift.notes}</p>
+                    )}
                   </div>
-                  <button
-                    onClick={() => handleDelete(period.id)}
-                    className="p-2 rounded-lg hover:bg-red-500/20 text-red-400 transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Add New */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <h4 className="text-sm font-medium text-theme-secondary">
-            Add New Blocked Period
+            Add Block Out Days
           </h4>
 
           <div className="grid grid-cols-2 gap-4">
@@ -123,7 +134,7 @@ export function BlockedPeriodModal() {
                     setEndDate(e.target.value);
                   }
                 }}
-                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 required
               />
             </div>
@@ -136,7 +147,7 @@ export function BlockedPeriodModal() {
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
                 min={startDate}
-                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 required
               />
             </div>
@@ -144,21 +155,16 @@ export function BlockedPeriodModal() {
 
           <div>
             <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-              Reason
+              Reason (required)
             </label>
             <input
               type="text"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-              placeholder="e.g., Valentine's Day - All hands on deck"
-              required
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+              placeholder="Reason for block"
             />
           </div>
-
-          <p className="text-xs text-theme-muted">
-            Blocking a period prevents employees from requesting time off during these dates.
-          </p>
 
           <div className="flex gap-3 pt-2">
             <div className="flex-1" />
@@ -171,9 +177,10 @@ export function BlockedPeriodModal() {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-400 transition-all hover:scale-105 text-sm font-medium"
+              disabled={submitting}
+              className="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-400 transition-all hover:scale-105 text-sm font-medium disabled:opacity-50"
             >
-              Add Blocked Period
+              {submitting ? 'Blocking...' : 'Block Days'}
             </button>
           </div>
         </form>

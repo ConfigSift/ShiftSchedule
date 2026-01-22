@@ -32,6 +32,7 @@
   * { border-color: var(--border-primary); }
   body {
     @apply antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
     background-color: var(--bg-primary);
     color: var(--text-primary);
   }

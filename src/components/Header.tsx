@@ -13,14 +13,15 @@ import {
   Sun,
   Moon,
   CalendarDays,
-  Bell,
   MessageSquare,
   User,
   LogOut,
   CalendarOff,
+  Users,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { getUserRole, isManagerRole } from '../utils/role';
 
 export function Header() {
   const router = useRouter();
@@ -33,19 +34,37 @@ export function Header() {
     goToNext,
     openModal,
     getPendingTimeOffRequests,
+    showToast,
   } = useScheduleStore();
 
-  const { currentUser, isManager, logout } = useAuthStore();
+  const { currentUser, signOut, activeRestaurantCode, clearActiveOrganization } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
+  const currentRole = getUserRole(currentUser?.role);
 
   const handleLogout = () => {
-    logout();
+    signOut();
     router.push('/login');
   };
 
   const isToday = isSameDay(selectedDate, new Date());
   const weekDates = getWeekDates(selectedDate);
   const pendingRequests = getPendingTimeOffRequests();
+  const canSwitchRestaurant = isManagerRole(currentRole);
+
+  const handleCopyRestaurant = async () => {
+    if (!activeRestaurantCode) return;
+    try {
+      await navigator.clipboard.writeText(activeRestaurantCode);
+      showToast('Restaurant ID copied', 'success');
+    } catch {
+      showToast('Unable to copy Restaurant ID', 'error');
+    }
+  };
+
+  const handleSwitchRestaurant = () => {
+    clearActiveOrganization();
+    router.push('/manager');
+  };
 
   const getDateDisplay = () => {
     if (viewMode === 'day') {
@@ -125,6 +144,29 @@ export function Header() {
 
       {/* Right: Actions */}
       <div className="flex items-center gap-1 sm:gap-2">
+        {activeRestaurantCode && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-theme-tertiary text-theme-secondary text-xs">
+            <span>Restaurant:</span>
+            <span className="text-theme-primary font-semibold">{activeRestaurantCode}</span>
+            <button
+              type="button"
+              onClick={handleCopyRestaurant}
+              className="px-2 py-0.5 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors text-[10px]"
+            >
+              Copy
+            </button>
+          </div>
+        )}
+
+        {canSwitchRestaurant && (
+          <button
+            type="button"
+            onClick={handleSwitchRestaurant}
+            className="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors text-xs"
+          >
+            Switch Restaurant
+          </button>
+        )}
         {/* Chat Link */}
         <Link
           href="/chat"
@@ -135,23 +177,33 @@ export function Header() {
         </Link>
 
         {/* Manager Only: Notifications */}
-        {isManager && (
-          <button
-            onClick={() => openModal('timeOffReview')}
-            className="relative p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
+        {isManagerRole(currentRole) && (
+          <Link
+            href="/staff"
+            className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
+            title="Manage Staff"
+          >
+            <Users className="w-5 h-5" />
+          </Link>
+        )}
+
+        {isManagerRole(currentRole) && (
+          <Link
+            href="/time-off"
+            className="relative flex items-center gap-2 px-3 py-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors text-sm font-medium"
             title="Time Off Requests"
           >
-            <Bell className="w-5 h-5" />
+            <span>Review Requests</span>
             {pendingRequests.length > 0 && (
-              <span className="absolute -top-1 -right-1 w-5 h-5 bg-amber-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
+              <span className="w-5 h-5 bg-amber-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
                 {pendingRequests.length}
               </span>
             )}
-          </button>
+          </Link>
         )}
 
         {/* Manager Only: Blocked Periods */}
-        {isManager && (
+        {isManagerRole(currentRole) && (
           <button
             onClick={() => openModal('blockedPeriod')}
             className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
@@ -172,28 +224,40 @@ export function Header() {
         <div className="hidden sm:block w-px h-6 bg-theme-primary mx-1" />
 
         {/* Add Staff - Manager Only */}
-        {isManager && (
-          <button 
-            onClick={() => openModal('addEmployee')}
+        {isManagerRole(currentRole) && (
+          <Link
+            href="/staff"
             className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-400 transition-all hover:scale-105 hover:shadow-lg text-sm font-medium"
           >
             <UserPlus className="w-4 h-4" />
             Add Staff
-          </button>
+          </Link>
         )}
 
         {/* Add Shift */}
-        <button 
-          onClick={() => openModal('addShift')}
-          className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:scale-105 hover:shadow-lg text-sm font-medium"
-        >
-          <Plus className="w-4 h-4" />
-          <span className="hidden sm:inline">Add Shift</span>
-        </button>
+        {isManagerRole(currentRole) && (
+          <button 
+            onClick={() => openModal('addShift')}
+            className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:scale-105 hover:shadow-lg text-sm font-medium"
+          >
+            <Plus className="w-4 h-4" />
+            <span className="hidden sm:inline">Add Shift</span>
+          </button>
+        )}
+
+        {currentUser && (
+          <button
+            onClick={() => openModal('timeOffRequest', { employeeId: currentUser.id })}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors text-sm font-medium"
+          >
+            <CalendarOff className="w-4 h-4" />
+            Request Time Off
+          </button>
+        )}
 
         {/* Profile */}
         <Link
-          href="/profile"
+          href={currentUser?.id ? `/staff/${currentUser.id}` : '/login?notice=login'}
           className="p-2 rounded-lg bg-theme-tertiary hover:bg-theme-hover text-theme-secondary hover:text-theme-primary transition-colors"
           title="My Profile"
         >

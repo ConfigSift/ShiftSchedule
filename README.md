@@ -19,7 +19,7 @@ After editing `.env.local`, restart the dev server to pick up changes.
 Quick reset (clear `.next` and restart):
 
 ```powershell
-Remove-Item -Recurse -Force .next
+Remove-Item -Recurse -Force .\.next -ErrorAction SilentlyContinue
 pnpm dev
 ```
 
@@ -35,13 +35,54 @@ Seed the default restaurant (SKYBIRD / RST-K7M2Q9PJ):
 npm run seed:restaurant
 ```
 
+Seed the initial admin account:
+
+```powershell
+$env:NEXT_PUBLIC_SUPABASE_URL="https://<your-project-ref>.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
+pnpm seed:initial-admin
+```
+
 Run the dev server:
 
 ```powershell
 pnpm dev
 ```
 
-Staff signup: go to `/signup` and enter the Restaurant ID `RST-K7M2Q9PJ` when prompted.
+Login (seeded admin):
+- Restaurant ID: RST-K7M2Q9PJ
+- Email: ggodo@oakland.edu
+- Passcode: 503211
+
+Staff accounts are created by managers/admins in `/staff`.
+
+Login flow:
+- Visit `/login`.
+- Enter Restaurant ID (format `RST-XXXXXXXX`), email, and 6-digit passcode.
+- Accounts are created by managers/admins in `/staff`.
+
+Restart dev server after env changes:
+
+```powershell
+Remove-Item -Recurse -Force .\\.next -ErrorAction SilentlyContinue
+pnpm dev
+```
+
+## Supabase SQL Editor Setup (No CLI)
+
+If you don't have Supabase CLI installed, use the in-app diagnostics page to get the SQL you need:
+
+1. Run the app: `pnpm dev`
+2. Visit `http://localhost:3000/debug/db`
+3. Copy the SQL blocks shown for any missing tables/columns.
+4. Paste into Supabase Dashboard → SQL Editor → Run.
+
+After schema changes, restart the dev server:
+
+```powershell
+Remove-Item -Recurse -Force .\\.next -ErrorAction SilentlyContinue
+pnpm dev
+```
 
 ## Learn More
 

@@ -9,7 +9,6 @@ export { StatsFooter } from './StatsFooter';
 export { Dashboard } from './Dashboard';
 export { AddShiftModal } from './AddShiftModal';
 export { AddEmployeeModal } from './AddEmployeeModal';
-export { EmployeeProfileModal } from './EmployeeProfileModal';
 export { TimeOffRequestModal } from './TimeOffRequestModal';
 export { TimeOffReviewModal } from './TimeOffReviewModal';
 export { BlockedPeriodModal } from './BlockedPeriodModal';

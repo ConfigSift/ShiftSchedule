@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
+import { getUserRole, isManagerRole } from '../../utils/role';
 import { Toast } from '../../components/Toast';
 import { SECTIONS } from '../../types';
 import { formatDateLong } from '../../utils/timeUtils';
@@ -12,7 +13,6 @@ import {
   ArrowLeft, 
   Mail, 
   Phone, 
-  FileText, 
   Calendar, 
   Clock, 
   Shield,
@@ -24,18 +24,16 @@ export default function ProfilePage() {
   const { 
     hydrate, 
     isHydrated, 
-    employees, 
-    shifts,
+    getShiftsForRestaurant,
     timeOffRequests,
-    updateEmployee,
     openModal,
     showToast,
+    loadRestaurantData,
   } = useScheduleStore();
-  const { currentUser, checkSession, isInitialized, setCurrentUser } = useAuthStore();
+  const { currentUser, init, isInitialized, activeRestaurantId, updateProfile } = useAuthStore();
 
-  const [email, setEmail] = useState('');
+  const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
-  const [notes, setNotes] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
 
   useEffect(() => {
@@ -44,9 +42,13 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (isHydrated) {
-      checkSession(employees);
+      init();
     }
-  }, [isHydrated, employees, checkSession]);
+  }, [isHydrated, init]);
+
+  useEffect(() => {
+    loadRestaurantData(activeRestaurantId);
+  }, [activeRestaurantId, loadRestaurantData]);
 
   useEffect(() => {
     if (isHydrated && isInitialized && !currentUser) {
@@ -56,11 +58,16 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (currentUser) {
-      setEmail(currentUser.profile?.email || '');
-      setPhone(currentUser.profile?.phone || '');
-      setNotes(currentUser.profile?.notes || '');
+      setFullName(currentUser.fullName || '');
+      setPhone(currentUser.phone || '');
     }
   }, [currentUser]);
+
+  useEffect(() => {
+    if (isHydrated && isInitialized && currentUser?.id) {
+      router.replace(`/staff/${currentUser.id}`);
+    }
+  }, [isHydrated, isInitialized, currentUser, router]);
 
   if (!isHydrated || !isInitialized || !currentUser) {
     return (
@@ -70,10 +77,22 @@ export default function ProfilePage() {
     );
   }
 
-  const sectionConfig = SECTIONS[currentUser.section];
+  if (currentUser?.id) {
+    return (
+      <div className="min-h-screen bg-theme-primary flex items-center justify-center">
+        <p className="text-theme-secondary">Redirecting to profile...</p>
+      </div>
+    );
+  }
+
+  const roleLabel = getUserRole(currentUser.role);
+  const sectionConfig = SECTIONS[isManagerRole(roleLabel) ? 'management' : 'front'];
+  const displayName = fullName || currentUser.fullName || currentUser.email || 'Team Member';
   
   // Stats
-  const myShifts = shifts.filter(s => s.employeeId === currentUser.id);
+  const myShifts = getShiftsForRestaurant(activeRestaurantId).filter(
+    s => s.employeeId === currentUser.id && !s.isBlocked
+  );
   const now = new Date();
   const weekStart = new Date(now);
   weekStart.setDate(now.getDate() - now.getDay());
@@ -87,20 +106,18 @@ export default function ProfilePage() {
   const weeklyHours = thisWeekShifts.reduce((sum, s) => sum + (s.endHour - s.startHour), 0);
 
   const pendingRequests = timeOffRequests.filter(
-    r => r.employeeId === currentUser.id && r.status === 'pending'
+    r => r.employeeId === currentUser.id && r.status === 'PENDING'
   );
 
-  const handleSave = () => {
-    updateEmployee(currentUser.id, {
-      profile: { email, phone, notes },
+  const handleSave = async () => {
+    const result = await updateProfile({
+      fullName: fullName.trim() || currentUser.fullName,
+      phone: phone || null,
     });
-    
-    // Update current user in auth store
-    const updated = employees.find(e => e.id === currentUser.id);
-    if (updated) {
-      setCurrentUser({ ...updated, profile: { email, phone, notes } });
+    if (!result.success) {
+      showToast(result.error || 'Unable to update profile', 'error');
+      return;
     }
-    
     showToast('Profile updated', 'success');
     setHasChanges(false);
   };
@@ -133,17 +150,17 @@ export default function ProfilePage() {
               color: sectionConfig.color,
             }}
           >
-            {currentUser.name.split(' ').map(n => n[0]).join('')}
+            {displayName.split(' ').map(n => n[0]).join('')}
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-bold text-theme-primary">
-                {currentUser.name}
+                {displayName}
               </h1>
-              {currentUser.userRole === 'manager' && (
+            {isManagerRole(roleLabel) && (
                 <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/20 text-amber-500 flex items-center gap-1">
                   <Shield className="w-3 h-3" />
-                  Manager
+                  {roleLabel}
                 </span>
               )}
             </div>
@@ -174,15 +191,26 @@ export default function ProfilePage() {
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
+                Full Name
+              </label>
+              <input
+                type="text"
+                value={fullName}
+                onChange={(e) => handleChange(setFullName, e.target.value)}
+                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                placeholder="Your name"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-theme-secondary mb-1.5">
                 <Mail className="w-4 h-4 inline mr-2" />
                 Email
               </label>
               <input
                 type="email"
-                value={email}
-                onChange={(e) => handleChange(setEmail, e.target.value)}
-                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                placeholder="your@email.com"
+                value={currentUser.email || ''}
+                disabled
+                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary opacity-70"
               />
             </div>
 
@@ -200,19 +228,34 @@ export default function ProfilePage() {
               />
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                <FileText className="w-4 h-4 inline mr-2" />
-                Notes
-              </label>
-              <textarea
-                value={notes}
-                onChange={(e) => handleChange(setNotes, e.target.value)}
-                rows={3}
-                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50 resize-none"
-                placeholder="Any notes about yourself..."
-              />
-            </div>
+            {isManagerRole(roleLabel) && (
+              <div className="p-3 bg-theme-tertiary rounded-lg">
+                <p className="text-xs uppercase tracking-wide text-theme-muted mb-2">Role</p>
+                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-400">
+                  {roleLabel}
+                </span>
+              </div>
+            )}
+
+            {isManagerRole(roleLabel) && (
+              <div className="p-3 bg-theme-tertiary rounded-lg">
+                <p className="text-xs uppercase tracking-wide text-theme-muted mb-2">Jobs</p>
+                {currentUser.jobs.length === 0 ? (
+                  <p className="text-xs text-theme-muted">No jobs assigned</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {currentUser.jobs.map((job) => (
+                      <span
+                        key={job}
+                        className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-theme-secondary text-theme-secondary"
+                      >
+                        {job}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {hasChanges && (
               <button

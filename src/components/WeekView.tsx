@@ -1,23 +1,29 @@
 'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
+import { useAuthStore } from '../store/authStore';
 import { SECTIONS } from '../types';
 import { getWeekDates, dateToString, isSameDay, formatHour } from '../utils/timeUtils';
 import { Palmtree } from 'lucide-react';
+import { getUserRole, isManagerRole } from '../utils/role';
 
 export function WeekView() {
   const {
     selectedDate,
-    getFilteredEmployees,
-    shifts,
+    getFilteredEmployeesForRestaurant,
+    getShiftsForRestaurant,
     setSelectedDate,
     setViewMode,
     openModal,
     hasApprovedTimeOff,
+    hasBlockedShiftOnDate,
   } = useScheduleStore();
 
+  const { activeRestaurantId, currentUser } = useAuthStore();
+  const isManager = isManagerRole(getUserRole(currentUser?.role));
   const weekDates = getWeekDates(selectedDate);
-  const filteredEmployees = getFilteredEmployees();
+  const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
+  const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const today = new Date();
 
   const handleDayClick = (date: Date) => {
@@ -25,8 +31,10 @@ export function WeekView() {
     setViewMode('day');
   };
 
-  const handleShiftClick = (shift: typeof shifts[0], e: React.MouseEvent) => {
+  const handleShiftClick = (shift: typeof scopedShifts[0], e: React.MouseEvent) => {
     e.stopPropagation();
+    if (shift.isBlocked) return;
+    if (!isManager) return;
     openModal('editShift', shift);
   };
 
@@ -107,24 +115,31 @@ export function WeekView() {
                 <div className="flex-1 flex">
                   {weekDates.map((date) => {
                     const dateStr = dateToString(date);
-                    const dayShifts = shifts.filter(
-                      s => s.employeeId === employee.id && s.date === dateStr
+                    const dayShifts = scopedShifts.filter(
+                      s => s.employeeId === employee.id && s.date === dateStr && !s.isBlocked
                     );
                     const isToday = isSameDay(date, today);
                     const hasTimeOff = hasApprovedTimeOff(employee.id, dateStr);
+                    const hasBlocked = hasBlockedShiftOnDate(employee.id, dateStr);
 
                     return (
                       <div
                         key={date.toISOString()}
                         className={`flex-1 border-r border-theme-primary/30 p-1 ${
                           isToday ? 'bg-amber-500/5' : ''
-                        } ${hasTimeOff ? 'bg-emerald-500/5' : ''}`}
+                        } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''}`}
                       >
                         {hasTimeOff ? (
                           <div className="h-full flex items-center justify-center">
                             <div className="flex items-center gap-1 px-2 py-1 bg-emerald-500/20 rounded text-emerald-500">
                               <Palmtree className="w-3 h-3" />
                               <span className="text-xs font-medium">OFF</span>
+                            </div>
+                          </div>
+                        ) : hasBlocked ? (
+                          <div className="h-full flex items-center justify-center">
+                            <div className="flex items-center gap-1 px-2 py-1 bg-red-500/20 rounded text-red-400">
+                              <span className="text-xs font-medium">BLOCKED</span>
                             </div>
                           </div>
                         ) : (
@@ -141,6 +156,11 @@ export function WeekView() {
                               title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
                             >
                               {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
+                              {(shift.job || isManager) && (
+                                <span className="ml-1 text-[10px] text-theme-muted">
+                                  {shift.job || '(No job)'}
+                                </span>
+                              )}
                             </div>
                           ))
                         )}
