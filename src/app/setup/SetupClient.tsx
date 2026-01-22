@@ -50,7 +50,7 @@ export default function SetupClient() {
 
   useEffect(() => {
     let isMounted = true;
-    supabase.rpc('has_manager').then(({ data }) => {
+    supabase.rpc('has_manager').then(({ data }: { data: boolean | null }) => {
       if (isMounted && data) {
         router.push('/login');
       }

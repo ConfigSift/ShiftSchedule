@@ -32,7 +32,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
 
   useEffect(() => {
     let isMounted = true;
-    supabase.rpc('has_manager').then(({ data }) => {
+    supabase.rpc('has_manager').then(({ data }: { data: boolean | null }) => {
       if (isMounted) {
         setHasManagers(Boolean(data));
       }
