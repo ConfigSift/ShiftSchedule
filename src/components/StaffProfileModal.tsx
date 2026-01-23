@@ -67,6 +67,7 @@ export function StaffProfileModal({
 
   const isSelf = Boolean(user?.authUserId && currentAuthUserId && user.authUserId === currentAuthUserId);
   const targetIsAdmin = getUserRole(user.accountType) === 'ADMIN';
+  const showAdminFields = isManager || isAdmin;
   const canEdit = mode === 'edit' && isManager && !(targetIsAdmin && !isAdmin);
   const canEditAccountType =
     canEdit && (isAdmin || isManager) && !isSelf && !(targetIsAdmin && !isAdmin);
@@ -158,56 +159,62 @@ export function StaffProfileModal({
           />
         </div>
 
-        <div>
-          <label className="text-sm text-theme-secondary">Account type</label>
-          <select
-            value={accountType}
-            onChange={(e) => setAccountType(e.target.value)}
-            disabled={!canEditAccountType || isSelf}
-            className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
-          >
-            {isAdmin && allowAdminCreation && <option value="ADMIN">ADMIN</option>}
-            <option value="MANAGER">MANAGER</option>
-            <option value="EMPLOYEE">EMPLOYEE</option>
-          </select>
-          {!canEditAccountType && (
-            <p className="text-xs text-theme-muted mt-1">Account type changes are restricted.</p>
-          )}
-        </div>
-
-        <div>
-          <label className="text-sm text-theme-secondary">Jobs</label>
-          <div className="grid grid-cols-2 gap-2 mt-2">
-            {JOB_OPTIONS.map((job) => (
-              <label key={job} className="flex items-center gap-2 text-xs text-theme-secondary">
-                <input
-                  type="checkbox"
-                  checked={jobs.includes(job)}
-                  onChange={() => toggleJob(job)}
-                  disabled={!canEdit}
-                  className="accent-amber-500"
-                />
-                {job}
-              </label>
-            ))}
+        {showAdminFields && (
+          <div>
+            <label className="text-sm text-theme-secondary">Account type</label>
+            <select
+              value={accountType}
+              onChange={(e) => setAccountType(e.target.value)}
+              disabled={!canEditAccountType || isSelf}
+              className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+            >
+              {isAdmin && allowAdminCreation && <option value="ADMIN">ADMIN</option>}
+              <option value="MANAGER">MANAGER</option>
+              <option value="EMPLOYEE">EMPLOYEE</option>
+            </select>
+            {!canEditAccountType && (
+              <p className="text-xs text-theme-muted mt-1">Account type changes are restricted.</p>
+            )}
           </div>
-          {requiresJobs && jobs.length === 0 && (
-            <p className="text-xs text-red-400 mt-1">Assign at least one job.</p>
-          )}
-        </div>
+        )}
 
-        <div>
-          <label className="text-sm text-theme-secondary">Hourly Pay</label>
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={hourlyPay}
-            onChange={(e) => setHourlyPay(e.target.value)}
-            disabled={!canEdit}
-            className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
-          />
-        </div>
+        {showAdminFields && (
+          <div>
+            <label className="text-sm text-theme-secondary">Jobs</label>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {JOB_OPTIONS.map((job) => (
+                <label key={job} className="flex items-center gap-2 text-xs text-theme-secondary">
+                  <input
+                    type="checkbox"
+                    checked={jobs.includes(job)}
+                    onChange={() => toggleJob(job)}
+                    disabled={!canEdit}
+                    className="accent-amber-500"
+                  />
+                  {job}
+                </label>
+              ))}
+            </div>
+            {requiresJobs && jobs.length === 0 && (
+              <p className="text-xs text-red-400 mt-1">Assign at least one job.</p>
+            )}
+          </div>
+        )}
+
+        {showAdminFields && (
+          <div>
+            <label className="text-sm text-theme-secondary">Hourly Pay</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={hourlyPay}
+              onChange={(e) => setHourlyPay(e.target.value)}
+              disabled={!canEdit}
+              className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+            />
+          </div>
+        )}
 
         <div className="flex items-center justify-end gap-2 pt-2">
           <button

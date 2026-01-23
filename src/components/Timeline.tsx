@@ -14,6 +14,7 @@ export function Timeline() {
     getFilteredEmployeesForRestaurant,
     getShiftsForRestaurant,
     businessHours,
+    locations,
     hoveredShiftId,
     setHoveredShift,
     updateShift,
@@ -44,6 +45,7 @@ export function Timeline() {
     top: number;
     employeeName: string;
     job?: string;
+    location?: string;
     time: string;
   } | null>(null);
   const [dragging, setDragging] = useState<{
@@ -59,6 +61,10 @@ export function Timeline() {
   const dateString = selectedDate.toISOString().split('T')[0];
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
+  const locationMap = useMemo(
+    () => new Map(locations.map((location) => [location.id, location.name])),
+    [locations]
+  );
   const hours = Array.from({ length: HOURS_END - HOURS_START + 1 }, (_, i) => HOURS_START + i);
 
   const now = new Date();
@@ -197,10 +203,11 @@ export function Timeline() {
     const shift = scopedShifts.find((s) => s.id === shiftId);
     if (!shift || !containerRef.current) return;
     const employee = filteredEmployees.find((emp) => emp.id === shift.employeeId);
+    const locationName = shift.locationId ? locationMap.get(shift.locationId) : undefined;
     const rect = target.getBoundingClientRect();
     const containerRect = containerRef.current.getBoundingClientRect();
     const tooltipWidth = 220;
-    const tooltipHeight = 72;
+    const tooltipHeight = locationName ? 88 : 72;
     let left = rect.left - containerRect.left + rect.width / 2 - tooltipWidth / 2;
     left = Math.max(12, Math.min(containerRect.width - tooltipWidth - 12, left));
     let top = rect.top - containerRect.top - tooltipHeight - 8;
@@ -213,6 +220,7 @@ export function Timeline() {
       top,
       employeeName: employee?.name || 'Unknown',
       job: shift.job,
+      location: locationName,
       time: `${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`,
     });
   };
@@ -471,6 +479,7 @@ export function Timeline() {
 
                       {/* Shifts */}
                       {!hasTimeOff && !hasBlocked && employeeShifts.map((shift) => {
+                        const locationName = shift.locationId ? locationMap.get(shift.locationId) : undefined;
                         const position = getShiftPosition(shift.startHour, shift.endHour);
                         const isHovered = hoveredShiftId === shift.id;
                         const isDragging = dragging?.shiftId === shift.id;
@@ -544,6 +553,15 @@ export function Timeline() {
                                   {shift.job}
                                 </span>
                               )}
+                              {locationName && (
+                                <span
+                                  className={`absolute right-2 bottom-1 text-[11px] ${
+                                    isHovered || isDragging ? 'text-white/90' : 'text-theme-muted'
+                                  }`}
+                                >
+                                  {locationName}
+                                </span>
+                              )}
                             </div>
                             
                             <div
@@ -596,6 +614,7 @@ export function Timeline() {
         >
           <div className="font-semibold">{tooltip.employeeName}</div>
           {tooltip.job && <div className="text-theme-tertiary">{tooltip.job}</div>}
+          {tooltip.location && <div className="text-theme-tertiary">{tooltip.location}</div>}
           <div className="text-theme-muted">{tooltip.time}</div>
         </div>
       )}

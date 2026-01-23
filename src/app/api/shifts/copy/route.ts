@@ -8,11 +8,12 @@ import { shiftsOverlap } from '@/utils/timeUtils';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-type CopyMode = 'nextWeek' | 'weeksAhead' | 'dateRange';
+type CopyMode = 'nextDay' | 'nextWeek' | 'weeksAhead' | 'dateRange';
 
 type CopyPayload = {
   sourceWeekStart: string;
   sourceWeekEnd: string;
+  sourceDay?: string;
   mode: CopyMode;
   weeksAhead?: number;
   targetStartWeek?: string;
@@ -82,7 +83,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!isValidDate(payload.sourceWeekStart) || !isValidDate(payload.sourceWeekEnd) || !payload.mode) {
+  if (!payload.mode) {
+    return NextResponse.json({ error: 'Missing or invalid fields.' }, { status: 400 });
+  }
+  if (payload.mode === 'nextDay' && !isValidDate(payload.sourceDay)) {
+    return NextResponse.json({ error: 'sourceDay is required.' }, { status: 400 });
+  }
+  if (payload.mode !== 'nextDay' && (!isValidDate(payload.sourceWeekStart) || !isValidDate(payload.sourceWeekEnd))) {
     return NextResponse.json({ error: 'Missing or invalid fields.' }, { status: 400 });
   }
 
@@ -119,7 +126,10 @@ export async function POST(request: NextRequest) {
   }
 
   let targetWeekStarts: string[] = [];
-  if (payload.mode === 'nextWeek') {
+  const isDayMode = payload.mode === 'nextDay';
+  if (payload.mode === 'nextDay') {
+    targetWeekStarts = [addDays(payload.sourceDay!, 1)];
+  } else if (payload.mode === 'nextWeek') {
     targetWeekStarts = [addDays(payload.sourceWeekStart, 7)];
   } else if (payload.mode === 'weeksAhead') {
     const weeksAhead = Number(payload.weeksAhead);
@@ -156,8 +166,8 @@ export async function POST(request: NextRequest) {
   }
 
   const allowOverrideBlocked = Boolean(payload.allowOverrideBlocked);
-  const sourceWeekStart = payload.sourceWeekStart;
-  const sourceWeekEnd = payload.sourceWeekEnd;
+  const sourceWeekStart = isDayMode ? payload.sourceDay! : payload.sourceWeekStart;
+  const sourceWeekEnd = isDayMode ? payload.sourceDay! : payload.sourceWeekEnd;
 
   const { data: sourceShifts, error: sourceError } = await supabaseAdmin
     .from('shifts')
@@ -188,7 +198,7 @@ export async function POST(request: NextRequest) {
   const targetRangeStart = targetWeekStarts.reduce((min, cur) => (cur < min ? cur : min), targetWeekStarts[0]);
   const targetRangeEnd = addDays(
     targetWeekStarts.reduce((max, cur) => (cur > max ? cur : max), targetWeekStarts[0]),
-    6
+    isDayMode ? 0 : 6
   );
 
   const { data: existingShifts, error: existingError } = await supabaseAdmin
@@ -333,6 +343,7 @@ export async function POST(request: NextRequest) {
         notes: sourceShift.notes ?? null,
         is_blocked: sourceShift.is_blocked ?? false,
         job: sourceShift.job ?? null,
+        location_id: sourceShift.location_id ?? null,
       });
 
       existing.push({

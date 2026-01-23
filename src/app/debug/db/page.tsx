@@ -37,6 +37,14 @@ const SHIFTS_REQUIRED_COLUMNS = [
   'end_time',
   'is_blocked',
   'job',
+  'location_id',
+];
+
+const LOCATIONS_REQUIRED_COLUMNS = [
+  'organization_id',
+  'name',
+  'sort_order',
+  'created_at',
 ];
 
 const CHAT_ROOMS_REQUIRED_COLUMNS = ['organization_id', 'name', 'created_by_auth_user_id', 'created_at'];
@@ -70,6 +78,14 @@ const BUSINESS_HOURS_REQUIRED_COLUMNS = [
   'open_time',
   'close_time',
   'enabled',
+];
+
+const SHIFT_EXCHANGE_REQUIRED_COLUMNS = [
+  'organization_id',
+  'shift_id',
+  'requested_by_auth_user_id',
+  'status',
+  'created_at',
 ];
 
 export default function DebugDbPage() {
@@ -106,6 +122,41 @@ export default function DebugDbPage() {
     return { ok: true, error: result.error.message };
   };
 
+  const checkIndex = async (client: ReturnType<typeof getSupabaseClient>, table: string, indexName: string) => {
+    const result = await client
+      .from('pg_indexes')
+      .select('indexname')
+      .eq('tablename', table)
+      .eq('indexname', indexName);
+    if (!result.error) {
+      return { ok: (result.data || []).length > 0 };
+    }
+    return { ok: false, error: result.error.message };
+  };
+
+  const checkPolicy = async (client: ReturnType<typeof getSupabaseClient>, table: string, policyName: string) => {
+    const result = await client
+      .from('pg_policies')
+      .select('policyname')
+      .eq('tablename', table)
+      .eq('policyname', policyName);
+    if (!result.error) {
+      return { ok: (result.data || []).length > 0 };
+    }
+    return { ok: false, error: result.error.message };
+  };
+
+  const checkConstraint = async (client: ReturnType<typeof getSupabaseClient>, constraintName: string) => {
+    const result = await client
+      .from('pg_constraint')
+      .select('conname')
+      .eq('conname', constraintName);
+    if (!result.error) {
+      return { ok: (result.data || []).length > 0 };
+    }
+    return { ok: false, error: result.error.message };
+  };
+
   const runChecks = async () => {
     setLoading(true);
     setError(null);
@@ -125,6 +176,8 @@ export default function DebugDbPage() {
       const chatMessagesTable = await checkTable(client, 'chat_messages');
       const blockedDaysTable = await checkTable(client, 'blocked_day_requests');
       const businessHoursTable = await checkTable(client, 'business_hours');
+      const locationsTable = await checkTable(client, 'locations');
+      const shiftExchangeTable = await checkTable(client, 'shift_exchange_requests');
 
       const columnStatus: Record<string, string[]> = {};
       const checksList: CheckItem[] = [];
@@ -187,6 +240,20 @@ export default function DebugDbPage() {
         details: !businessHoursTable.ok && businessHoursTable.error ? businessHoursTable.error : undefined,
       });
       if (!businessHoursTable.ok) addMissing('business_hours', '__table__');
+      checksList.push({
+        id: 'locations_table',
+        label: 'public.locations table exists',
+        ok: locationsTable.ok,
+        details: !locationsTable.ok && locationsTable.error ? locationsTable.error : undefined,
+      });
+      if (!locationsTable.ok) addMissing('locations', '__table__');
+      checksList.push({
+        id: 'shift_exchange_table',
+        label: 'public.shift_exchange_requests table exists',
+        ok: shiftExchangeTable.ok,
+        details: !shiftExchangeTable.ok && shiftExchangeTable.error ? shiftExchangeTable.error : undefined,
+      });
+      if (!shiftExchangeTable.ok) addMissing('shift_exchange_requests', '__table__');
 
       if (usersTable.ok) {
         const baseColumns = await Promise.all(
@@ -300,7 +367,7 @@ export default function DebugDbPage() {
         });
         checksList.push({
           id: 'shifts_required',
-          label: 'shifts has organization_id, shift_date, start_time, end_time, is_blocked, job',
+          label: 'shifts has organization_id, shift_date, start_time, end_time, is_blocked, job, location_id',
           ok: shiftColumns.every((c) => c.ok),
           details: shiftColumns.some((c) => !c.ok)
             ? `Missing: ${shiftColumns.filter((c) => !c.ok).map((c) => c.column).join(', ')}`
@@ -388,6 +455,111 @@ export default function DebugDbPage() {
         });
       }
 
+      if (locationsTable.ok) {
+        const locationColumns = await Promise.all(
+          LOCATIONS_REQUIRED_COLUMNS.map(async (column) => ({
+            column,
+            ...(await checkColumn(client, 'locations', column)),
+          }))
+        );
+        locationColumns.forEach((result) => {
+          if (!result.ok) addMissing('locations', result.column);
+        });
+        checksList.push({
+          id: 'locations_required',
+          label: 'locations has required columns',
+          ok: locationColumns.every((c) => c.ok),
+          details: locationColumns.some((c) => !c.ok)
+            ? `Missing: ${locationColumns.filter((c) => !c.ok).map((c) => c.column).join(', ')}`
+            : undefined,
+        });
+      }
+
+      if (shiftExchangeTable.ok) {
+        const exchangeColumns = await Promise.all(
+          SHIFT_EXCHANGE_REQUIRED_COLUMNS.map(async (column) => ({
+            column,
+            ...(await checkColumn(client, 'shift_exchange_requests', column)),
+          }))
+        );
+        exchangeColumns.forEach((result) => {
+          if (!result.ok) addMissing('shift_exchange_requests', result.column);
+        });
+        checksList.push({
+          id: 'shift_exchange_required',
+          label: 'shift_exchange_requests has required columns',
+          ok: exchangeColumns.every((c) => c.ok),
+          details: exchangeColumns.some((c) => !c.ok)
+            ? `Missing: ${exchangeColumns.filter((c) => !c.ok).map((c) => c.column).join(', ')}`
+            : undefined,
+        });
+
+        const catalog = client.schema('pg_catalog');
+        const publicNamespace = await catalog
+          .from('pg_namespace')
+          .select('oid')
+          .eq('nspname', 'public')
+          .maybeSingle();
+        const publicOid = (publicNamespace.data as { oid?: number } | null)?.oid;
+        const tableOid = publicOid
+          ? await catalog
+              .from('pg_class')
+              .select('oid')
+              .eq('relname', 'shift_exchange_requests')
+              .eq('relnamespace', publicOid)
+              .maybeSingle()
+          : { data: null };
+        const shiftExchangeOid = (tableOid.data as { oid?: number } | null)?.oid;
+
+        const statusConstraint =
+          shiftExchangeOid !== undefined
+            ? await catalog
+                .from('pg_constraint')
+                .select('conname')
+                .eq('conname', 'shift_exchange_requests_status_check')
+                .eq('conrelid', shiftExchangeOid)
+            : { data: [] as Array<{ conname: string }>, error: null };
+        const statusConstraintOk = !statusConstraint.error && (statusConstraint.data || []).length > 0;
+        checksList.push({
+          id: 'shift_exchange_status_constraint',
+          label: 'shift_exchange_requests has status check constraint',
+          ok: statusConstraintOk,
+          details: !statusConstraintOk
+            ? statusConstraint.error?.message || 'Missing shift_exchange_requests_status_check constraint'
+            : undefined,
+        });
+
+        const openIndex = await catalog
+          .from('pg_indexes')
+          .select('indexname')
+          .eq('schemaname', 'public')
+          .eq('tablename', 'shift_exchange_requests')
+          .eq('indexname', 'shift_exchange_open_one_per_shift');
+        const openIndexOk = !openIndex.error && (openIndex.data || []).length > 0;
+        checksList.push({
+          id: 'shift_exchange_open_index',
+          label: 'shift_exchange_requests has unique OPEN index',
+          ok: openIndexOk,
+          details: !openIndexOk
+            ? openIndex.error?.message || 'Missing shift_exchange_open_one_per_shift'
+            : undefined,
+        });
+
+        const selectPolicy = await catalog
+          .from('pg_policies')
+          .select('policyname')
+          .eq('schemaname', 'public')
+          .eq('tablename', 'shift_exchange_requests')
+          .eq('policyname', 'ser_select');
+        const selectPolicyOk = !selectPolicy.error && (selectPolicy.data || []).length > 0;
+        checksList.push({
+          id: 'shift_exchange_policy_select',
+          label: 'shift_exchange_requests has select policy',
+          ok: selectPolicyOk,
+          details: !selectPolicyOk ? selectPolicy.error?.message || 'Missing ser_select policy' : undefined,
+        });
+      }
+
       setChecks(checksList);
       setMissingColumns(columnStatus);
     } catch (err) {
@@ -413,6 +585,8 @@ export default function DebugDbPage() {
     const missingChatMessages = missingColumns.chat_messages ?? [];
     const missingBlockedDays = missingColumns.blocked_day_requests ?? [];
     const missingBusinessHours = missingColumns.business_hours ?? [];
+    const missingLocations = missingColumns.locations ?? [];
+    const missingShiftExchange = missingColumns.shift_exchange_requests ?? [];
 
     if (missingOrganizations.includes('restaurant_code')) {
       blocks.push(`-- Organizations: restaurant_code
@@ -549,6 +723,9 @@ create policy "Time off updatable by managers"
       }
       if (missingShifts.includes('job')) {
         shiftAdds.push('add column if not exists job text');
+      }
+      if (missingShifts.includes('location_id')) {
+        shiftAdds.push('add column if not exists location_id uuid references public.locations(id) on delete set null');
       }
       if (shiftAdds.length > 0) {
         blocks.push(`-- Shifts: is_blocked + job
@@ -786,6 +963,167 @@ do $$ begin
           where u.auth_user_id = auth.uid()
             and u.organization_id = business_hours.organization_id
             and lower(coalesce(u.account_type, u.role, '')) in ('admin','manager')
+        )
+      );
+  end if;
+end $$;`);
+    }
+
+    if (missingLocations.length > 0) {
+      const locationAdds: string[] = [];
+      if (missingLocations.includes('organization_id')) locationAdds.push('add column if not exists organization_id uuid');
+      if (missingLocations.includes('name')) locationAdds.push('add column if not exists name text');
+      if (missingLocations.includes('sort_order')) locationAdds.push('add column if not exists sort_order int default 0');
+      if (missingLocations.includes('created_at')) {
+        locationAdds.push('add column if not exists created_at timestamptz default now()');
+      }
+      const alterLocations = locationAdds.length
+        ? `\nalter table if exists public.locations\n  ${locationAdds.join(',\n  ')};`
+        : '';
+      blocks.push(`-- Locations table + RLS
+create table if not exists public.locations (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null,
+  name text not null,
+  sort_order int not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists locations_org_idx on public.locations (organization_id);
+create unique index if not exists locations_org_name_idx on public.locations (organization_id, lower(name));
+${alterLocations}
+alter table public.locations enable row level security;
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'locations' and policyname = 'locations_select') then
+    create policy locations_select on public.locations for select
+      using (exists (select 1 from public.users u where u.auth_user_id = auth.uid() and u.organization_id = locations.organization_id));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'locations' and policyname = 'locations_write') then
+    create policy locations_write on public.locations for all
+      using (
+        exists (
+          select 1 from public.users u
+          where u.auth_user_id = auth.uid()
+            and u.organization_id = locations.organization_id
+            and upper(coalesce(u.role, '')) in ('ADMIN','MANAGER')
+        )
+      )
+      with check (
+        exists (
+          select 1 from public.users u
+          where u.auth_user_id = auth.uid()
+            and u.organization_id = locations.organization_id
+            and upper(coalesce(u.role, '')) in ('ADMIN','MANAGER')
+        )
+      );
+  end if;
+end $$;
+
+alter table if exists public.shifts
+  add column if not exists location_id uuid references public.locations(id) on delete set null;`);
+    }
+
+    if (missingShiftExchange.length > 0) {
+      const exchangeAdds: string[] = [];
+      if (missingShiftExchange.includes('organization_id')) {
+        exchangeAdds.push('add column if not exists organization_id uuid');
+      }
+      if (missingShiftExchange.includes('shift_id')) {
+        exchangeAdds.push('add column if not exists shift_id uuid references public.shifts(id) on delete cascade');
+      }
+      if (missingShiftExchange.includes('requested_by_auth_user_id')) {
+        exchangeAdds.push('add column if not exists requested_by_auth_user_id uuid');
+      }
+      if (missingShiftExchange.includes('status')) {
+        exchangeAdds.push("add column if not exists status text default 'OPEN'");
+      }
+      if (missingShiftExchange.includes('created_at')) {
+        exchangeAdds.push('add column if not exists created_at timestamptz default now()');
+      }
+      const alterExchange = exchangeAdds.length
+        ? `\nalter table if exists public.shift_exchange_requests\n  ${exchangeAdds.join(',\n  ')};`
+        : '';
+      blocks.push(`-- Shift exchange requests table + RLS
+create table if not exists public.shift_exchange_requests (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null,
+  shift_id uuid not null references public.shifts(id) on delete cascade,
+  requested_by_auth_user_id uuid not null,
+  status text not null default 'OPEN',
+  claimed_by_auth_user_id uuid,
+  created_at timestamptz not null default now(),
+  claimed_at timestamptz,
+  cancelled_at timestamptz
+);
+create index if not exists shift_exchange_org_idx on public.shift_exchange_requests (organization_id);
+create unique index if not exists shift_exchange_open_unique on public.shift_exchange_requests (shift_id)
+  where status = 'OPEN';
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'shift_exchange_status_check'
+  ) then
+    alter table public.shift_exchange_requests
+      add constraint shift_exchange_status_check
+      check (status in ('OPEN', 'CLAIMED', 'CANCELLED'));
+  end if;
+end $$;
+${alterExchange}
+alter table public.shift_exchange_requests enable row level security;
+do $$ begin
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'shift_exchange_requests' and policyname = 'shift_exchange_select') then
+    create policy shift_exchange_select on public.shift_exchange_requests for select
+      using (
+        (
+          status = 'OPEN'
+          and exists (
+            select 1 from public.users u
+            where u.auth_user_id = auth.uid()
+              and u.organization_id = shift_exchange_requests.organization_id
+          )
+        )
+        or requested_by_auth_user_id = auth.uid()
+        or exists (
+          select 1 from public.users u
+          where u.auth_user_id = auth.uid()
+            and u.organization_id = shift_exchange_requests.organization_id
+            and upper(coalesce(u.role, '')) in ('ADMIN','MANAGER')
+        )
+      );
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'shift_exchange_requests' and policyname = 'shift_exchange_insert') then
+    create policy shift_exchange_insert on public.shift_exchange_requests for insert
+      with check (
+        requested_by_auth_user_id = auth.uid()
+        and exists (
+          select 1 from public.users u
+          where u.auth_user_id = auth.uid()
+            and u.organization_id = shift_exchange_requests.organization_id
+        )
+        and exists (
+          select 1
+          from public.shifts s
+          join public.users u2 on u2.id = s.user_id
+          where s.id = shift_exchange_requests.shift_id
+            and s.organization_id = shift_exchange_requests.organization_id
+            and u2.auth_user_id = auth.uid()
+        )
+      );
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'shift_exchange_requests' and policyname = 'shift_exchange_update') then
+    create policy shift_exchange_update on public.shift_exchange_requests for update
+      using (
+        exists (
+          select 1 from public.users u
+          where u.auth_user_id = auth.uid()
+            and u.organization_id = shift_exchange_requests.organization_id
+            and upper(coalesce(u.role, '')) in ('ADMIN','MANAGER')
+        )
+      )
+      with check (
+        exists (
+          select 1 from public.users u
+          where u.auth_user_id = auth.uid()
+            and u.organization_id = shift_exchange_requests.organization_id
+            and upper(coalesce(u.role, '')) in ('ADMIN','MANAGER')
         )
       );
   end if;

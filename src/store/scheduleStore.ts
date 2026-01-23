@@ -9,6 +9,7 @@ import {
   BlockedDayRequest,
   BlockedDayStatus,
   BusinessHour,
+  Location,
   DropShiftRequest,
   ChatMessage,
   TimeOffStatus,
@@ -72,6 +73,7 @@ interface ScheduleState {
   timeOffRequests: TimeOffRequest[];
   blockedDayRequests: BlockedDayRequest[];
   businessHours: BusinessHour[];
+  locations: Location[];
   dropRequests: DropShiftRequest[];
   chatMessages: ChatMessage[];
 
@@ -109,6 +111,8 @@ interface ScheduleState {
   clearToast: () => void;
 
   getEmployeeById: (id: string) => Employee | undefined;
+  setLocations: (locations: Location[]) => void;
+  getLocationById: (id: string) => Location | undefined;
 
   addShift: (
     shift: Omit<Shift, 'id'>,
@@ -193,6 +197,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   timeOffRequests: [],
   blockedDayRequests: [],
   businessHours: [],
+  locations: [],
   dropRequests: [],
   chatMessages: [],
 
@@ -234,6 +239,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
+        locations: [],
         shiftLoadCounts: { total: 0, visible: 0 },
       });
       return;
@@ -251,7 +257,16 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     };
 
     if (userError) {
-      set({ employees: [], shifts: [], selectedEmployeeIds: [], timeOffRequests: [], shiftLoadCounts: { total: 0, visible: 0 } });
+      set({
+        employees: [],
+        shifts: [],
+        selectedEmployeeIds: [],
+        timeOffRequests: [],
+        blockedDayRequests: [],
+        businessHours: [],
+        locations: [],
+        shiftLoadCounts: { total: 0, visible: 0 },
+      });
       return;
     }
 
@@ -276,9 +291,29 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       };
     });
 
+    const { data: locationData, error: locationError } = (await supabase
+      .from('locations')
+      .select('id,organization_id,name,sort_order,created_at')
+      .eq('organization_id', restaurantId)
+      .order('sort_order', { ascending: true })
+      .order('name', { ascending: true })) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    const locations: Location[] = locationError
+      ? []
+      : (locationData || []).map((row) => ({
+          id: row.id,
+          organizationId: row.organization_id,
+          name: row.name,
+          sortOrder: Number(row.sort_order ?? 0),
+          createdAt: row.created_at ?? new Date().toISOString(),
+        }));
+
     let shiftQuery = supabase
       .from('shifts')
-      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,is_blocked,job')
+      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,is_blocked,job,location_id')
       .eq('organization_id', restaurantId);
 
     const { data: shiftData, error: shiftError } = (await shiftQuery) as {
@@ -292,6 +327,9 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         shifts: [],
         selectedEmployeeIds: employees.map((e) => e.id),
         timeOffRequests: [],
+        blockedDayRequests: [],
+        businessHours: [],
+        locations,
         shiftLoadCounts: { total: 0, visible: 0 },
       });
       return;
@@ -307,6 +345,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       notes: row.notes ?? undefined,
       isBlocked: Boolean(row.is_blocked),
       job: isValidJob(row.job) ? row.job : undefined,
+      locationId: row.location_id ?? null,
     }));
 
     let timeOffData: Array<Record<string, any>> | null = null;
@@ -450,6 +489,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       timeOffRequests,
       blockedDayRequests,
       businessHours,
+      locations,
       shiftLoadCounts: {
         total: shiftData?.length ?? 0,
         visible: shifts.length,
@@ -554,6 +594,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   clearToast: () => set({ toast: null }),
 
   getEmployeeById: (id) => get().employees.find((e) => e.id === id),
+  setLocations: (locations) => set({ locations }),
+  getLocationById: (id) => get().locations.find((location) => location.id === id),
 
   addShift: async (shift, options) => {
     const state = get();
@@ -600,8 +642,9 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         notes: shift.notes ?? null,
         is_blocked: false,
         job: safeJob,
+        location_id: shift.locationId ?? null,
       })
-      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,is_blocked,job')
+      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,is_blocked,job,location_id')
       .single();
 
     if (error || !data) {
@@ -618,6 +661,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       notes: data.notes ?? undefined,
       isBlocked: Boolean(data.is_blocked),
       job: isValidJob(data.job) ? data.job : undefined,
+      locationId: data.location_id ?? null,
     };
 
     const newShifts = [...state.shifts, newShift];
@@ -671,6 +715,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         notes: updatedShift.notes ?? null,
         is_blocked: false,
         job: safeJob,
+        location_id: updatedShift.locationId ?? null,
       })
       .eq('id', id);
 

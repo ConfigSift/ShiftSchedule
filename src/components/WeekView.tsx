@@ -6,13 +6,14 @@ import { HOURS_END, HOURS_START, SECTIONS } from '../types';
 import { getWeekDates, dateToString, isSameDay, formatHour, shiftsOverlap } from '../utils/timeUtils';
 import { Palmtree } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export function WeekView() {
   const {
     selectedDate,
     getFilteredEmployeesForRestaurant,
     getShiftsForRestaurant,
+    locations,
     setSelectedDate,
     setViewMode,
     goToPrevious,
@@ -31,6 +32,10 @@ export function WeekView() {
   const weekDates = getWeekDates(selectedDate);
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
+  const locationMap = useMemo(
+    () => new Map(locations.map((location) => [location.id, location.name])),
+    [locations]
+  );
   const today = new Date();
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollLockRef = useRef(false);
@@ -288,29 +293,40 @@ export function WeekView() {
                             </div>
                           </div>
                         ) : (
-                          dayShifts.map((shift) => (
-                            <div
-                              key={shift.id}
-                              data-shift="true"
-                              onClick={(e) => handleShiftClick(shift, e)}
-                              onMouseEnter={() => setHoveredShiftId(shift.id)}
-                              onMouseLeave={() => setHoveredShiftId(null)}
-                              className="mb-1 px-2 py-1 rounded-md text-xs truncate cursor-pointer hover:scale-[1.02] transition-transform"
-                              style={{
-                                backgroundColor: sectionConfig.bgColor,
-                                borderLeft: `3px solid ${sectionConfig.color}`,
-                                color: sectionConfig.color,
-                              }}
-                              title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
-                            >
-                              {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
-                              {(shift.job || isManager) && (
-                                <span className="ml-1 text-[10px] text-theme-muted">
-                                  {shift.job || '(No job)'}
-                                </span>
-                              )}
-                            </div>
-                          ))
+                          dayShifts.map((shift) => {
+                            const locationName = shift.locationId ? locationMap.get(shift.locationId) : undefined;
+                            const jobLabel = shift.job ? shift.job : isManager ? '(No job)' : '';
+                            const metaParts = [jobLabel, locationName].filter(Boolean);
+                            const metaLabel = metaParts.join(' • ');
+                            const titleParts = [
+                              `${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`,
+                              metaLabel,
+                            ].filter(Boolean);
+
+                            return (
+                              <div
+                                key={shift.id}
+                                data-shift="true"
+                                onClick={(e) => handleShiftClick(shift, e)}
+                                onMouseEnter={() => setHoveredShiftId(shift.id)}
+                                onMouseLeave={() => setHoveredShiftId(null)}
+                                className="mb-1 px-2 py-1 rounded-md text-xs truncate cursor-pointer hover:scale-[1.02] transition-transform"
+                                style={{
+                                  backgroundColor: sectionConfig.bgColor,
+                                  borderLeft: `3px solid ${sectionConfig.color}`,
+                                  color: sectionConfig.color,
+                                }}
+                                title={titleParts.join(' | ')}
+                              >
+                                {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
+                                {metaLabel && (
+                                  <span className="ml-1 text-[10px] text-theme-muted">
+                                    {metaLabel}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })
                         )}
                       </div>
                     );

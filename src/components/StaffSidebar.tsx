@@ -5,7 +5,7 @@ import { useAuthStore } from '../store/authStore';
 import { SECTIONS, Section } from '../types';
 import { Users, ChevronDown, Check, Eye, EyeOff, User } from 'lucide-react';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 export function StaffSidebar() {
   const {
@@ -23,6 +23,7 @@ export function StaffSidebar() {
   const { activeRestaurantId, currentUser } = useAuthStore();
 
   const [expandedSections, setExpandedSections] = useState<Section[]>(['kitchen', 'front', 'bar', 'management']);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const toggleExpanded = (section: Section) => {
     setExpandedSections(prev =>
@@ -35,12 +36,18 @@ export function StaffSidebar() {
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
 
-  const employeesBySection = scopedEmployees.reduce((acc, emp) => {
+  const filteredEmployees = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return scopedEmployees;
+    return scopedEmployees.filter((emp) => emp.name.toLowerCase().includes(query));
+  }, [scopedEmployees, searchQuery]);
+
+  const employeesBySection = filteredEmployees.reduce((acc, emp) => {
     if (!emp.isActive) return acc;
     if (!acc[emp.section]) acc[emp.section] = [];
     acc[emp.section].push(emp);
     return acc;
-  }, {} as Record<Section, typeof scopedEmployees>);
+  }, {} as Record<Section, typeof filteredEmployees>);
 
   const hasShiftToday = (employeeId: string) => {
     return scopedShifts.some(s => s.employeeId === employeeId && s.date === dateString && !s.isBlocked);
@@ -70,7 +77,7 @@ export function StaffSidebar() {
   };
 
   return (
-    <aside className="w-64 bg-theme-secondary border-r border-theme-primary flex flex-col shrink-0 transition-theme">
+    <aside className="w-64 h-full bg-theme-secondary border-r border-theme-primary flex flex-col shrink-0 transition-theme">
       <div className="p-4 border-b border-theme-primary">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
@@ -93,7 +100,16 @@ export function StaffSidebar() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className="flex-1 overflow-y-auto p-2 space-y-2">
+        <div className="px-2">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search staff"
+            className="w-full px-3 py-2 rounded-lg bg-theme-tertiary border border-theme-primary text-xs text-theme-primary placeholder:text-theme-muted focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+          />
+        </div>
         {(Object.keys(SECTIONS) as Section[]).map(section => {
           const sectionConfig = SECTIONS[section];
           const sectionEmployees = employeesBySection[section] || [];
@@ -163,7 +179,7 @@ export function StaffSidebar() {
                     return (
                       <div
                         key={employee.id}
-                        className={`flex items-center gap-2 p-2 rounded-lg text-sm transition-colors ${
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors ${
                           isSelected
                             ? 'bg-theme-tertiary text-theme-primary'
                             : 'text-theme-muted hover:bg-theme-hover hover:text-theme-secondary'

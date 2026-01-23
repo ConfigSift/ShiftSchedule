@@ -16,6 +16,7 @@ import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { formatDateHeader, formatDateRange, getWeekDates, isSameDay } from '../utils/timeUtils';
 import { ChevronLeft, ChevronRight, CalendarDays, Sun } from 'lucide-react';
+import Link from 'next/link';
 import { getUserRole, isManagerRole } from '../utils/role';
 
 export function Dashboard() {
@@ -47,7 +48,9 @@ export function Dashboard() {
   return (
     <div className="h-full flex flex-col bg-theme-primary text-theme-primary overflow-hidden transition-theme">
       <div className="flex-1 flex overflow-hidden">
-        <StaffSidebar />
+        <div className="h-full shrink-0">
+          <StaffSidebar />
+        </div>
         
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/70 px-4 py-3">
@@ -79,6 +82,12 @@ export function Dashboard() {
                 >
                   Today
                 </button>
+                <Link
+                  href="/shift-exchange"
+                  className="px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs sm:text-sm font-medium"
+                >
+                  Shift Exchange
+                </Link>
                 {isManager && (
                   <button
                     type="button"

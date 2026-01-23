@@ -52,6 +52,7 @@ export interface Shift {
   notes?: string;
   isBlocked?: boolean;
   job?: string;
+  locationId?: string | null;
 }
 
 export type TimeOffStatus = 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED';
@@ -149,6 +150,28 @@ export interface BusinessHour {
   openTime?: string;
   closeTime?: string;
   enabled: boolean;
+}
+
+export interface Location {
+  id: string;
+  organizationId: string;
+  name: string;
+  sortOrder: number;
+  createdAt: string;
+}
+
+export type ShiftExchangeStatus = 'OPEN' | 'CLAIMED' | 'CANCELLED';
+
+export interface ShiftExchangeRequest {
+  id: string;
+  organizationId: string;
+  shiftId: string;
+  requestedByAuthUserId: string;
+  status: ShiftExchangeStatus;
+  claimedByAuthUserId?: string | null;
+  createdAt: string;
+  claimedAt?: string | null;
+  cancelledAt?: string | null;
 }
 
 export interface SectionConfig {

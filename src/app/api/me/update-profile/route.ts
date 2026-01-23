@@ -6,16 +6,31 @@ import { splitFullName } from '@/utils/userMapper';
 type UpdatePayload = {
   fullName: string;
   phone?: string | null;
+  email?: string | null;
 };
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function POST(request: NextRequest) {
-  const payload = (await request.json()) as UpdatePayload;
+  const rawPayload = (await request.json()) as Record<string, unknown>;
+  const allowedFields = new Set(['fullName', 'phone', 'email']);
+  const forbiddenFields = Object.keys(rawPayload).filter((key) => !allowedFields.has(key));
+
+  if (forbiddenFields.length > 0) {
+    return NextResponse.json(
+      { error: 'Only name, phone, and email can be updated.', forbiddenFields },
+      { status: 400 }
+    );
+  }
+
+  const payload = rawPayload as UpdatePayload;
 
   if (!payload.fullName || !payload.fullName.trim()) {
     return NextResponse.json({ error: 'Full name is required.' }, { status: 400 });
+  }
+  if (payload.email !== undefined && payload.email !== null && !payload.email.trim()) {
+    return NextResponse.json({ error: 'Email is required.' }, { status: 400 });
   }
 
   const { supabase, response } = createSupabaseRouteClient(request);
@@ -29,7 +44,20 @@ export async function POST(request: NextRequest) {
   const updatePayload = {
     full_name: payload.fullName.trim(),
     phone: payload.phone ?? '',
+    ...(payload.email ? { email: payload.email.trim() } : {}),
   };
+
+  if (payload.email && payload.email.trim()) {
+    const { error: authUpdateError } = await supabase.auth.updateUser({
+      email: payload.email.trim(),
+    });
+    if (authUpdateError) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: authUpdateError.message }, { status: 400 }),
+        response
+      );
+    }
+  }
 
   const result = await supabase
     .from('users')

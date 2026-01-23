@@ -30,7 +30,7 @@ export default function StaffProfilePage() {
   const router = useRouter();
   const userId = String(params?.userId ?? '');
 
-  const { currentUser, init, isInitialized, activeRestaurantId, updateProfile, userProfiles, signOut } = useAuthStore();
+  const { currentUser, init, isInitialized, activeRestaurantId, updateProfile, signOut } = useAuthStore();
   const { loadRestaurantData, getBlockedRequestsForEmployee, deleteBlockedPeriod, openModal, showToast } =
     useScheduleStore();
 
@@ -42,6 +42,7 @@ export default function StaffProfilePage() {
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
   const [hourlyPay, setHourlyPay] = useState('0');
+  const [email, setEmail] = useState('');
   const [saving, setSaving] = useState(false);
   const [authBanner, setAuthBanner] = useState<string | null>(null);
 
@@ -51,7 +52,6 @@ export default function StaffProfilePage() {
   const allowAdminCreation = process.env.NEXT_PUBLIC_ENABLE_ADMIN_CREATION === 'true';
   const isSelf = Boolean(currentUser?.id && currentUser.id === user?.id);
   const targetRole = getUserRole(user?.accountType);
-  const showSiteManager = isManager && userProfiles.length > 1;
 
   useEffect(() => {
     init();
@@ -121,6 +121,7 @@ export default function StaffProfilePage() {
     setAccountType(mapped.accountType);
     setJobs(mapped.jobs);
     setHourlyPay(String(mapped.hourlyPay ?? 0));
+    setEmail(mapped.email);
     setLoading(false);
   };
 
@@ -139,9 +140,7 @@ export default function StaffProfilePage() {
 
   const canEditJobs = isAdmin || (isManager && targetRole !== 'ADMIN');
   const canEditAccountType = isAdmin && !isSelf;
-  const canEditProfile = currentRole === 'EMPLOYEE'
-    ? isSelf
-    : isManager && (isAdmin || targetRole !== 'ADMIN');
+  const canEditProfile = isSelf || (isManager && (isAdmin || targetRole !== 'ADMIN'));
 
   const toggleJob = (job: string) => {
     setJobs((prev) => (prev.includes(job) ? prev.filter((j) => j !== job) : [...prev, job]));
@@ -162,17 +161,23 @@ export default function StaffProfilePage() {
 
     setSaving(true);
     try {
-      if (currentRole === 'EMPLOYEE') {
-        const result = await updateProfile({ fullName: fullName.trim(), phone: phone.trim() || null });
+      if (isSelf) {
+        const result = await updateProfile({
+          fullName: fullName.trim(),
+          phone: phone.trim() || null,
+          email: email.trim() || null,
+        });
         if (!result.success) {
           setError(result.error || 'Unable to update profile.');
           setSaving(false);
           return;
         }
-        await loadUser();
-        showToast('Profile updated', 'success');
-        setSaving(false);
-        return;
+        if (currentRole === 'EMPLOYEE') {
+          await loadUser();
+          showToast('Profile updated', 'success');
+          setSaving(false);
+          return;
+        }
       }
 
       const result = await apiFetch('/api/admin/update-user', {
@@ -258,14 +263,10 @@ export default function StaffProfilePage() {
                 <Link href="/dashboard" className="hover:text-theme-primary">
                   Dashboard
                 </Link>
-                {showSiteManager && (
-                  <>
-                    <span>/</span>
-                    <Link href="/manager" className="hover:text-theme-primary">
-                      Site Manager
-                    </Link>
-                  </>
-                )}
+                <span>/</span>
+                <Link href="/manager" className="hover:text-theme-primary">
+                  Site Manager
+                </Link>
               </div>
             ) : (
               <div className="flex items-center gap-2 text-xs text-theme-tertiary">
@@ -355,13 +356,15 @@ export default function StaffProfilePage() {
               <label className="text-sm text-theme-secondary">Email</label>
               <input
                 type="email"
-                value={user.email}
-                disabled
-                className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary opacity-60"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={!isSelf}
+                className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
               />
             </div>
-          <div>
-            <label className="text-sm text-theme-secondary">Account type</label>
+          {isManager && (
+            <div>
+              <label className="text-sm text-theme-secondary">Account type</label>
               {canEditAccountType && (allowAdminCreation || targetRole !== 'ADMIN') ? (
                 <select
                   value={accountType}
@@ -386,52 +389,57 @@ export default function StaffProfilePage() {
                 </p>
               )}
             </div>
+          )}
           </div>
-          <div>
-            <label className="text-sm text-theme-secondary">Hourly Pay</label>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={hourlyPay}
-              onChange={(e) => setHourlyPay(e.target.value)}
-              disabled={!canEditJobs}
-              className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
-            />
-            {!canEditJobs && (
-              <p className="text-xs text-theme-muted mt-2">
-                Hourly pay can only be edited by managers or admins.
-              </p>
-            )}
-          </div>
+          {isManager && (
+            <>
+              <div>
+                <label className="text-sm text-theme-secondary">Hourly Pay</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={hourlyPay}
+                  onChange={(e) => setHourlyPay(e.target.value)}
+                  disabled={!canEditJobs}
+                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+                />
+                {!canEditJobs && (
+                  <p className="text-xs text-theme-muted mt-2">
+                    Hourly pay can only be edited by managers or admins.
+                  </p>
+                )}
+              </div>
 
-          <div>
-            <label className="text-sm text-theme-secondary">Jobs</label>
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              {JOB_OPTIONS.map((job) => (
-                <label key={job} className="flex items-center gap-2 text-xs text-theme-secondary">
-                  <input
-                    type="checkbox"
-                    checked={jobs.includes(job)}
-                    onChange={() => toggleJob(job)}
-                    disabled={!canEditJobs}
-                    className="accent-amber-500"
-                  />
-                  {job}
-                </label>
-              ))}
-            </div>
-            {!canEditJobs && jobs.length === 0 && (
-              <p className="text-xs text-theme-muted mt-1">No jobs assigned.</p>
-            )}
-            {canEditJobs ? (
-              <p className="text-xs text-theme-muted mt-2">
-                Managers and employees must have at least one job.
-              </p>
-            ) : (
-              <p className="text-xs text-theme-muted mt-2">Jobs can only be edited by managers or admins.</p>
-            )}
-          </div>
+              <div>
+                <label className="text-sm text-theme-secondary">Jobs</label>
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  {JOB_OPTIONS.map((job) => (
+                    <label key={job} className="flex items-center gap-2 text-xs text-theme-secondary">
+                      <input
+                        type="checkbox"
+                        checked={jobs.includes(job)}
+                        onChange={() => toggleJob(job)}
+                        disabled={!canEditJobs}
+                        className="accent-amber-500"
+                      />
+                      {job}
+                    </label>
+                  ))}
+                </div>
+                {!canEditJobs && jobs.length === 0 && (
+                  <p className="text-xs text-theme-muted mt-1">No jobs assigned.</p>
+                )}
+                {canEditJobs ? (
+                  <p className="text-xs text-theme-muted mt-2">
+                    Managers and employees must have at least one job.
+                  </p>
+                ) : (
+                  <p className="text-xs text-theme-muted mt-2">Jobs can only be edited by managers or admins.</p>
+                )}
+              </div>
+            </>
+          )}
 
           {canEditProfile && (
             <div className="flex items-center justify-end gap-2">

@@ -14,6 +14,7 @@ export function AddShiftModal() {
     modalData, 
     closeModal, 
     getEmployeesForRestaurant,
+    locations,
     addShift, 
     updateShift,
     deleteShift,
@@ -35,6 +36,7 @@ export function AddShiftModal() {
   const [endHour, setEndHour] = useState(17);
   const [notes, setNotes] = useState('');
   const [job, setJob] = useState('');
+  const [locationId, setLocationId] = useState('');
   const [showAllJobs, setShowAllJobs] = useState(false);
 
   useEffect(() => {
@@ -46,6 +48,7 @@ export function AddShiftModal() {
         setEndHour(modalData.endHour);
         setNotes(modalData.notes || '');
         setJob(modalData.job || '');
+        setLocationId(modalData.locationId || '');
         setShowAllJobs(false);
       } else {
         setEmployeeId(modalData?.employeeId || '');
@@ -54,6 +57,7 @@ export function AddShiftModal() {
         setEndHour(modalData?.endHour || 17);
         setNotes('');
         setJob('');
+        setLocationId('');
         setShowAllJobs(false);
       }
     }
@@ -107,6 +111,8 @@ export function AddShiftModal() {
       allowBlockedOverride = true;
     }
 
+    const normalizedLocationId = locationId || null;
+
     if (isEditing && modalData?.id) {
       const result = await updateShift(
         modalData.id,
@@ -117,6 +123,7 @@ export function AddShiftModal() {
         endHour,
         notes: notes || undefined,
         job,
+        locationId: normalizedLocationId,
         restaurantId: modalData.restaurantId ?? activeRestaurantId ?? '',
         },
         { allowTimeOffOverride, allowBlockedOverride }
@@ -135,6 +142,7 @@ export function AddShiftModal() {
           endHour,
           notes: notes || undefined,
           job,
+          locationId: normalizedLocationId,
           restaurantId: activeRestaurantId ?? '',
         },
         { allowTimeOffOverride, allowBlockedOverride }
@@ -256,6 +264,23 @@ export function AddShiftModal() {
               No eligible jobs assigned.
             </p>
           )}
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-theme-secondary mb-1.5">Location (optional)</label>
+          <select
+            value={locationId}
+            onChange={(e) => setLocationId(e.target.value)}
+            className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+            disabled={!isManager}
+          >
+            <option value="">No location</option>
+            {locations.map((location) => (
+              <option key={location.id} value={location.id}>
+                {location.name}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="grid grid-cols-2 gap-4">

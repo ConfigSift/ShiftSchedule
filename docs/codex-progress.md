@@ -65,6 +65,19 @@ Checked items are verified in code and reachable in the UI.
 - [x] Header nav order + review requests link (`src/components/Header.tsx`)
 - [x] Review Requests page with time off + blocked day tabs (`src/app/review-requests/page.tsx`, `src/components/review/*`)
 
+## 13) Locations / Areas
+- [x] Locations table + shifts.location_id migration (`supabase/migrations/20260123006000_locations.sql`)
+- [x] Locations CRUD APIs (`src/app/api/locations/*`)
+- [x] Locations management page (`src/app/locations/page.tsx`, `src/app/manager/page.tsx`)
+- [x] Location assignment in shifts (`src/components/AddShiftModal.tsx`, `src/store/scheduleStore.ts`)
+- [x] Location labels in timeline + week view (`src/components/Timeline.tsx`, `src/components/WeekView.tsx`)
+
+## 14) Shift Exchange
+- [x] shift_exchange_requests migration (`supabase/migrations/20260123007000_shift_exchange.sql`)
+- [x] Shift exchange APIs (`src/app/api/shift-exchange/*`)
+- [x] Shift Exchange page (`src/app/shift-exchange/page.tsx`)
+- [x] Schedule link to Shift Exchange (`src/components/Dashboard.tsx`)
+
 ## 11) Permissions Hardening
 - [x] API routes use `getUser()` for auth checks (`src/app/api/admin/*`, `src/app/api/me/update-profile/route.ts`)
 - [x] Shift writes restricted to manager/admin via RLS (`supabase/migrations/20260122000000_init.sql`)
@@ -81,6 +94,8 @@ Checked items are verified in code and reachable in the UI.
 - Business hours: `/business-hours`
 - Team chat: `/chat`
 - Site manager: `/manager`
+- Locations: `/locations`
+- Shift Exchange: `/shift-exchange`
 - DB diagnostics: `/debug/db`
 
 ## How to Test (Click-to-Add Shifts)
@@ -89,12 +104,13 @@ Checked items are verified in code and reachable in the UI.
 - Week view (`/dashboard` > Week): click empty space in a day column to open Add Shift; verify overlap warnings and role restrictions.
 
 ## How to Test (UI Polish)
-- Hover empty schedule space with existing shifts: see subtle “Click to add shift” hint; no hint when hovering a shift (`/dashboard` Day + Week).
+- Hover empty schedule space with existing shifts: see subtle "Click to add shift" hint; no hint when hovering a shift (`/dashboard` Day + Week).
 - Left staff panel: only staff filters/selection show; no My Time Off / My Blocked Days (`/dashboard`).
 - Light mode: schedule background fills full area between fixed header/footer (no white gutters on wide screens).
 
 ## How to Test (Copy Schedule)
-- `/dashboard`: click "Copy Schedule" (manager/admin), run "Copy to next week" and confirm shifts appear + summary counts.
+- `/dashboard`: click "Copy Schedule" (manager/admin), run "Copy to next day" and confirm shifts appear + summary counts.
+- `/dashboard`: run "Copy current week schedule to next week" and confirm shifts appear + summary counts.
 - `/dashboard`: use "Copy to N weeks ahead" and "Copy to date range" with overlaps/blocked dates; verify skipped counts.
 
 ## How to Test (Chat Enhancements)
@@ -102,6 +118,31 @@ Checked items are verified in code and reachable in the UI.
 - Manager/admin: rename and delete rooms (confirmation shown) and confirm list updates.
 - Export CSV downloads with created_at, author_name, message_body columns.
 - Send a message from another session and verify realtime insert + new message indicator.
+
+## How to Test (Staff Sidebar UX)
+- `/dashboard`: verify staff tiles are denser and readable; selection/hover states still clear.
+- `/dashboard`: use "Search staff" to filter by name; selections remain when filtered out.
+- `/dashboard`: sidebar fills full height between fixed bars and scrolls internally without cut off.
+
+## How to Test (Profile Permissions)
+- Employee: edit own name/phone/email only; save works (`/staff/[userId]`).
+- Employee: hourly pay is hidden in profile view and any staff profile modal.
+- Manager/admin: hourly pay visible/editable for staff profiles (`/staff` and `/staff/[userId]`).
+- Manager/admin: "Back to Site Manager" link works (`/staff/[userId]`).
+- Tamper: POST `/api/me/update-profile` with `hourlyPay` or `role` returns 400 with forbidden fields.
+
+## How to Test (Locations)
+- Apply migration `supabase/migrations/20260123006000_locations.sql` via Supabase CLI or SQL Editor.
+- `/locations`: create/edit/delete locations (manager/admin only); employees should be blocked.
+- `/dashboard`: Add/Edit Shift shows Location dropdown; select location and save.
+- Timeline/Week view: shift blocks show location label and tooltip details.
+- Copy Schedule: copied shifts preserve `location_id`.
+
+## How to Test (Shift Exchange)
+- Apply migration `supabase/migrations/20260123007000_shift_exchange.sql` via Supabase CLI or SQL Editor.
+- `/shift-exchange`: My Shifts tab shows upcoming shifts; drop creates OPEN request; cancel removes it.
+- `/shift-exchange`: Available tab lists OPEN requests; pick up reassigns shift and marks CLAIMED.
+- `/dashboard`: verify schedule updates after drop/pickup (refresh happens automatically).
 
 ## Release Checklist
 - DB/migrations applied: Not verified in this run
@@ -114,3 +155,5 @@ Checked items are verified in code and reachable in the UI.
 - Review Requests is the single review hub (`/review-requests`); `/time-off` and `/blocked-days` link back
 - Chat enhancements tested: rename/delete/export/realtime
 - Copy Schedule works for managers/admins
+
+

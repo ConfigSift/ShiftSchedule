@@ -21,7 +21,7 @@ interface AuthState {
   setActiveOrganization: (organizationId: string | null, restaurantCode?: string | null) => void;
   clearActiveOrganization: () => void;
   refreshProfile: () => Promise<void>;
-  updateProfile: (data: { fullName: string; phone?: string | null }) => Promise<{ success: boolean; error?: string }>;
+  updateProfile: (data: { fullName: string; phone?: string | null; email?: string | null }) => Promise<{ success: boolean; error?: string }>;
 }
 
 function resolveActiveRestaurantId(
@@ -192,6 +192,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       json: {
         fullName: data.fullName,
         phone: data.phone ?? '',
+        email: data.email ?? null,
       },
     });
     if (!result.ok) {

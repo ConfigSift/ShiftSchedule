@@ -232,6 +232,24 @@ export default function ManagerPage() {
           )}
         </div>
 
+        <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-5">
+          <h2 className="text-lg font-semibold text-theme-primary mb-3">Restaurant Tools</h2>
+          <p className="text-sm text-theme-tertiary mb-4">
+            Configure locations used when assigning shifts.
+          </p>
+          <button
+            type="button"
+            onClick={() => router.push('/locations')}
+            disabled={!activeRestaurantId}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
+          >
+            Manage Locations
+          </button>
+          {!activeRestaurantId && (
+            <p className="text-xs text-theme-muted mt-2">Select a restaurant to manage locations.</p>
+          )}
+        </div>
+
         {editingId && (
           <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-5">
             <h2 className="text-lg font-semibold text-theme-primary mb-3">Edit Restaurant</h2>

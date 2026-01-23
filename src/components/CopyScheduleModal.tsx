@@ -5,10 +5,10 @@ import { Modal } from './Modal';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { apiFetch } from '../lib/apiClient';
-import { dateToString, formatDateRange, getWeekDates } from '../utils/timeUtils';
+import { dateToString, formatDateRange, getWeekDates, formatDateLong } from '../utils/timeUtils';
 import { getUserRole, isManagerRole } from '../utils/role';
 
-type CopyMode = 'nextWeek' | 'weeksAhead' | 'dateRange';
+type CopyMode = 'nextDay' | 'nextWeek' | 'weeksAhead' | 'dateRange';
 
 type CopySummary = {
   created_count: number;
@@ -43,7 +43,9 @@ export function CopyScheduleModal() {
   const weekDates = useMemo(() => getWeekDates(selectedDate), [selectedDate]);
   const sourceWeekStart = dateToString(weekDates[0]);
   const sourceWeekEnd = dateToString(weekDates[6]);
+  const sourceDay = dateToString(selectedDate);
   const dateLabel = formatDateRange(weekDates[0], weekDates[6]);
+  const dayLabel = formatDateLong(sourceDay);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -71,6 +73,9 @@ export function CopyScheduleModal() {
       mode,
       allowOverrideBlocked: allowOverride,
     };
+    if (mode === 'nextDay') {
+      payload.sourceDay = sourceDay;
+    }
     if (mode === 'weeksAhead') {
       payload.weeksAhead = weeksAhead;
     }
@@ -103,23 +108,52 @@ export function CopyScheduleModal() {
     <Modal isOpen={isOpen} onClose={closeModal} title="Copy Schedule" size="lg">
       <div className="space-y-5">
         <div className="rounded-xl border border-theme-primary bg-theme-tertiary p-3 text-sm text-theme-secondary">
-          <span className="text-theme-muted">Source week:</span> {dateLabel}
+          <div>
+            <span className="text-theme-muted">Source week:</span> {dateLabel}
+          </div>
+          <div>
+            <span className="text-theme-muted">Source day:</span> {dayLabel}
+          </div>
         </div>
 
         <div className="space-y-4">
           <div className="rounded-xl border border-theme-primary bg-theme-secondary p-4">
             <h3 className="text-sm font-semibold text-theme-primary mb-3">Quick action</h3>
-            <button
-              type="button"
-              onClick={() => setMode('nextWeek')}
-              className={`w-full px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                mode === 'nextWeek'
-                  ? 'bg-amber-500 text-zinc-900'
-                  : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-              }`}
-            >
-              Copy to next week
-            </button>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => setMode('nextDay')}
+                className={`w-full px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                  mode === 'nextDay'
+                    ? 'bg-amber-500 text-zinc-900'
+                    : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
+                }`}
+              >
+                Copy to next day (current day only)
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('nextWeek')}
+                className={`w-full px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                  mode === 'nextWeek'
+                    ? 'bg-amber-500 text-zinc-900'
+                    : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
+                }`}
+              >
+                Copy current week schedule to next week
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('nextWeek')}
+                className={`w-full px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                  mode === 'nextWeek'
+                    ? 'bg-amber-500 text-zinc-900'
+                    : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
+                }`}
+              >
+                Copy to next week (same as above)
+              </button>
+            </div>
           </div>
 
           <div className="rounded-xl border border-theme-primary bg-theme-secondary p-4 space-y-4">
@@ -134,15 +168,15 @@ export function CopyScheduleModal() {
                 />
                 Copy to N weeks ahead (1-8)
               </label>
-              <input
-                type="number"
-                min={1}
-                max={8}
-                value={weeksAhead}
-                onChange={(e) => setWeeksAhead(Number(e.target.value))}
-                className="w-full px-3 py-2 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary"
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={weeksAhead}
+                  onChange={(e) => setWeeksAhead(Number(e.target.value))}
+                  className="w-full px-3 py-2 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary"
                 disabled={mode !== 'weeksAhead'}
-              />
+                />
             </div>
 
             <div className="space-y-2">
