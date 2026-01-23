@@ -86,6 +86,8 @@ interface ScheduleState {
   toast: { message: string; type: 'success' | 'error' } | null;
   isHydrated: boolean;
   shiftLoadCounts: { total: number; visible: number };
+  dateNavDirection: 'prev' | 'next' | null;
+  dateNavKey: number;
 
   hydrate: () => void;
   loadRestaurantData: (restaurantId: string | null) => Promise<void>;
@@ -205,6 +207,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   toast: null,
   isHydrated: false,
   shiftLoadCounts: { total: 0, visible: 0 },
+  dateNavDirection: null,
+  dateNavKey: 0,
 
   hydrate: () => {
     const dropRequests = loadFromStorage<DropShiftRequest[]>(STORAGE_KEYS.DROP_REQUESTS, []);
@@ -1182,18 +1186,30 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     return { chatMessages: newMessages };
   }),
 
-  goToToday: () => set({ selectedDate: new Date() }),
+  goToToday: () => set((state) => ({
+    selectedDate: new Date(),
+    dateNavDirection: null,
+    dateNavKey: state.dateNavKey + 1,
+  })),
 
   goToPrevious: () => set((state) => {
     const newDate = new Date(state.selectedDate);
-    newDate.setDate(newDate.getDate() - (state.viewMode === 'day' ? 1 : 7));
-    return { selectedDate: newDate };
+    newDate.setDate(newDate.getDate() - 1);
+    return {
+      selectedDate: newDate,
+      dateNavDirection: 'prev',
+      dateNavKey: state.dateNavKey + 1,
+    };
   }),
 
   goToNext: () => set((state) => {
     const newDate = new Date(state.selectedDate);
-    newDate.setDate(newDate.getDate() + (state.viewMode === 'day' ? 1 : 7));
-    return { selectedDate: newDate };
+    newDate.setDate(newDate.getDate() + 1);
+    return {
+      selectedDate: newDate,
+      dateNavDirection: 'next',
+      dateNavKey: state.dateNavKey + 1,
+    };
   }),
 
   getFilteredEmployeesForRestaurant: (restaurantId) => {

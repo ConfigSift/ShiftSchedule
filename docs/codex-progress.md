@@ -59,6 +59,12 @@ Checked items are verified in code and reachable in the UI.
 - [x] Business hours configuration page + API (`src/app/business-hours/page.tsx`, `src/app/api/business-hours/save/route.ts`)
 - [x] business_hours table + RLS (`supabase/migrations/20260123004000_chat_blocked_business.sql`, `src/app/debug/db/page.tsx`)
 
+## 12) Fixed Bars + Review Requests Consolidation
+- [x] Fixed header/footer shell with scrollable middle (`src/app/layout.tsx`, `src/components/AppShell.tsx`, `src/components/StatsFooter.tsx`)
+- [x] Schedule date controls moved into dashboard view (`src/components/Dashboard.tsx`)
+- [x] Header nav order + review requests link (`src/components/Header.tsx`)
+- [x] Review Requests page with time off + blocked day tabs (`src/app/review-requests/page.tsx`, `src/components/review/*`)
+
 ## 11) Permissions Hardening
 - [x] API routes use `getUser()` for auth checks (`src/app/api/admin/*`, `src/app/api/me/update-profile/route.ts`)
 - [x] Shift writes restricted to manager/admin via RLS (`supabase/migrations/20260122000000_init.sql`)
@@ -70,11 +76,17 @@ Checked items are verified in code and reachable in the UI.
 - Login: `/login`
 - Schedule (day/week): `/dashboard`
 - Time off review: `/time-off`
+- Review requests: `/review-requests`
 - Blocked days: `/blocked-days`
 - Business hours: `/business-hours`
 - Team chat: `/chat`
 - Site manager: `/manager`
 - DB diagnostics: `/debug/db`
+
+## How to Test (Click-to-Add Shifts)
+- Day view (`/dashboard`): click empty space in a lane to open Add Shift; verify 15-min snap + default 2-hour duration, and overlap warnings.
+- Day view: click a shift to edit; drag/resize should not open Add Shift.
+- Week view (`/dashboard` > Week): click empty space in a day column to open Add Shift; verify overlap warnings and role restrictions.
 
 ## Release Checklist
 - DB/migrations applied: Not verified in this run

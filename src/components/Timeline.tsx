@@ -3,8 +3,8 @@
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { HOURS_START, HOURS_END, SECTIONS } from '../types';
-import { formatHourShort, getShiftPosition, formatHour } from '../utils/timeUtils';
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { formatHourShort, getShiftPosition, formatHour, shiftsOverlap } from '../utils/timeUtils';
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { Palmtree } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 
@@ -18,17 +18,26 @@ export function Timeline() {
     setHoveredShift,
     updateShift,
     openModal,
+    showToast,
     hasApprovedTimeOff,
     hasBlockedShiftOnDate,
     hasOrgBlackoutOnDate,
     goToPrevious,
     goToNext,
+    dateNavDirection,
+    dateNavKey,
   } = useScheduleStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollLockRef = useRef(false);
+  const edgeShiftCountRef = useRef(0);
+  const edgeShiftResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lanePointerRef = useRef<{ x: number; y: number; employeeId: string } | null>(null);
+  const lastDragAtRef = useRef(0);
+  const [isSliding, setIsSliding] = useState(false);
+  const [slideDirection, setSlideDirection] = useState<'prev' | 'next' | null>(null);
   const [tooltip, setTooltip] = useState<{
     shiftId: string;
     left: number;
@@ -86,20 +95,24 @@ export function Timeline() {
     return { openHour, closeHour };
   }, [businessHours, selectedDate]);
 
-  const handleMouseDown = (e: React.MouseEvent, shiftId: string, edge: 'start' | 'end' | 'move') => {
+  const startDrag = useCallback((clientX: number, shiftId: string, edge: 'start' | 'end' | 'move') => {
     if (!isManager) return;
-    e.preventDefault();
-    e.stopPropagation();
     const shift = scopedShifts.find(s => s.id === shiftId);
     if (!shift) return;
     
     setDragging({
       shiftId,
       edge,
-      startX: e.clientX,
+      startX: clientX,
       originalStart: shift.startHour,
       originalEnd: shift.endHour,
     });
+  }, [isManager, scopedShifts]);
+
+  const handleMouseDown = (e: React.MouseEvent, shiftId: string, edge: 'start' | 'end' | 'move') => {
+    e.preventDefault();
+    e.stopPropagation();
+    startDrag(e.clientX, shiftId, edge);
   };
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
@@ -128,9 +141,49 @@ export function Timeline() {
     }
   }, [dragging, scopedShifts, getHourFromClientX, updateShift]);
 
+  const handleTouchStart = (e: React.TouchEvent, shiftId: string, edge: 'start' | 'end' | 'move') => {
+    if (!isManager) return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    if (!touch) return;
+    startDrag(touch.clientX, shiftId, edge);
+  };
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!dragging) return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    if (!touch) return;
+
+    const shift = scopedShifts.find(s => s.id === dragging.shiftId);
+    if (!shift) return;
+
+    const newHour = getHourFromClientX(touch.clientX);
+    const duration = dragging.originalEnd - dragging.originalStart;
+
+    if (dragging.edge === 'start') {
+      if (newHour < shift.endHour - 0.5) {
+        updateShift(shift.id, { startHour: newHour });
+      }
+    } else if (dragging.edge === 'end') {
+      if (newHour > shift.startHour + 0.5) {
+        updateShift(shift.id, { endHour: newHour });
+      }
+    } else if (dragging.edge === 'move') {
+      const newStart = Math.max(HOURS_START, Math.min(HOURS_END - duration, newHour - duration / 2));
+      updateShift(shift.id, {
+        startHour: Math.round(newStart * 4) / 4,
+        endHour: Math.round((newStart + duration) * 4) / 4,
+      });
+    }
+  }, [dragging, scopedShifts, getHourFromClientX, updateShift]);
+
   const handleMouseUp = useCallback(() => {
+    if (dragging) {
+      lastDragAtRef.current = Date.now();
+    }
     setDragging(null);
-  }, []);
+  }, [dragging]);
 
   const handleShiftClick = (shift: typeof scopedShifts[0]) => {
     if (!dragging) {
@@ -168,12 +221,50 @@ export function Timeline() {
     if (!isManager) return;
     
     const hour = getHourFromClientX(e.clientX);
+    const defaultEnd = Math.min(HOURS_END, Math.round((hour + 2) * 4) / 4);
+    const hasOverlap = scopedShifts.some(
+      (shift) =>
+        shift.employeeId === employeeId &&
+        shift.date === dateString &&
+        !shift.isBlocked &&
+        shiftsOverlap(hour, defaultEnd, shift.startHour, shift.endHour)
+    );
+    if (hasOverlap) {
+      showToast('Shift overlaps with existing shift', 'error');
+      return;
+    }
     openModal('addShift', {
       employeeId,
       date: dateString,
-      startHour: Math.floor(hour),
-      endHour: Math.min(24, Math.floor(hour) + 8),
+      startHour: hour,
+      endHour: defaultEnd,
     });
+  };
+
+  const handleLaneMouseDown = (employeeId: string, e: React.MouseEvent) => {
+    if (!isManager) return;
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('[data-shift]')) return;
+    lanePointerRef.current = { x: e.clientX, y: e.clientY, employeeId };
+  };
+
+  const handleLaneMouseUp = (employeeId: string, e: React.MouseEvent) => {
+    if (!isManager) return;
+    if (!lanePointerRef.current) return;
+    if ((e.target as HTMLElement).closest('[data-shift]')) {
+      lanePointerRef.current = null;
+      return;
+    }
+    if (Date.now() - lastDragAtRef.current < 200) {
+      lanePointerRef.current = null;
+      return;
+    }
+    const dx = e.clientX - lanePointerRef.current.x;
+    const dy = e.clientY - lanePointerRef.current.y;
+    const distance = Math.hypot(dx, dy);
+    lanePointerRef.current = null;
+    if (distance > 6) return;
+    handleEmptyClick(employeeId, e);
   };
 
   const handleScrollEdge = useCallback(() => {
@@ -182,7 +273,9 @@ export function Timeline() {
     if (el.scrollWidth <= el.clientWidth) return;
     const threshold = 24;
     if (el.scrollLeft <= threshold) {
+      if (edgeShiftCountRef.current >= 7) return;
       scrollLockRef.current = true;
+      edgeShiftCountRef.current += 1;
       goToPrevious();
       requestAnimationFrame(() => {
         if (scrollRef.current) {
@@ -194,7 +287,9 @@ export function Timeline() {
         scrollLockRef.current = false;
       }, 300);
     } else if (el.scrollLeft + el.clientWidth >= el.scrollWidth - threshold) {
+      if (edgeShiftCountRef.current >= 7) return;
       scrollLockRef.current = true;
+      edgeShiftCountRef.current += 1;
       goToNext();
       requestAnimationFrame(() => {
         if (scrollRef.current) {
@@ -206,7 +301,22 @@ export function Timeline() {
         scrollLockRef.current = false;
       }, 300);
     }
+
+    if (edgeShiftResetRef.current) {
+      clearTimeout(edgeShiftResetRef.current);
+    }
+    edgeShiftResetRef.current = setTimeout(() => {
+      edgeShiftCountRef.current = 0;
+    }, 900);
   }, [goToPrevious, goToNext]);
+
+  useEffect(() => {
+    if (!dateNavDirection) return;
+    setSlideDirection(dateNavDirection);
+    setIsSliding(true);
+    const timeout = setTimeout(() => setIsSliding(false), 220);
+    return () => clearTimeout(timeout);
+  }, [dateNavKey, dateNavDirection]);
 
   return (
     <div 
@@ -215,16 +325,27 @@ export function Timeline() {
       onMouseMove={dragging ? handleMouseMove : undefined}
       onMouseUp={dragging ? handleMouseUp : undefined}
       onMouseLeave={dragging ? handleMouseUp : undefined}
+      onTouchMove={dragging ? handleTouchMove : undefined}
+      onTouchEnd={dragging ? handleMouseUp : undefined}
+      onTouchCancel={dragging ? handleMouseUp : undefined}
     >
       <div
         ref={scrollRef}
         className="flex-1 overflow-x-auto overflow-y-hidden scroll-smooth"
         onScroll={handleScrollEdge}
       >
-        <div className="min-w-[1200px] flex flex-col h-full">
+        <div
+          className={`min-w-[1200px] flex flex-col h-full transition-transform transition-opacity duration-200 ${
+            isSliding
+              ? slideDirection === 'next'
+                ? '-translate-x-2 opacity-90'
+                : 'translate-x-2 opacity-90'
+              : 'translate-x-0 opacity-100'
+          }`}
+        >
           {/* Hour Headers */}
           <div className="h-10 border-b border-theme-primary flex shrink-0">
-            <div className="w-44 shrink-0 border-r border-theme-primary" />
+            <div className="w-44 shrink-0 border-r border-theme-primary sticky left-0 z-30 bg-theme-timeline" />
             <div className="flex-1 relative flex">
               {hours.map((hour) => (
                 <div
@@ -259,15 +380,27 @@ export function Timeline() {
                 const hasTimeOff = hasApprovedTimeOff(employee.id, dateString);
                 const hasBlocked = hasBlockedShiftOnDate(employee.id, dateString);
                 const hasOrgBlackout = hasOrgBlackoutOnDate(dateString);
+                const rowBackground = hasTimeOff
+                  ? 'bg-emerald-500/5'
+                  : hasBlocked
+                  ? 'bg-red-500/5'
+                  : hasOrgBlackout
+                  ? 'bg-amber-500/5'
+                  : '';
+                const allowHover = !hasTimeOff && !hasBlocked && !hasOrgBlackout;
 
                 return (
                   <div
                     key={employee.id}
                     className={`flex h-14 border-b border-theme-primary/50 transition-colors group ${
-                      hasTimeOff ? 'bg-emerald-500/5' : hasBlocked ? 'bg-red-500/5' : 'hover:bg-theme-hover/50'
-                    } ${hasOrgBlackout ? 'bg-amber-500/5' : ''}`}
+                      rowBackground
+                    } ${allowHover ? 'hover:bg-theme-hover/50' : ''}`}
                   >
-                    <div className="w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3">
+                    <div
+                      className={`w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3 sticky left-0 z-20 bg-theme-timeline ${
+                        rowBackground
+                      } ${allowHover ? 'group-hover:bg-theme-hover/50' : ''}`}
+                    >
                       <div
                         className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
                         style={{
@@ -290,7 +423,8 @@ export function Timeline() {
                     <div 
                       ref={timelineRef}
                       className="flex-1 relative"
-                      onClick={(e) => !hasTimeOff && !hasBlocked && employeeShifts.length === 0 && handleEmptyClick(employee.id, e)}
+                      onMouseDown={(e) => !hasTimeOff && !hasBlocked && handleLaneMouseDown(employee.id, e)}
+                      onMouseUp={(e) => !hasTimeOff && !hasBlocked && handleLaneMouseUp(employee.id, e)}
                     >
                       {/* Grid lines */}
                       <div className="absolute inset-0 flex pointer-events-none">
@@ -340,11 +474,14 @@ export function Timeline() {
                         const position = getShiftPosition(shift.startHour, shift.endHour);
                         const isHovered = hoveredShiftId === shift.id;
                         const isDragging = dragging?.shiftId === shift.id;
+                        const isStartDrag = isDragging && dragging?.edge === 'start';
+                        const isEndDrag = isDragging && dragging?.edge === 'end';
 
                         return (
                           <div
                             key={shift.id}
-                            className={`absolute top-2 bottom-2 rounded-lg transition-all ${
+                            data-shift="true"
+                            className={`absolute top-2 bottom-2 rounded-lg transition-all group ${
                               isDragging ? 'z-30 shadow-xl cursor-grabbing' : isHovered ? 'z-10 shadow-lg' : 'z-0 cursor-pointer'
                             }`}
                             style={{
@@ -366,13 +503,27 @@ export function Timeline() {
                             onClick={() => handleShiftClick(shift)}
                           >
                             <div
-                              className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/20 rounded-l-lg"
+                              className={`absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize rounded-l-lg flex items-center justify-center touch-none group/edge transition-colors ${
+                                isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                              }`}
                               onMouseDown={(e) => handleMouseDown(e, shift.id, 'start')}
-                            />
+                              onTouchStart={(e) => handleTouchStart(e, shift.id, 'start')}
+                              title="Drag to resize"
+                            >
+                              <span
+                                className={`w-0.5 h-6 rounded-full transition-colors ${
+                                  isStartDrag ? 'bg-amber-200' : 'bg-white/50'
+                                } group-hover/edge:bg-white/80`}
+                              />
+                              <span className="absolute -top-7 left-1/2 -translate-x-1/2 px-2 py-1 rounded bg-theme-secondary text-[10px] text-theme-primary border border-theme-primary shadow-lg opacity-0 group-hover/edge:opacity-100 pointer-events-none">
+                                Drag to resize
+                              </span>
+                            </div>
                             
                             <div
-                              className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing"
+                              className="absolute left-2.5 right-2.5 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none"
                               onMouseDown={(e) => handleMouseDown(e, shift.id, 'move')}
+                              onTouchStart={(e) => handleTouchStart(e, shift.id, 'move')}
                             >
                               <div className="h-full flex items-center justify-center px-2 overflow-hidden">
                                 <span
@@ -396,9 +547,22 @@ export function Timeline() {
                             </div>
                             
                             <div
-                              className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/20 rounded-r-lg"
+                              className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize rounded-r-lg flex items-center justify-center touch-none group/edge transition-colors ${
+                                isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                              }`}
                               onMouseDown={(e) => handleMouseDown(e, shift.id, 'end')}
-                            />
+                              onTouchStart={(e) => handleTouchStart(e, shift.id, 'end')}
+                              title="Drag to resize"
+                            >
+                              <span
+                                className={`w-0.5 h-6 rounded-full transition-colors ${
+                                  isEndDrag ? 'bg-amber-200' : 'bg-white/50'
+                                } group-hover/edge:bg-white/80`}
+                              />
+                              <span className="absolute -top-7 left-1/2 -translate-x-1/2 px-2 py-1 rounded bg-theme-secondary text-[10px] text-theme-primary border border-theme-primary shadow-lg opacity-0 group-hover/edge:opacity-100 pointer-events-none">
+                                Drag to resize
+                              </span>
+                            </div>
                           </div>
                         );
                       })}

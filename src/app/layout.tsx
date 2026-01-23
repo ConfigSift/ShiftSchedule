@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "../components/ThemeProvider";
+import { AppShell } from "../components/AppShell";
 
 export const metadata: Metadata = {
   title: "ShiftFlow - Restaurant Scheduling",
@@ -16,7 +17,7 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body className="font-sans">
         <ThemeProvider>
-          {children}
+          <AppShell>{children}</AppShell>
         </ThemeProvider>
       </body>
     </html>

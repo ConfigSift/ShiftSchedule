@@ -34,7 +34,7 @@ export function StatsFooter() {
   }, 0);
 
   return (
-    <footer className="h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-6 gap-8 shrink-0 transition-theme">
+    <footer className="fixed bottom-0 left-0 right-0 h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-6 gap-8 shrink-0 transition-theme z-40">
       <div className="flex items-center gap-2">
         <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
           <Clock className="w-4 h-4 text-blue-400" />

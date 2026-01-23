@@ -2,11 +2,11 @@
 
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
-import { SECTIONS } from '../types';
-import { getWeekDates, dateToString, isSameDay, formatHour } from '../utils/timeUtils';
+import { HOURS_END, HOURS_START, SECTIONS } from '../types';
+import { getWeekDates, dateToString, isSameDay, formatHour, shiftsOverlap } from '../utils/timeUtils';
 import { Palmtree } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export function WeekView() {
   const {
@@ -18,9 +18,12 @@ export function WeekView() {
     goToPrevious,
     goToNext,
     openModal,
+    showToast,
     hasApprovedTimeOff,
     hasBlockedShiftOnDate,
     hasOrgBlackoutOnDate,
+    dateNavDirection,
+    dateNavKey,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
@@ -31,6 +34,11 @@ export function WeekView() {
   const today = new Date();
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollLockRef = useRef(false);
+  const edgeShiftCountRef = useRef(0);
+  const edgeShiftResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cellPointerRef = useRef<{ x: number; y: number; employeeId: string; date: string } | null>(null);
+  const [isSliding, setIsSliding] = useState(false);
+  const [slideDirection, setSlideDirection] = useState<'prev' | 'next' | null>(null);
 
   const handleDayClick = (date: Date) => {
     setSelectedDate(date);
@@ -50,7 +58,9 @@ export function WeekView() {
     if (el.scrollWidth <= el.clientWidth) return;
     const threshold = 24;
     if (el.scrollLeft <= threshold) {
+      if (edgeShiftCountRef.current >= 7) return;
       scrollLockRef.current = true;
+      edgeShiftCountRef.current += 1;
       goToPrevious();
       requestAnimationFrame(() => {
         if (scrollRef.current) {
@@ -62,7 +72,9 @@ export function WeekView() {
         scrollLockRef.current = false;
       }, 300);
     } else if (el.scrollLeft + el.clientWidth >= el.scrollWidth - threshold) {
+      if (edgeShiftCountRef.current >= 7) return;
       scrollLockRef.current = true;
+      edgeShiftCountRef.current += 1;
       goToNext();
       requestAnimationFrame(() => {
         if (scrollRef.current) {
@@ -74,7 +86,67 @@ export function WeekView() {
         scrollLockRef.current = false;
       }, 300);
     }
+
+    if (edgeShiftResetRef.current) {
+      clearTimeout(edgeShiftResetRef.current);
+    }
+    edgeShiftResetRef.current = setTimeout(() => {
+      edgeShiftCountRef.current = 0;
+    }, 900);
   }, [goToPrevious, goToNext]);
+
+  useEffect(() => {
+    if (!dateNavDirection) return;
+    setSlideDirection(dateNavDirection);
+    setIsSliding(true);
+    const timeout = setTimeout(() => setIsSliding(false), 220);
+    return () => clearTimeout(timeout);
+  }, [dateNavKey, dateNavDirection]);
+
+  const handleCellMouseDown = (employeeId: string, date: string, e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isManager) return;
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('[data-shift]')) return;
+    cellPointerRef.current = { x: e.clientX, y: e.clientY, employeeId, date };
+  };
+
+  const handleCellMouseUp = (employeeId: string, date: string, e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isManager) return;
+    if (!cellPointerRef.current) return;
+    if ((e.target as HTMLElement).closest('[data-shift]')) {
+      cellPointerRef.current = null;
+      return;
+    }
+    const dx = e.clientX - cellPointerRef.current.x;
+    const dy = e.clientY - cellPointerRef.current.y;
+    const distance = Math.hypot(dx, dy);
+    cellPointerRef.current = null;
+    if (distance > 6) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const percentage = (e.clientX - rect.left) / rect.width;
+    const rawHour = HOURS_START + percentage * (HOURS_END - HOURS_START);
+    const startHour = Math.max(HOURS_START, Math.min(HOURS_END, Math.round(rawHour * 4) / 4));
+    const endHour = Math.min(HOURS_END, Math.round((startHour + 2) * 4) / 4);
+    const hasOverlap = scopedShifts.some(
+      (shift) =>
+        shift.employeeId === employeeId &&
+        shift.date === date &&
+        !shift.isBlocked &&
+        shiftsOverlap(startHour, endHour, shift.startHour, shift.endHour)
+    );
+    if (hasOverlap) {
+      showToast('Shift overlaps with existing shift', 'error');
+      return;
+    }
+
+    openModal('addShift', {
+      employeeId,
+      date,
+      startHour,
+      endHour,
+    });
+  };
 
   return (
     <div className="flex-1 flex flex-col bg-theme-timeline overflow-hidden transition-theme">
@@ -83,9 +155,17 @@ export function WeekView() {
         className="flex-1 overflow-x-auto overflow-y-hidden scroll-smooth"
         onScroll={handleScrollEdge}
       >
-        <div className="min-w-[1100px] flex flex-col h-full">
+        <div
+          className={`min-w-[1100px] flex flex-col h-full transition-transform transition-opacity duration-200 ${
+            isSliding
+              ? slideDirection === 'next'
+                ? '-translate-x-2 opacity-90'
+                : 'translate-x-2 opacity-90'
+              : 'translate-x-0 opacity-100'
+          }`}
+        >
           <div className="h-12 border-b border-theme-primary flex shrink-0">
-            <div className="w-44 shrink-0 border-r border-theme-primary" />
+            <div className="w-44 shrink-0 border-r border-theme-primary sticky left-0 z-30 bg-theme-timeline" />
             <div className="flex-1 flex">
               {weekDates.map((date) => {
                 const isToday = isSameDay(date, today);
@@ -134,9 +214,9 @@ export function WeekView() {
             return (
               <div
                 key={employee.id}
-                className="flex min-h-[60px] border-b border-theme-primary/50 hover:bg-theme-hover/30 transition-colors"
+                className="flex min-h-[60px] border-b border-theme-primary/50 hover:bg-theme-hover/30 transition-colors group"
               >
-                <div className="w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3 py-2">
+                <div className="w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3 py-2 sticky left-0 z-20 bg-theme-timeline group-hover:bg-theme-hover/30">
                   <div
                     className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
                     style={{
@@ -173,6 +253,8 @@ export function WeekView() {
                         className={`flex-1 border-r border-theme-primary/30 p-1 ${
                           isToday ? 'bg-amber-500/5' : ''
                         } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''} ${hasOrgBlackout ? 'bg-amber-500/5' : ''}`}
+                        onMouseDown={(e) => handleCellMouseDown(employee.id, dateStr, e)}
+                        onMouseUp={(e) => handleCellMouseUp(employee.id, dateStr, e)}
                       >
                         {hasTimeOff ? (
                           <div className="h-full flex items-center justify-center">
@@ -197,6 +279,7 @@ export function WeekView() {
                           dayShifts.map((shift) => (
                             <div
                               key={shift.id}
+                              data-shift="true"
                               onClick={(e) => handleShiftClick(shift, e)}
                               className="mb-1 px-2 py-1 rounded-md text-xs truncate cursor-pointer hover:scale-[1.02] transition-transform"
                               style={{
