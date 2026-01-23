@@ -517,16 +517,12 @@ export function Timeline() {
                               }`}
                               onMouseDown={(e) => handleMouseDown(e, shift.id, 'start')}
                               onTouchStart={(e) => handleTouchStart(e, shift.id, 'start')}
-                              title="Drag to resize"
                             >
                               <span
                                 className={`w-0.5 h-6 rounded-full transition-colors ${
                                   isStartDrag ? 'bg-amber-200' : 'bg-white/50'
                                 } group-hover/edge:bg-white/80`}
                               />
-                              <span className="absolute -top-7 left-1/2 -translate-x-1/2 px-2 py-1 rounded bg-theme-secondary text-[10px] text-theme-primary border border-theme-primary shadow-lg opacity-0 group-hover/edge:opacity-100 pointer-events-none">
-                                Drag to resize
-                              </span>
                             </div>
                             
                             <div
@@ -570,16 +566,12 @@ export function Timeline() {
                               }`}
                               onMouseDown={(e) => handleMouseDown(e, shift.id, 'end')}
                               onTouchStart={(e) => handleTouchStart(e, shift.id, 'end')}
-                              title="Drag to resize"
                             >
                               <span
                                 className={`w-0.5 h-6 rounded-full transition-colors ${
                                   isEndDrag ? 'bg-amber-200' : 'bg-white/50'
                                 } group-hover/edge:bg-white/80`}
                               />
-                              <span className="absolute -top-7 left-1/2 -translate-x-1/2 px-2 py-1 rounded bg-theme-secondary text-[10px] text-theme-primary border border-theme-primary shadow-lg opacity-0 group-hover/edge:opacity-100 pointer-events-none">
-                                Drag to resize
-                              </span>
                             </div>
                           </div>
                         );
