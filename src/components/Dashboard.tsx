@@ -49,7 +49,7 @@ export function Dashboard() {
   return (
     <div className="h-full flex flex-col bg-theme-primary text-theme-primary overflow-hidden transition-theme">
       <div className="flex-1 flex overflow-hidden">
-        <div className="h-full shrink-0">
+        <div className="h-full shrink-0 min-h-0">
           <StaffSidebar />
         </div>
         

@@ -24,6 +24,7 @@ export function StaffSidebar() {
 
   const [expandedSections, setExpandedSections] = useState<Section[]>(['kitchen', 'front', 'bar', 'management']);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
 
   const toggleExpanded = (section: Section) => {
     setExpandedSections(prev =>
@@ -36,11 +37,45 @@ export function StaffSidebar() {
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
 
+  const jobCategoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    scopedEmployees.forEach((emp) => {
+      if (!emp.isActive) return;
+      if (!emp.jobs || emp.jobs.length === 0) {
+        counts['Unassigned'] = (counts['Unassigned'] || 0) + 1;
+        return;
+      }
+      emp.jobs.forEach((job) => {
+        counts[job] = (counts[job] || 0) + 1;
+      });
+    });
+    return counts;
+  }, [scopedEmployees]);
+
+  const toggleCategory = (category: string) => {
+    setSelectedCategories((prev) =>
+      prev.includes(category) ? prev.filter((c) => c !== category) : [...prev, category]
+    );
+  };
+
+  const categoryFilteredEmployees = useMemo(() => {
+    if (selectedCategories.length === 0) return scopedEmployees;
+    return scopedEmployees.filter((emp) => {
+      const jobs = emp.jobs ?? [];
+      if (!jobs.length && selectedCategories.includes('Unassigned')) return true;
+      return jobs.some((job) => selectedCategories.includes(job));
+    });
+  }, [scopedEmployees, selectedCategories]);
+
   const filteredEmployees = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return scopedEmployees;
-    return scopedEmployees.filter((emp) => emp.name.toLowerCase().includes(query));
-  }, [scopedEmployees, searchQuery]);
+    if (!query) return categoryFilteredEmployees;
+    return categoryFilteredEmployees.filter((emp) =>
+      emp.name.toLowerCase().includes(query)
+        || emp.email?.toLowerCase().includes(query)
+        || emp.phone?.toLowerCase().includes(query)
+    );
+  }, [categoryFilteredEmployees, searchQuery]);
 
   const employeesBySection = filteredEmployees.reduce((acc, emp) => {
     if (!emp.isActive) return acc;
@@ -77,7 +112,7 @@ export function StaffSidebar() {
   };
 
   return (
-    <aside className="w-64 h-full bg-theme-secondary border-r border-theme-primary flex flex-col shrink-0 transition-theme">
+    <aside className="w-64 min-h-0 h-full bg-theme-secondary border-r border-theme-primary flex flex-col shrink-0 transition-theme">
       <div className="p-4 border-b border-theme-primary">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
@@ -100,7 +135,32 @@ export function StaffSidebar() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2 space-y-2">
+      <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
+        <div className="px-2 space-y-2">
+          <p className="text-[11px] text-theme-muted uppercase tracking-wide">Job Categories</p>
+          <div className="grid grid-cols-2 gap-1">
+            {Object.entries(jobCategoryCounts).map(([category, count]) => (
+              <button
+                key={category}
+                type="button"
+                onClick={() => toggleCategory(category)}
+                className={`flex items-center justify-between gap-2 px-2 py-1 rounded-lg text-[11px] font-medium transition-colors border ${
+                  selectedCategories.includes(category)
+                    ? 'border-amber-500 bg-amber-500/10 text-amber-400'
+                    : 'border-theme-primary text-theme-muted'
+                }`}
+              >
+                <span>{category}</span>
+                <span className="text-[10px]">{count}</span>
+              </button>
+            ))}
+            {!Object.keys(jobCategoryCounts).length && (
+              <span className="text-xs text-theme-muted col-span-2">
+                No jobs assigned yet.
+              </span>
+            )}
+          </div>
+        </div>
         <div className="px-2">
           <input
             type="text"
