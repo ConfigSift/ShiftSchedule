@@ -22,7 +22,19 @@ export async function middleware(req: NextRequest) {
     },
   });
 
-  await supabase.auth.getUser();
+  try {
+    await supabase.auth.getUser();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      message.includes('Refresh Token Not Found')
+      || message.includes('Invalid Refresh Token')
+    ) {
+      // Ignore missing/invalid refresh tokens and proceed; user will naturally hit /login.
+    } else {
+      throw error;
+    }
+  }
   return response;
 }
 

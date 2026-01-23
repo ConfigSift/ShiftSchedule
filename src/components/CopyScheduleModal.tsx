@@ -64,26 +64,34 @@ export function CopyScheduleModal() {
     setShowSkipped(false);
   }, [isOpen, weekDates]);
 
-  const handleConfirm = async () => {
-    if (!isManager || !activeRestaurantId) return;
-    setIsSubmitting(true);
+  const buildPayload = (targetMode: CopyMode) => {
     const payload: Record<string, any> = {
       sourceWeekStart,
       sourceWeekEnd,
-      mode,
+      mode: targetMode,
       allowOverrideBlocked: allowOverride,
     };
-    if (mode === 'nextDay') {
+    if (targetMode === 'nextDay') {
       payload.sourceDay = sourceDay;
     }
-    if (mode === 'weeksAhead') {
+    if (targetMode === 'weeksAhead') {
       payload.weeksAhead = weeksAhead;
     }
-    if (mode === 'dateRange') {
+    if (targetMode === 'dateRange') {
       payload.targetStartWeek = rangeStart;
       payload.targetEndWeek = rangeEnd;
     }
+    return payload;
+  };
 
+  const runCopy = async (targetMode: CopyMode, options?: { closeOnSuccess?: boolean }) => {
+    if (!isManager || !activeRestaurantId) return;
+    setMode(targetMode);
+    setIsSubmitting(true);
+    setSummary(null);
+    setShowSkipped(false);
+
+    const payload = buildPayload(targetMode);
     const result = await apiFetch<CopySummary>('/api/shifts/copy', {
       method: 'POST',
       json: payload,
@@ -96,13 +104,18 @@ export function CopyScheduleModal() {
     }
 
     setSummary(result.data);
-    setIsSubmitting(false);
     showToast(
       `Copied ${result.data.created_count} shifts (skipped ${result.data.skipped_overlap_count + result.data.skipped_blocked_count + result.data.skipped_duplicate_count}).`,
       'success'
     );
     await loadRestaurantData(activeRestaurantId);
+    setIsSubmitting(false);
+    if (options?.closeOnSuccess) {
+      closeModal();
+    }
   };
+
+  const handleConfirm = () => runCopy(mode);
 
   return (
     <Modal isOpen={isOpen} onClose={closeModal} title="Copy Schedule" size="lg">
@@ -122,36 +135,27 @@ export function CopyScheduleModal() {
             <div className="space-y-2">
               <button
                 type="button"
-                onClick={() => setMode('nextDay')}
+                onClick={() => runCopy('nextDay', { closeOnSuccess: true })}
+                disabled={isSubmitting}
                 className={`w-full px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
                   mode === 'nextDay'
                     ? 'bg-amber-500 text-zinc-900'
                     : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-                }`}
+                } ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 Copy to next day (current day only)
               </button>
               <button
                 type="button"
-                onClick={() => setMode('nextWeek')}
+                onClick={() => runCopy('nextWeek', { closeOnSuccess: true })}
+                disabled={isSubmitting}
                 className={`w-full px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
                   mode === 'nextWeek'
                     ? 'bg-amber-500 text-zinc-900'
                     : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-                }`}
+                } ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 Copy current week schedule to next week
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode('nextWeek')}
-                className={`w-full px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                  mode === 'nextWeek'
-                    ? 'bg-amber-500 text-zinc-900'
-                    : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-                }`}
-              >
-                Copy to next week (same as above)
               </button>
             </div>
           </div>

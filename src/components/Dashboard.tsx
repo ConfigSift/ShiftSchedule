@@ -15,9 +15,10 @@ import { useEffect } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { formatDateHeader, formatDateRange, getWeekDates, isSameDay } from '../utils/timeUtils';
-import { ChevronLeft, ChevronRight, CalendarDays, Sun } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CalendarDays, Sun, Calendar } from 'lucide-react';
 import Link from 'next/link';
 import { getUserRole, isManagerRole } from '../utils/role';
+import { MonthView } from './MonthView';
 
 export function Dashboard() {
   const {
@@ -99,33 +100,46 @@ export function Dashboard() {
                 )}
               </div>
 
-              <div className="flex items-center gap-2 bg-theme-tertiary rounded-lg p-1">
-                <button
-                  onClick={() => setViewMode('day')}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                    viewMode === 'day'
-                      ? 'bg-theme-secondary text-theme-primary shadow-sm'
-                      : 'text-theme-tertiary hover:text-theme-primary'
-                  }`}
-                >
-                  <Sun className="w-4 h-4" />
-                  <span className="hidden sm:inline">Day</span>
-                </button>
-                <button
-                  onClick={() => setViewMode('week')}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                    viewMode === 'week'
-                      ? 'bg-theme-secondary text-theme-primary shadow-sm'
-                      : 'text-theme-tertiary hover:text-theme-primary'
-                  }`}
-                >
-                  <CalendarDays className="w-4 h-4" />
-                  <span className="hidden sm:inline">Week</span>
-                </button>
-              </div>
+                <div className="flex items-center gap-2 bg-theme-tertiary rounded-lg p-1">
+                  <button
+                    onClick={() => setViewMode('day')}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      viewMode === 'day'
+                        ? 'bg-theme-secondary text-theme-primary shadow-sm'
+                        : 'text-theme-tertiary hover:text-theme-primary'
+                    }`}
+                  >
+                    <Sun className="w-4 h-4" />
+                    <span className="hidden sm:inline">Day</span>
+                  </button>
+                  <button
+                    onClick={() => setViewMode('week')}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      viewMode === 'week'
+                        ? 'bg-theme-secondary text-theme-primary shadow-sm'
+                        : 'text-theme-tertiary hover:text-theme-primary'
+                    }`}
+                  >
+                    <CalendarDays className="w-4 h-4" />
+                    <span className="hidden sm:inline">Week</span>
+                  </button>
+                  <button
+                    onClick={() => setViewMode('month')}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      viewMode === 'month'
+                        ? 'bg-theme-secondary text-theme-primary shadow-sm'
+                        : 'text-theme-tertiary hover:text-theme-primary'
+                    }`}
+                  >
+                    <Calendar className="w-4 h-4" />
+                    <span className="hidden sm:inline">Month</span>
+                  </button>
+                </div>
             </div>
           </div>
-          {viewMode === 'day' ? <Timeline /> : <WeekView />}
+          {viewMode === 'day' && <Timeline />}
+          {viewMode === 'week' && <WeekView />}
+          {viewMode === 'month' && <MonthView />}
         </main>
       </div>
 

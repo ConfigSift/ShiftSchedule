@@ -3,6 +3,7 @@
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { useThemeStore } from '../store/themeStore';
+import { useUIStore } from '../store/uiStore';
 import { 
   Calendar,
   Plus,
@@ -30,6 +31,7 @@ export function Header() {
   const { currentUser, signOut } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
   const currentRole = getUserRole(currentUser?.role);
+  const { openProfileModal, openTimeOffModal } = useUIStore();
 
   const handleLogout = () => {
     signOut();
@@ -123,7 +125,7 @@ export function Header() {
 
           {currentUser && (
             <button
-              onClick={() => openModal('timeOffRequest', { employeeId: currentUser.id })}
+              onClick={() => openTimeOffModal({ employeeId: currentUser.id })}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors text-sm font-medium"
             >
               <CalendarOff className="w-4 h-4" />
@@ -131,13 +133,13 @@ export function Header() {
             </button>
           )}
 
-          <Link
-            href={currentUser?.id ? `/staff/${currentUser.id}` : '/login?notice=login'}
+          <button
+            onClick={openProfileModal}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
           >
             <User className="w-4 h-4" />
             <span className="hidden sm:inline">My Profile</span>
-          </Link>
+          </button>
 
           <button
             onClick={handleLogout}

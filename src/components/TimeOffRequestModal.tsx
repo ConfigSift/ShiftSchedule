@@ -5,6 +5,7 @@ import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
 import { formatDateLong } from '../utils/timeUtils';
+import { useUIStore } from '../store/uiStore';
 
 export function TimeOffRequestModal() {
   const { 
@@ -15,6 +16,7 @@ export function TimeOffRequestModal() {
     hasOrgBlackoutOnDate,
     showToast,
   } = useScheduleStore();
+  const { closeTimeOffModal } = useUIStore();
 
   const { currentUser, activeRestaurantId } = useAuthStore();
   
@@ -36,6 +38,11 @@ export function TimeOffRequestModal() {
       setNote('');
     }
   }, [isOpen]);
+
+  const handleClose = () => {
+    closeModal();
+    closeTimeOffModal();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,7 +88,7 @@ export function TimeOffRequestModal() {
     }
 
     showToast('Request submitted', 'success');
-    closeModal();
+    handleClose();
   };
 
   return (
@@ -173,7 +180,7 @@ export function TimeOffRequestModal() {
           <div className="flex-1" />
           <button
             type="button"
-            onClick={closeModal}
+            onClick={handleClose}
             className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors text-sm font-medium"
           >
             Cancel

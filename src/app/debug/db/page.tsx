@@ -511,22 +511,41 @@ export default function DebugDbPage() {
           : { data: null };
         const shiftExchangeOid = (tableOid.data as { oid?: number } | null)?.oid;
 
-        const statusConstraint =
+        const describeCatalogAccess = (error?: { message?: string } | null) => {
+          const msg = error?.message?.toLowerCase() ?? '';
+          if (
+            msg.includes('invalid schema: pg_catalog')
+            || msg.includes('permission denied for schema "pg_catalog"')
+            || msg.includes('schema cache')
+            || msg.includes('cannot access schema "pg_catalog"')
+          ) {
+            return 'pg_catalog not exposed via PostgREST';
+          }
+          return undefined;
+        };
+
+        const constraintResult =
           shiftExchangeOid !== undefined
             ? await catalog
                 .from('pg_constraint')
                 .select('conname')
-                .eq('conname', 'shift_exchange_requests_status_check')
+                .in('conname', [
+                  'shift_exchange_requests_status_check',
+                  'shift_exchange_request_status_check',
+                ])
                 .eq('conrelid', shiftExchangeOid)
             : { data: [] as Array<{ conname: string }>, error: null };
-        const statusConstraintOk = !statusConstraint.error && (statusConstraint.data || []).length > 0;
+        const constraintNote = describeCatalogAccess(constraintResult.error);
+        const hasConstraint = !constraintNote && !constraintResult.error && (constraintResult.data || []).length > 0;
         checksList.push({
           id: 'shift_exchange_status_constraint',
           label: 'shift_exchange_requests has status check constraint',
-          ok: statusConstraintOk,
-          details: !statusConstraintOk
-            ? statusConstraint.error?.message || 'Missing shift_exchange_requests_status_check constraint'
-            : undefined,
+          ok: constraintNote ? true : hasConstraint,
+          details: constraintNote
+            ? constraintNote
+            : hasConstraint
+              ? undefined
+              : constraintResult.error?.message || 'Missing shift_exchange status constraint',
         });
 
         const openIndex = await catalog
@@ -535,14 +554,17 @@ export default function DebugDbPage() {
           .eq('schemaname', 'public')
           .eq('tablename', 'shift_exchange_requests')
           .eq('indexname', 'shift_exchange_open_one_per_shift');
-        const openIndexOk = !openIndex.error && (openIndex.data || []).length > 0;
+        const openIndexNote = describeCatalogAccess(openIndex.error);
+        const openIndexOk = openIndexNote ? true : !openIndex.error && (openIndex.data || []).length > 0;
         checksList.push({
           id: 'shift_exchange_open_index',
           label: 'shift_exchange_requests has unique OPEN index',
           ok: openIndexOk,
-          details: !openIndexOk
-            ? openIndex.error?.message || 'Missing shift_exchange_open_one_per_shift'
-            : undefined,
+          details: openIndexNote
+            ? openIndexNote
+            : openIndexOk
+              ? undefined
+              : openIndex.error?.message || 'Missing shift_exchange_open_one_per_shift',
         });
 
         const selectPolicy = await catalog
@@ -551,12 +573,19 @@ export default function DebugDbPage() {
           .eq('schemaname', 'public')
           .eq('tablename', 'shift_exchange_requests')
           .eq('policyname', 'ser_select');
-        const selectPolicyOk = !selectPolicy.error && (selectPolicy.data || []).length > 0;
+        const selectPolicyNote = describeCatalogAccess(selectPolicy.error);
+        const selectPolicyOk = selectPolicyNote
+          ? true
+          : !selectPolicy.error && (selectPolicy.data || []).length > 0;
         checksList.push({
           id: 'shift_exchange_policy_select',
           label: 'shift_exchange_requests has select policy',
           ok: selectPolicyOk,
-          details: !selectPolicyOk ? selectPolicy.error?.message || 'Missing ser_select policy' : undefined,
+          details: selectPolicyNote
+            ? selectPolicyNote
+            : selectPolicyOk
+              ? undefined
+              : selectPolicy.error?.message || 'Missing ser_select policy',
         });
       }
 

@@ -53,7 +53,7 @@ function isValidJob(value: unknown): value is string {
   return JOB_OPTIONS.includes(String(value) as (typeof JOB_OPTIONS)[number]);
 }
 
-type ViewMode = 'day' | 'week';
+type ViewMode = 'day' | 'week' | 'month';
 type ModalType =
   | 'addShift'
   | 'editShift'

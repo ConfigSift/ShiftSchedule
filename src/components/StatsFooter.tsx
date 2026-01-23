@@ -1,32 +1,74 @@
 'use client';
 
+import { useMemo } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { SECTIONS, Section } from '../types';
-import { Clock, Users, AlertTriangle, DollarSign } from 'lucide-react';
+import { Clock, Users, DollarSign } from 'lucide-react';
+import { getWeekDates, dateToString } from '../utils/timeUtils';
+import { getUserRole, isManagerRole } from '../utils/role';
 
 export function StatsFooter() {
-  const { selectedDate, getShiftsForRestaurant, getEmployeesForRestaurant } = useScheduleStore();
-  const { activeRestaurantId } = useAuthStore();
+  const {
+    selectedDate,
+    viewMode,
+    selectedEmployeeIds,
+    getShiftsForRestaurant,
+    getEmployeesForRestaurant,
+  } = useScheduleStore();
+  const { activeRestaurantId, currentUser } = useAuthStore();
 
-  const dateString = selectedDate.toISOString().split('T')[0];
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
-  const activeEmployees = scopedEmployees.filter(e => e.isActive);
+  const activeEmployees = scopedEmployees.filter((e) => e.isActive);
 
-  const todayShifts = scopedShifts.filter(s => s.date === dateString && !s.isBlocked);
-  const totalHours = todayShifts.reduce((sum, s) => sum + (s.endHour - s.startHour), 0);
-  const workingCount = new Set(todayShifts.map(s => s.employeeId)).size;
+  const role = getUserRole(currentUser?.role);
+  const isManager = isManagerRole(role);
+  const isEmployee = role === 'EMPLOYEE';
 
-  const shiftsBySection = todayShifts.reduce((acc, shift) => {
-    const employee = scopedEmployees.find(e => e.id === shift.employeeId);
+  const weekDates = useMemo(() => getWeekDates(selectedDate), [selectedDate]);
+  const dayString = selectedDate.toISOString().split('T')[0];
+  const weekStart = dateToString(weekDates[0]);
+  const weekEnd = dateToString(weekDates[6]);
+  const monthStartDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1);
+  const monthEndDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 1);
+  const monthStart = dateToString(monthStartDate);
+  const monthEnd = dateToString(monthEndDate);
+  const rangeStart =
+    viewMode === 'week' ? weekStart : viewMode === 'month' ? monthStart : dayString;
+  const rangeEnd =
+    viewMode === 'week' ? weekEnd : viewMode === 'month' ? monthEnd : dayString;
+
+  const relevantShifts = useMemo(() => {
+    return scopedShifts.filter((shift) => {
+      if (shift.isBlocked) return false;
+        if (viewMode === 'month') {
+          return shift.date >= rangeStart && shift.date < rangeEnd;
+        }
+        return shift.date >= rangeStart && shift.date <= rangeEnd;
+      if (isEmployee) {
+        if (!currentUser) return false;
+        return shift.employeeId === currentUser.id;
+      }
+      if (selectedEmployeeIds.length === 0) {
+        return true;
+      }
+      return selectedEmployeeIds.includes(shift.employeeId);
+    });
+  }, [scopedShifts, rangeStart, rangeEnd, isEmployee, currentUser, selectedEmployeeIds]);
+
+  const totalHours = relevantShifts.reduce((sum, shift) => sum + (shift.endHour - shift.startHour), 0);
+  const workingCount = new Set(relevantShifts.map((s) => s.employeeId)).size;
+
+  const shiftsBySection = relevantShifts.reduce((acc, shift) => {
+    const employee = scopedEmployees.find((e) => e.id === shift.employeeId);
     if (employee) {
       acc[employee.section] = (acc[employee.section] || 0) + 1;
     }
     return acc;
   }, {} as Record<Section, number>);
 
-  const estimatedCost = todayShifts.reduce((sum, shift) => {
+  const estimatedCost = relevantShifts.reduce((sum, shift) => {
     const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
     const rate = employee?.hourlyPay ?? 0;
     const hours = shift.endHour - shift.startHour;
@@ -40,7 +82,7 @@ export function StatsFooter() {
           <Clock className="w-4 h-4 text-blue-400" />
         </div>
         <div>
-          <p className="text-xs text-theme-muted">Total Hours</p>
+          <p className="text-xs text-theme-muted">{isEmployee ? 'My Hours' : 'Total Hours'}</p>
           <p className="text-sm font-semibold text-theme-primary">{totalHours}h</p>
         </div>
       </div>
@@ -72,19 +114,22 @@ export function StatsFooter() {
         })}
       </div>
 
-      <div className="flex-1" />
-
-      <div className="flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
-          <DollarSign className="w-4 h-4 text-purple-400" />
-        </div>
-        <div>
-          <p className="text-xs text-theme-muted">Est. Labor Cost</p>
-          <p className="text-sm font-semibold text-theme-primary">
-            ${estimatedCost.toFixed(2)}
-          </p>
-        </div>
-      </div>
+      {!isEmployee && (
+        <>
+          <div className="flex-1" />
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+              <DollarSign className="w-4 h-4 text-purple-400" />
+            </div>
+            <div>
+              <p className="text-xs text-theme-muted">Est. Labor Cost</p>
+              <p className="text-sm font-semibold text-theme-primary">
+                ${estimatedCost.toFixed(2)}
+              </p>
+            </div>
+          </div>
+        </>
+      )}
     </footer>
   );
 }

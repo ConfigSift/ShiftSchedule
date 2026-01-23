@@ -43,6 +43,7 @@ export default function StaffPage() {
   const [users, setUsers] = useState<OrgUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [formState, setFormState] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
@@ -371,6 +372,17 @@ export default function StaffPage() {
     );
   }
 
+  const filteredUsers = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return users;
+    return users.filter((user) => {
+      if (user.fullName.toLowerCase().includes(term)) return true;
+      if (user.email.toLowerCase().includes(term)) return true;
+      const parts = user.fullName.toLowerCase().split(/\s+/);
+      return parts.some((part) => part.includes(term));
+    });
+  }, [users, searchTerm]);
+
   return (
     <div className="min-h-screen bg-theme-primary p-6">
       <div className="max-w-4xl mx-auto space-y-6">
@@ -426,69 +438,82 @@ export default function StaffPage() {
           </div>
         )}
 
-        <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-4">
+        <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-4 space-y-3">
           {loading ? (
             <p className="text-theme-secondary">Loading team...</p>
           ) : users.length === 0 ? (
             <p className="text-theme-muted">No users found.</p>
           ) : (
-            <div className="space-y-3">
-              {users.map((user) => (
-                <div
-                  key={user.id}
-                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-theme-tertiary border border-theme-primary rounded-xl p-4"
-                >
-                  <div>
-                    <p className="text-theme-primary font-medium">{user.fullName}</p>
-                    <p className="text-xs text-theme-muted">{user.email}</p>
-                    <p className="text-xs text-theme-muted">{user.phone}</p>
-                    <p className="text-xs text-theme-muted mt-1">
-                      {user.accountType}
-                      {user.jobs.length > 0 ? ` - ${user.jobs.join(', ')}` : ''}
-                      {typeof user.hourlyPay === 'number' ? ` | $${user.hourlyPay.toFixed(2)}/hr` : ''}
-                    </p>
-                  </div>
-                  {isManager && (
-                    <div className="flex items-center gap-2">
-                      <Link
-                        href={`/staff/${user.id}`}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors text-xs"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        View
-                      </Link>
-                      <button
-                        type="button"
-                        onClick={() => openProfile(user, 'edit')}
-                        disabled={!canManageUser(user)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors text-xs disabled:opacity-50"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(user)}
-                        disabled={!canManageUser(user) || user.authUserId === currentUser?.authUserId}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors text-xs disabled:opacity-50"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Delete
-                      </button>
-                      {canResetPin(user) && (
+            <>
+              <div className="flex items-center gap-3 text-sm">
+                <input
+                  type="text"
+                  placeholder="Search staff..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="flex-1 bg-theme-primary/40 border border-theme-primary rounded-lg px-3 py-2 text-sm text-theme-primary placeholder:text-theme-muted focus:outline-none focus:ring-2 focus:ring-amber-500/60"
+                />
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm('')}
+                    className="text-xs text-theme-muted hover:text-theme-primary"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div className="space-y-2 divide-y divide-theme-primary/30">
+                {filteredUsers.map((user) => (
+                  <div
+                    key={user.id}
+                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3"
+                  >
+                    <div>
+                      <p className="text-theme-primary font-medium text-base leading-tight">{user.fullName}</p>
+                      <p className="text-xs text-theme-muted">{user.email}</p>
+                      <p className="text-xs text-theme-muted">{user.phone}</p>
+                      <p className="text-xs text-theme-muted mt-1">
+                        {user.accountType}
+                        {user.jobs.length > 0 ? ` · ${user.jobs.join(', ')}` : ''}
+                        {typeof user.hourlyPay === 'number' ? ` · $${user.hourlyPay.toFixed(2)}/hr` : ''}
+                      </p>
+                    </div>
+                    {isManager && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
                         <button
                           type="button"
-                          onClick={() => openResetModal(user)}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors text-xs"
+                          onClick={() => openProfile(user, 'edit')}
+                          disabled={!canManageUser(user)}
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
                         >
-                          Reset PIN
+                          <Edit3 className="w-3 h-3" />
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(user)}
+                          disabled={!canManageUser(user) || user.authUserId === currentUser?.authUserId}
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Delete
+                        </button>
+                        {canResetPin(user) && (
+                          <button
+                            type="button"
+                            onClick={() => openResetModal(user)}
+                            className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
+                          >
+                            Reset PIN
                           </button>
                         )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>
