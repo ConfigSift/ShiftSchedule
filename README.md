@@ -56,7 +56,7 @@ SQL Editor (no CLI):
 
 ## Windows Build Note (EPERM)
 
-If `pnpm run build` fails with `Error: spawn EPERM` on Windows, it is typically caused by PowerShell execution policy, antivirus, or Windows Controlled Folder Access when the repo is under Desktop/Documents. Recommended fixes:
+If you see `Error: spawn EPERM` when running `pnpm run build` on Windows, it is typically caused by PowerShell execution policy, antivirus, or Windows Controlled Folder Access when the repo is under Desktop/Documents. Follow the troubleshooting guide above.
 
 - Move the repo to a non-protected folder (e.g. `C:\dev\shiftschedule`).
 - Allow `node.exe` and `pnpm` through Controlled Folder Access.

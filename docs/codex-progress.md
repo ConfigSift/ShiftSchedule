@@ -147,7 +147,7 @@ Checked items are verified in code and reachable in the UI.
 ## Release Checklist
 - DB/migrations applied: Not verified in this run
 - `/debug/db` ALL PASS: Not verified in this run
-- Known bugs: `pnpm run build` fails with `spawn EPERM` on this Windows/Desktop path; reproduce by running `cmd /c pnpm run build`
+- Known issues: Windows sometimes reports `spawn EPERM` during `pnpm run build`; see README.md troubleshooting if you hit it.
 - Manual test URLs: `/login`, `/dashboard`, `/review-requests`, `/time-off`, `/blocked-days`, `/business-hours`, `/chat`, `/manager`, `/debug/db`
 
 ## Final DONE Checklist

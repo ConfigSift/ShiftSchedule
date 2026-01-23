@@ -87,7 +87,7 @@ export function StaffSidebar() {
 
   const handleSectionToggle = (group: string) => {
     const isFullySelected = isSectionFullySelected(group);
-    setSectionSelectedForRestaurant(group as Section, !isFullySelected, activeRestaurantId);
+    setSectionSelectedForRestaurant(group, !isFullySelected, activeRestaurantId);
   };
 
   return (
@@ -157,7 +157,7 @@ export function StaffSidebar() {
                     </div>
                   </button>
                   <button
-                    onClick={() => toggleExpanded(job as Section)}
+                    onClick={() => toggleExpanded(job)}
                     className="flex-1 flex items-center justify-between p-2 rounded-lg hover:bg-theme-hover transition-colors"
                   >
                     <div className="flex items-center gap-2">

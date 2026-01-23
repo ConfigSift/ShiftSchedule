@@ -4,7 +4,6 @@ import { create } from 'zustand';
 import {
   Employee,
   Shift,
-  Section,
   TimeOffRequest,
   BlockedDayRequest,
   BlockedDayStatus,
@@ -79,7 +78,7 @@ interface ScheduleState {
 
   selectedDate: Date;
   viewMode: ViewMode;
-  selectedSections: Section[];
+  selectedSections: string[];
   selectedEmployeeIds: string[];
   hoveredShiftId: string | null;
 
@@ -96,8 +95,8 @@ interface ScheduleState {
   loadRestaurantData: (restaurantId: string | null) => Promise<void>;
   setSelectedDate: (date: Date) => void;
   setViewMode: (mode: ViewMode) => void;
-  toggleSection: (section: Section) => void;
-  setSectionSelectedForRestaurant: (section: Section, selected: boolean, restaurantId: string | null) => void;
+  toggleSection: (section: string) => void;
+  setSectionSelectedForRestaurant: (section: string, selected: boolean, restaurantId: string | null) => void;
   toggleEmployee: (employeeId: string) => void;
   selectAllEmployeesForRestaurant: (restaurantId: string | null) => void;
   deselectAllEmployees: () => void;
@@ -288,6 +287,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         isActive: true,
         jobs: normalized.jobs,
         hourlyPay: normalized.hourlyPay,
+        email: normalized.email ?? undefined,
+        phone: normalized.phone ?? undefined,
       };
     });
 
@@ -538,7 +539,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     const sectionEmployeeIds = sectionEmployees.map((e) => e.id);
 
     let newSelectedIds: string[] = [];
-    let newSections: Section[] = [];
+    let newSections: string[] = [];
 
     if (selected) {
       newSelectedIds = [...new Set([...state.selectedEmployeeIds, ...sectionEmployeeIds])];

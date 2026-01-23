@@ -39,16 +39,19 @@ export function StatsFooter() {
   const rangeEnd =
     viewMode === 'week' ? weekEnd : viewMode === 'month' ? monthEnd : dayString;
 
+  const myEmployeeId = isEmployee ? currentUser?.id ?? null : null;
+
   const relevantShifts = useMemo(() => {
     return scopedShifts.filter((shift) => {
       if (shift.isBlocked) return false;
-        if (viewMode === 'month') {
-          return shift.date >= rangeStart && shift.date < rangeEnd;
-        }
-        return shift.date >= rangeStart && shift.date <= rangeEnd;
+      const inRange =
+        viewMode === 'month'
+          ? shift.date >= rangeStart && shift.date < rangeEnd
+          : shift.date >= rangeStart && shift.date <= rangeEnd;
+      if (!inRange) return false;
       if (isEmployee) {
-        if (!currentUser) return false;
-        return shift.employeeId === currentUser.id;
+        if (!myEmployeeId) return false;
+        return shift.employeeId === myEmployeeId;
       }
       if (selectedEmployeeIds.length === 0) {
         return true;

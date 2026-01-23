@@ -20,6 +20,8 @@ export interface Employee {
   isActive: boolean;
   jobs?: string[];
   hourlyPay?: number;
+  email?: string | null;
+  phone?: string | null;
 }
 
 export interface Restaurant {
