@@ -10,11 +10,13 @@ import { TimeOffReviewModal } from './TimeOffReviewModal';
 import { BlockedPeriodModal } from './BlockedPeriodModal';
 import { BlockedDayRequestModal } from './BlockedDayRequestModal';
 import { Toast } from './Toast';
+import { CopyScheduleModal } from './CopyScheduleModal';
 import { useEffect } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { formatDateHeader, formatDateRange, getWeekDates, isSameDay } from '../utils/timeUtils';
 import { ChevronLeft, ChevronRight, CalendarDays, Sun } from 'lucide-react';
+import { getUserRole, isManagerRole } from '../utils/role';
 
 export function Dashboard() {
   const {
@@ -24,10 +26,12 @@ export function Dashboard() {
     goToToday,
     goToPrevious,
     goToNext,
+    openModal,
     applyRestaurantScope,
     loadRestaurantData,
   } = useScheduleStore();
-  const { activeRestaurantId } = useAuthStore();
+  const { activeRestaurantId, currentUser } = useAuthStore();
+  const isManager = isManagerRole(getUserRole(currentUser?.role));
   const isToday = isSameDay(selectedDate, new Date());
   const weekDates = getWeekDates(selectedDate);
 
@@ -48,7 +52,7 @@ export function Dashboard() {
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/70 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={goToPrevious}
                   className="p-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
@@ -75,6 +79,15 @@ export function Dashboard() {
                 >
                   Today
                 </button>
+                {isManager && (
+                  <button
+                    type="button"
+                    onClick={() => openModal('copySchedule')}
+                    className="px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs sm:text-sm font-medium"
+                  >
+                    Copy Schedule
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-2 bg-theme-tertiary rounded-lg p-1">
@@ -114,6 +127,7 @@ export function Dashboard() {
       <BlockedDayRequestModal />
       <TimeOffReviewModal />
       <BlockedPeriodModal />
+      <CopyScheduleModal />
       <Toast />
     </div>
   );

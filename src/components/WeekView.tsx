@@ -39,6 +39,7 @@ export function WeekView() {
   const cellPointerRef = useRef<{ x: number; y: number; employeeId: string; date: string } | null>(null);
   const [isSliding, setIsSliding] = useState(false);
   const [slideDirection, setSlideDirection] = useState<'prev' | 'next' | null>(null);
+  const [hoveredShiftId, setHoveredShiftId] = useState<string | null>(null);
 
   const handleDayClick = (date: Date) => {
     setSelectedDate(date);
@@ -250,12 +251,23 @@ export function WeekView() {
                     return (
                       <div
                         key={date.toISOString()}
-                        className={`flex-1 border-r border-theme-primary/30 p-1 ${
+                        className={`flex-1 border-r border-theme-primary/30 p-1 group relative ${
                           isToday ? 'bg-amber-500/5' : ''
                         } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''} ${hasOrgBlackout ? 'bg-amber-500/5' : ''}`}
                         onMouseDown={(e) => handleCellMouseDown(employee.id, dateStr, e)}
                         onMouseUp={(e) => handleCellMouseUp(employee.id, dateStr, e)}
                       >
+                        {!hasTimeOff && !hasBlocked && !hasOrgBlackout && isManager && (
+                          <div
+                            className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity ${
+                              hoveredShiftId ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'
+                            }`}
+                          >
+                            <span className="text-[11px] text-theme-muted">
+                              Click to add shift
+                            </span>
+                          </div>
+                        )}
                         {hasTimeOff ? (
                           <div className="h-full flex items-center justify-center">
                             <div className="flex items-center gap-1 px-2 py-1 bg-emerald-500/20 rounded text-emerald-500">
@@ -281,6 +293,8 @@ export function WeekView() {
                               key={shift.id}
                               data-shift="true"
                               onClick={(e) => handleShiftClick(shift, e)}
+                              onMouseEnter={() => setHoveredShiftId(shift.id)}
+                              onMouseLeave={() => setHoveredShiftId(null)}
                               className="mb-1 px-2 py-1 rounded-md text-xs truncate cursor-pointer hover:scale-[1.02] transition-transform"
                               style={{
                                 backgroundColor: sectionConfig.bgColor,

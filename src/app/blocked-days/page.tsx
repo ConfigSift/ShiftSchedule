@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
 import { getUserRole, isManagerRole } from '../../utils/role';
-import { BlockedDayRequestsPanel } from '../../components/review/BlockedDayRequestsPanel';
+import Link from 'next/link';
 
 type ScopeOption = 'ORG_BLACKOUT' | 'EMPLOYEE';
 
@@ -244,7 +244,18 @@ export default function BlockedDaysPage() {
           </form>
         </div>
 
-        <BlockedDayRequestsPanel onEdit={handleEdit} onDelete={handleDelete} />
+        <div className="rounded-2xl border border-theme-primary bg-theme-secondary p-4">
+          <h2 className="text-lg font-semibold text-theme-primary">Review Requests</h2>
+          <p className="text-sm text-theme-tertiary mt-1">
+            Blocked day requests are reviewed in Review Requests.
+          </p>
+          <Link
+            href="/review-requests"
+            className="inline-flex mt-3 px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors"
+          >
+            Go to Review Requests
+          </Link>
+        </div>
       </div>
     </div>
   );

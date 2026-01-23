@@ -567,10 +567,18 @@ export function Timeline() {
                         );
                       })}
 
-                      {/* Empty state */}
-                      {!hasTimeOff && !hasBlocked && employeeShifts.length === 0 && isManager && (
-                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
-                          <span className="text-xs text-theme-muted">Click to add shift</span>
+                      {/* Empty slot hint */}
+                      {!hasTimeOff && !hasBlocked && isManager && (
+                        <div
+                          className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity ${
+                            hoveredShiftId
+                              ? 'opacity-0'
+                              : 'opacity-0 group-hover:opacity-100'
+                          }`}
+                        >
+                          <span className="text-[11px] text-theme-muted">
+                            Click to add shift
+                          </span>
                         </div>
                       )}
                     </div>

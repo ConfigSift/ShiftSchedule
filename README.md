@@ -34,6 +34,12 @@ Reset the database (applies migrations):
 supabase db reset
 ```
 
+## Deploy Checklist
+
+- Set Vercel env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
+- Apply Supabase migrations (CLI `supabase db push` or SQL Editor via `/debug/db`).
+- Confirm `/debug/db` shows ALL PASS.
+
 ## Applying Supabase migrations
 
 Use one of the following:

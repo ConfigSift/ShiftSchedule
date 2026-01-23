@@ -88,8 +88,29 @@ Checked items are verified in code and reachable in the UI.
 - Day view: click a shift to edit; drag/resize should not open Add Shift.
 - Week view (`/dashboard` > Week): click empty space in a day column to open Add Shift; verify overlap warnings and role restrictions.
 
+## How to Test (UI Polish)
+- Hover empty schedule space with existing shifts: see subtle “Click to add shift” hint; no hint when hovering a shift (`/dashboard` Day + Week).
+- Left staff panel: only staff filters/selection show; no My Time Off / My Blocked Days (`/dashboard`).
+- Light mode: schedule background fills full area between fixed header/footer (no white gutters on wide screens).
+
+## How to Test (Copy Schedule)
+- `/dashboard`: click "Copy Schedule" (manager/admin), run "Copy to next week" and confirm shifts appear + summary counts.
+- `/dashboard`: use "Copy to N weeks ahead" and "Copy to date range" with overlaps/blocked dates; verify skipped counts.
+
+## How to Test (Chat Enhancements)
+- `/chat`: verify layout fits between fixed header/footer; messages list is the only scrolling panel.
+- Manager/admin: rename and delete rooms (confirmation shown) and confirm list updates.
+- Export CSV downloads with created_at, author_name, message_body columns.
+- Send a message from another session and verify realtime insert + new message indicator.
+
 ## Release Checklist
 - DB/migrations applied: Not verified in this run
 - `/debug/db` ALL PASS: Not verified in this run
 - Known bugs: `pnpm run build` fails with `spawn EPERM` on this Windows/Desktop path; reproduce by running `cmd /c pnpm run build`
-- Manual test URLs: `/login`, `/dashboard`, `/time-off`, `/blocked-days`, `/business-hours`, `/chat`, `/manager`, `/debug/db`
+- Manual test URLs: `/login`, `/dashboard`, `/review-requests`, `/time-off`, `/blocked-days`, `/business-hours`, `/chat`, `/manager`, `/debug/db`
+
+## Final DONE Checklist
+- Header nav order verified: Schedule | Review Requests | Team Chat | Manage Staff | Blocked Days | Business Hours
+- Review Requests is the single review hub (`/review-requests`); `/time-off` and `/blocked-days` link back
+- Chat enhancements tested: rename/delete/export/realtime
+- Copy Schedule works for managers/admins

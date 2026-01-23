@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, MessageSquare, Plus, Send } from 'lucide-react';
+import { MessageSquare, Plus, Send, Download, PencilLine, Trash2 } from 'lucide-react';
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase/client';
 import { apiFetch } from '../../lib/apiClient';
@@ -36,6 +36,9 @@ export default function ChatPage() {
   const router = useRouter();
   const { currentUser, activeRestaurantId, init, isInitialized } = useAuthStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const messageIdsRef = useRef<Set<string>>(new Set());
+  const isNearBottomRef = useRef(true);
 
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -46,6 +49,10 @@ export default function ChatPage() {
   const [usersByAuthId, setUsersByAuthId] = useState<Record<string, UserLookup>>({});
   const [showRoomModal, setShowRoomModal] = useState(false);
   const [newRoomName, setNewRoomName] = useState('');
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameRoomName, setRenameRoomName] = useState('');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showNewIndicator, setShowNewIndicator] = useState(false);
   const [error, setError] = useState('');
 
   const isManager = isManagerRole(getUserRole(currentUser?.role));
@@ -74,7 +81,48 @@ export default function ChatPage() {
   }, [activeRoomId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!activeRoomId) return;
+    const channel = supabase
+      .channel(`chat-room-${activeRoomId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'chat_messages',
+          filter: `room_id=eq.${activeRoomId}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Record<string, any>>) => {
+          const row = payload.new as Record<string, any>;
+          if (!row?.id) return;
+          if (messageIdsRef.current.has(row.id)) return;
+          messageIdsRef.current.add(row.id);
+          const incoming: ChatMessage = {
+            id: row.id,
+            roomId: row.room_id,
+            organizationId: row.organization_id,
+            authorAuthUserId: row.author_auth_user_id,
+            body: row.body,
+            createdAt: row.created_at,
+          };
+          setMessages((prev) => [...prev, incoming]);
+          if (!isNearBottomRef.current) {
+            setShowNewIndicator(true);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [activeRoomId]);
+
+  useEffect(() => {
+    if (!messageListRef.current) return;
+    if (isNearBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
 
   const loadRooms = async (organizationId: string) => {
@@ -134,8 +182,13 @@ export default function ChatPage() {
       createdAt: row.created_at,
     }));
 
+    messageIdsRef.current = new Set(mapped.map((msg) => msg.id));
     setMessages(mapped);
+    setShowNewIndicator(false);
     setLoadingMessages(false);
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    });
   };
 
   const loadUsers = async (organizationId: string) => {
@@ -164,6 +217,17 @@ export default function ChatPage() {
       }
     });
     setUsersByAuthId(lookup);
+  };
+
+  const handleMessageScroll = () => {
+    const el = messageListRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distance < 80;
+    isNearBottomRef.current = nearBottom;
+    if (nearBottom) {
+      setShowNewIndicator(false);
+    }
   };
 
   const activeRoom = rooms.find((room) => room.id === activeRoomId);
@@ -197,6 +261,69 @@ export default function ChatPage() {
     setShowRoomModal(false);
   };
 
+  const handleOpenRename = () => {
+    if (!activeRoom) return;
+    setRenameRoomName(activeRoom.name);
+    setShowRenameModal(true);
+  };
+
+  const handleRenameRoom = async () => {
+    if (!activeRoom || !renameRoomName.trim()) return;
+    setError('');
+    const result = await apiFetch<{ room: Record<string, any> }>('/api/chat/rooms/update', {
+      method: 'PATCH',
+      json: {
+        roomId: activeRoom.id,
+        name: renameRoomName.trim(),
+      },
+    });
+    if (!result.ok || !result.data?.room) {
+      setError(result.error || 'Unable to rename room.');
+      return;
+    }
+    const updatedName = result.data.room.name ?? renameRoomName.trim();
+    setRooms((prev) => prev.map((room) => (room.id === activeRoom.id ? { ...room, name: updatedName } : room)));
+    setShowRenameModal(false);
+  };
+
+  const handleDeleteRoom = async () => {
+    if (!activeRoom) return;
+    setError('');
+    const result = await apiFetch<{ success: boolean }>('/api/chat/rooms/delete', {
+      method: 'DELETE',
+      json: { roomId: activeRoom.id },
+    });
+    if (!result.ok) {
+      setError(result.error || 'Unable to delete room.');
+      return;
+    }
+    const remaining = rooms.filter((room) => room.id !== activeRoom.id);
+    setRooms(remaining);
+    setActiveRoomId(remaining[0]?.id ?? null);
+    setShowDeleteModal(false);
+  };
+
+  const handleExport = async () => {
+    if (!activeRoom) return;
+    const response = await fetch(`/api/chat/rooms/export?roomId=${activeRoom.id}`, {
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      setError('Unable to export CSV.');
+      return;
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const filename = response.headers.get('Content-Disposition')?.split('filename=')[1]?.replace(/"/g, '');
+    link.download = filename || `chat-${activeRoom.name}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeRestaurantId || !activeRoomId || !messageText.trim()) return;
@@ -212,8 +339,20 @@ export default function ChatPage() {
       setError(result.error || 'Unable to send message.');
       return;
     }
+    const message = result.data?.message;
+    if (message?.id && !messageIdsRef.current.has(message.id)) {
+      messageIdsRef.current.add(message.id);
+      const mapped: ChatMessage = {
+        id: message.id,
+        roomId: message.room_id,
+        organizationId: message.organization_id,
+        authorAuthUserId: message.author_auth_user_id,
+        body: message.body,
+        createdAt: message.created_at,
+      };
+      setMessages((prev) => [...prev, mapped]);
+    }
     setMessageText('');
-    await loadMessages(activeRoomId);
   };
 
   const getUser = (authUserId: string) => usersByAuthId[authUserId] || { name: 'Team Member', initials: '?' };
@@ -227,33 +366,21 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="min-h-screen bg-theme-primary flex flex-col">
-      <header className="h-16 bg-theme-secondary border-b border-theme-primary flex items-center justify-between px-6 shrink-0">
-        <Link
-          href="/dashboard"
-          className="flex items-center gap-2 text-theme-secondary hover:text-theme-primary transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5" />
-          Back
-        </Link>
-        <h1 className="text-lg font-semibold text-theme-primary flex items-center gap-2">
-          <MessageSquare className="w-5 h-5 text-amber-400" />
-          Team Chat
-        </h1>
-        {isManager && (
-          <button
-            onClick={() => setShowRoomModal(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 text-amber-500 rounded-lg hover:bg-amber-500/20 transition-colors text-sm font-medium"
-          >
-            <Plus className="w-4 h-4" />
-            New Room
-          </button>
-        )}
-      </header>
-
+    <div className="h-full bg-theme-primary flex flex-col overflow-hidden">
       <div className="flex flex-1 overflow-hidden">
-        <aside className="w-56 shrink-0 border-r border-theme-primary bg-theme-secondary p-4 space-y-3">
-          <div className="text-xs uppercase tracking-wide text-theme-muted">Rooms</div>
+        <aside className="w-56 shrink-0 border-r border-theme-primary bg-theme-secondary p-4 space-y-3 overflow-y-auto">
+          <div className="flex items-center justify-between">
+            <div className="text-xs uppercase tracking-wide text-theme-muted">Rooms</div>
+            {isManager && (
+              <button
+                onClick={() => setShowRoomModal(true)}
+                className="inline-flex items-center gap-1.5 text-xs text-amber-500 hover:text-amber-400"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                New
+              </button>
+            )}
+          </div>
           {loadingRooms ? (
             <p className="text-sm text-theme-muted">Loading rooms...</p>
           ) : rooms.length === 0 ? (
@@ -277,8 +404,48 @@ export default function ChatPage() {
           )}
         </aside>
 
-        <main className="flex-1 flex flex-col">
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <main className="flex-1 flex flex-col overflow-hidden relative">
+          <div className="shrink-0 border-b border-theme-primary bg-theme-secondary px-4 py-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-theme-primary font-semibold">
+              <MessageSquare className="w-4 h-4 text-amber-400" />
+              <span>{activeRoom?.name || 'Team Chat'}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {activeRoom && (
+                <button
+                  onClick={handleExport}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors text-xs font-medium"
+                >
+                  <Download className="w-4 h-4" />
+                  Export CSV
+                </button>
+              )}
+              {isManager && activeRoom && (
+                <>
+                  <button
+                    onClick={handleOpenRename}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors text-xs font-medium"
+                  >
+                    <PencilLine className="w-4 h-4" />
+                    Rename
+                  </button>
+                  <button
+                    onClick={() => setShowDeleteModal(true)}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors text-xs font-medium"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div
+            ref={messageListRef}
+            onScroll={handleMessageScroll}
+            className="flex-1 overflow-y-auto p-4 space-y-4"
+          >
             {error && (
               <div className="bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg p-3 text-sm">
                 {error}
@@ -331,6 +498,20 @@ export default function ChatPage() {
             )}
             <div ref={messagesEndRef} />
           </div>
+          {showNewIndicator && (
+            <div className="absolute bottom-20 left-1/2 -translate-x-1/2">
+              <button
+                type="button"
+                onClick={() => {
+                  messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                  setShowNewIndicator(false);
+                }}
+                className="px-3 py-1.5 rounded-full bg-amber-500/90 text-zinc-900 text-xs font-semibold shadow-lg"
+              >
+                New messages
+              </button>
+            </div>
+          )}
 
           <form onSubmit={handleSend} className="p-4 bg-theme-secondary border-t border-theme-primary">
             <div className="flex gap-2">
@@ -384,6 +565,70 @@ export default function ChatPage() {
                 className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 disabled:opacity-50"
               >
                 Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRenameModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowRenameModal(false)} />
+          <div className="relative w-full max-w-md bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-theme-primary">Rename Room</h2>
+            <div>
+              <label className="text-sm text-theme-secondary">Room name</label>
+              <input
+                type="text"
+                value={renameRoomName}
+                onChange={(e) => setRenameRoomName(e.target.value)}
+                className="w-full mt-2 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+                placeholder="Room name"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowRenameModal(false)}
+                className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRenameRoom}
+                disabled={!renameRoomName.trim()}
+                className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 disabled:opacity-50"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowDeleteModal(false)} />
+          <div className="relative w-full max-w-md bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-theme-primary">Delete Room</h2>
+            <p className="text-sm text-theme-tertiary">
+              Deleting this room will permanently delete all message history. Continue?
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteModal(false)}
+                className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteRoom}
+                className="px-4 py-2 rounded-lg bg-red-500 text-zinc-900 font-semibold hover:bg-red-400"
+              >
+                Delete
               </button>
             </div>
           </div>
