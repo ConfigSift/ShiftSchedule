@@ -30,16 +30,42 @@
 
 @layer base {
   * { border-color: var(--border-primary); }
+  
+  html {
+    /* Prevent horizontal overflow on mobile */
+    overflow-x: hidden;
+  }
+  
   body {
     @apply antialiased;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
     background-color: var(--bg-primary);
     color: var(--text-primary);
+    /* Prevent pull-to-refresh on mobile */
+    overscroll-behavior-y: contain;
   }
+  
+  /* Improved focus states for accessibility */
+  :focus-visible {
+    outline: 2px solid #f59e0b;
+    outline-offset: 2px;
+  }
+  
+  /* Remove default focus outline (we use focus-visible instead) */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+  
+  /* Scrollbar styling */
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(113, 113, 122, 0.3); border-radius: 4px; }
   ::-webkit-scrollbar-thumb:hover { background: rgba(113, 113, 122, 0.5); }
+  
+  /* Touch-friendly scrollbars on mobile */
+  @media (pointer: coarse) {
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+  }
 }
 
 @layer utilities {
@@ -54,11 +80,51 @@
   .text-theme-secondary { color: var(--text-secondary); }
   .text-theme-tertiary { color: var(--text-tertiary); }
   .text-theme-muted { color: var(--text-muted); }
-  .transition-theme { transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
+  
+  .transition-theme { 
+    transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; 
+  }
+  
+  /* Respect reduced motion preference */
+  @media (prefers-reduced-motion: reduce) {
+    .transition-theme,
+    .motion-safe\:transition-opacity,
+    .motion-safe\:animate-slide-in {
+      transition: none !important;
+      animation: none !important;
+    }
+  }
   
   @keyframes slideIn {
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
   }
+  
   .animate-slide-in { animation: slideIn 0.2s ease-out; }
+  
+  /* Only animate if user hasn't requested reduced motion */
+  .motion-safe\:animate-slide-in {
+    animation: slideIn 0.2s ease-out;
+  }
+  
+  @media (prefers-reduced-motion: reduce) {
+    .motion-safe\:animate-slide-in {
+      animation: none;
+    }
+  }
+  
+  /* Touch-friendly minimum tap targets */
+  .min-tap {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  
+  /* Safe area insets for notched devices */
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  
+  .safe-top {
+    padding-top: env(safe-area-inset-top, 0);
+  }
 }

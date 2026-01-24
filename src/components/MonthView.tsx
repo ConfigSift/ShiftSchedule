@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { getUserRole } from '../utils/role';
-import { dateToString, getWeekDates } from '../utils/timeUtils';
+import { dateToString } from '../utils/timeUtils';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const WEEKDAYS_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 export function MonthView() {
   const {
@@ -27,10 +28,19 @@ export function MonthView() {
   const role = getUserRole(currentUser?.role);
   const isEmployee = role === 'EMPLOYEE';
 
-  const monthStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1);
-  const monthEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 0);
-  const calendarStart = new Date(monthStart);
-  calendarStart.setDate(calendarStart.getDate() - calendarStart.getDay());
+  const monthStart = useMemo(() => 
+    new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1),
+    [selectedDate]
+  );
+  const monthEnd = useMemo(() => 
+    new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 0),
+    [selectedDate]
+  );
+  const calendarStart = useMemo(() => {
+    const start = new Date(monthStart);
+    start.setDate(start.getDate() - start.getDay());
+    return start;
+  }, [monthStart]);
 
   const weeks = useMemo(() => {
     const grid: Date[][] = [];
@@ -80,7 +90,7 @@ export function MonthView() {
     return getBlockedRequestsForEmployee(currentUser.id);
   }, [currentUser, getBlockedRequestsForEmployee]);
 
-  const isBlockedForDate = (dateStr: string) => {
+  const isBlockedForDate = useCallback((dateStr: string) => {
     if (hasOrgBlackoutOnDate(dateStr)) return true;
     if (isEmployee) {
       return employeeBlocks.some(
@@ -88,63 +98,91 @@ export function MonthView() {
       );
     }
     return false;
-  };
+  }, [hasOrgBlackoutOnDate, isEmployee, employeeBlocks]);
 
-  const handleDayClick = (day: Date) => {
+  const handleDayClick = useCallback((day: Date) => {
     if (viewMode === 'month') {
       setSelectedDate(day);
       setViewMode('day');
     }
-  };
+  }, [viewMode, setSelectedDate, setViewMode]);
+
+  const todayStr = dateToString(new Date());
+  const selectedStr = dateToString(selectedDate);
 
   return (
-    <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-theme-primary">
-          {selectedDate.toLocaleString('default', { month: 'long' })} {selectedDate.getFullYear()}
-        </h2>
-        <p className="text-xs text-theme-muted">
-          {isEmployee ? 'My Shifts' : 'Filtered shifts'}
-        </p>
-      </div>
-      <div className="grid grid-cols-7 text-xs text-theme-muted gap-1">
-        {WEEKDAYS.map((day) => (
-          <div key={day} className="text-center text-[11px] font-semibold">
-            {day}
-          </div>
-        ))}
-      </div>
-      <div className="mt-2 grid grid-cols-7 gap-1 text-sm">
-        {weeks.map((week, weekIndex) =>
-          week.map((day) => {
-            const dayStr = dateToString(day);
-            const isCurrentMonth = day.getMonth() === selectedDate.getMonth();
-            const count = shiftCounts[dayStr] || 0;
-            const blocked = isBlockedForDate(dayStr);
-            return (
-              <button
-                key={`${weekIndex}-${dayStr}`}
-                type="button"
-                onClick={() => handleDayClick(day)}
-                className={`flex flex-col items-center gap-1 rounded-lg border ${
-                  isCurrentMonth ? 'border-theme-primary' : 'border-theme-primary/30 text-theme-muted'
-                } p-2 bg-theme-primary/5 text-xs transition-colors hover:border-amber-500/80`}
-              >
-                <span className={`text-sm font-semibold ${dayStr === dateToString(selectedDate) ? 'text-amber-400' : ''}`}>
-                  {day.getDate()}
-                </span>
-                {count > 0 && (
-                  <span className="text-[10px] text-theme-secondary">
-                    {count} {count === 1 ? 'shift' : 'shifts'}
+    <div className="h-full overflow-auto p-2 sm:p-4">
+      <div className="bg-theme-secondary border border-theme-primary rounded-xl sm:rounded-2xl p-3 sm:p-4 max-w-4xl mx-auto">
+        <div className="flex items-center justify-between mb-3 sm:mb-4">
+          <h2 className="text-base sm:text-lg font-semibold text-theme-primary">
+            {selectedDate.toLocaleString('default', { month: 'long' })} {selectedDate.getFullYear()}
+          </h2>
+          <p className="text-[10px] sm:text-xs text-theme-muted">
+            {isEmployee ? 'My Shifts' : 'Filtered shifts'}
+          </p>
+        </div>
+        
+        {/* Weekday headers */}
+        <div className="grid grid-cols-7 gap-1 text-theme-muted mb-1">
+          {WEEKDAYS.map((day, i) => (
+            <div key={day} className="text-center text-[10px] sm:text-xs font-semibold py-1">
+              <span className="hidden sm:inline">{day}</span>
+              <span className="sm:hidden">{WEEKDAYS_SHORT[i]}</span>
+            </div>
+          ))}
+        </div>
+        
+        {/* Calendar grid */}
+        <div className="grid grid-cols-7 gap-1">
+          {weeks.map((week, weekIndex) =>
+            week.map((day) => {
+              const dayStr = dateToString(day);
+              const isCurrentMonth = day.getMonth() === selectedDate.getMonth();
+              const count = shiftCounts[dayStr] || 0;
+              const blocked = isBlockedForDate(dayStr);
+              const isToday = dayStr === todayStr;
+              const isSelected = dayStr === selectedStr;
+              
+              return (
+                <button
+                  key={`${weekIndex}-${dayStr}`}
+                  type="button"
+                  onClick={() => handleDayClick(day)}
+                  className={`
+                    relative flex flex-col items-center justify-center gap-0.5
+                    rounded-lg border p-1.5 sm:p-2 
+                    min-h-[48px] sm:min-h-[64px]
+                    text-xs transition-colors
+                    focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500
+                    ${isCurrentMonth 
+                      ? 'border-theme-primary bg-theme-primary/5' 
+                      : 'border-theme-primary/30 text-theme-muted bg-theme-primary/0'
+                    }
+                    ${isToday ? 'ring-2 ring-amber-500/50' : ''}
+                    ${isSelected ? 'bg-amber-500/10 border-amber-500' : ''}
+                    hover:border-amber-500/80 hover:bg-theme-hover
+                    active:scale-95
+                  `}
+                  aria-label={`${day.toLocaleDateString()}, ${count} shifts${blocked ? ', blocked' : ''}`}
+                >
+                  <span className={`text-sm sm:text-base font-semibold ${isSelected ? 'text-amber-400' : ''}`}>
+                    {day.getDate()}
                   </span>
-                )}
-                {blocked && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                )}
-              </button>
-            );
-          })
-        )}
+                  
+                  {count > 0 && (
+                    <span className="text-[9px] sm:text-[10px] text-theme-secondary whitespace-nowrap">
+                      {count}
+                    </span>
+                  )}
+                  
+                  {blocked && (
+                    <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true" />
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
       </div>
     </div>
   );

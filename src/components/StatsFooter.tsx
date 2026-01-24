@@ -20,7 +20,10 @@ export function StatsFooter() {
 
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
-  const activeEmployees = scopedEmployees.filter((e) => e.isActive);
+  const activeEmployees = useMemo(() => 
+    scopedEmployees.filter((e) => e.isActive),
+    [scopedEmployees]
+  );
 
   const role = getUserRole(currentUser?.role);
   const isManager = isManagerRole(role);
@@ -58,51 +61,67 @@ export function StatsFooter() {
       }
       return selectedEmployeeIds.includes(shift.employeeId);
     });
-  }, [scopedShifts, rangeStart, rangeEnd, isEmployee, currentUser, selectedEmployeeIds]);
+  }, [scopedShifts, rangeStart, rangeEnd, viewMode, isEmployee, myEmployeeId, selectedEmployeeIds]);
 
-  const totalHours = relevantShifts.reduce((sum, shift) => sum + (shift.endHour - shift.startHour), 0);
-  const workingCount = new Set(relevantShifts.map((s) => s.employeeId)).size;
+  const totalHours = useMemo(() => 
+    relevantShifts.reduce((sum, shift) => sum + (shift.endHour - shift.startHour), 0),
+    [relevantShifts]
+  );
+  
+  const workingCount = useMemo(() => 
+    new Set(relevantShifts.map((s) => s.employeeId)).size,
+    [relevantShifts]
+  );
 
-  const shiftsBySection = relevantShifts.reduce((acc, shift) => {
-    const employee = scopedEmployees.find((e) => e.id === shift.employeeId);
-    if (employee) {
-      acc[employee.section] = (acc[employee.section] || 0) + 1;
-    }
-    return acc;
-  }, {} as Record<Section, number>);
+  const shiftsBySection = useMemo(() => 
+    relevantShifts.reduce((acc, shift) => {
+      const employee = scopedEmployees.find((e) => e.id === shift.employeeId);
+      if (employee) {
+        acc[employee.section] = (acc[employee.section] || 0) + 1;
+      }
+      return acc;
+    }, {} as Record<Section, number>),
+    [relevantShifts, scopedEmployees]
+  );
 
-  const estimatedCost = relevantShifts.reduce((sum, shift) => {
-    const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
-    const rate = employee?.hourlyPay ?? 0;
-    const hours = shift.endHour - shift.startHour;
-    return sum + hours * rate;
-  }, 0);
+  const estimatedCost = useMemo(() => 
+    relevantShifts.reduce((sum, shift) => {
+      const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
+      const rate = employee?.hourlyPay ?? 0;
+      const hours = shift.endHour - shift.startHour;
+      return sum + hours * rate;
+    }, 0),
+    [relevantShifts, scopedEmployees]
+  );
 
   return (
-    <footer className="fixed bottom-0 left-0 right-0 h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-6 gap-8 shrink-0 transition-theme z-40">
+    <footer className="fixed bottom-0 left-0 right-0 h-12 sm:h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-3 sm:px-6 gap-3 sm:gap-8 shrink-0 transition-theme z-40">
+      {/* Hours - always visible */}
       <div className="flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
-          <Clock className="w-4 h-4 text-blue-400" />
+        <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+          <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-400" />
         </div>
         <div>
-          <p className="text-xs text-theme-muted">{isEmployee ? 'My Hours' : 'Total Hours'}</p>
-          <p className="text-sm font-semibold text-theme-primary">{totalHours}h</p>
+          <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">{isEmployee ? 'My Hours' : 'Total Hours'}</p>
+          <p className="text-xs sm:text-sm font-semibold text-theme-primary">{totalHours}h</p>
         </div>
       </div>
 
+      {/* Staff Working - always visible */}
       <div className="flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center">
-          <Users className="w-4 h-4 text-green-400" />
+        <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-green-500/10 flex items-center justify-center">
+          <Users className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-green-400" />
         </div>
         <div>
-          <p className="text-xs text-theme-muted">Staff Working</p>
-          <p className="text-sm font-semibold text-theme-primary">
-            {workingCount} / {activeEmployees.length}
+          <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">Staff</p>
+          <p className="text-xs sm:text-sm font-semibold text-theme-primary">
+            {workingCount}/{activeEmployees.length}
           </p>
         </div>
       </div>
 
-      <div className="flex items-center gap-3 px-4 py-2 bg-theme-tertiary rounded-lg">
+      {/* Section breakdown - hidden on mobile */}
+      <div className="hidden md:flex items-center gap-3 px-4 py-2 bg-theme-tertiary rounded-lg">
         {(Object.keys(SECTIONS) as Section[]).map(section => {
           const count = shiftsBySection[section] || 0;
           return (
@@ -117,17 +136,18 @@ export function StatsFooter() {
         })}
       </div>
 
+      {/* Labor Cost - manager only, hidden on small screens */}
       {!isEmployee && (
         <>
           <div className="flex-1" />
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
-              <DollarSign className="w-4 h-4 text-purple-400" />
+          <div className="hidden sm:flex items-center gap-2">
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+              <DollarSign className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-purple-400" />
             </div>
             <div>
-              <p className="text-xs text-theme-muted">Est. Labor Cost</p>
-              <p className="text-sm font-semibold text-theme-primary">
-                ${estimatedCost.toFixed(2)}
+              <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">Est. Labor</p>
+              <p className="text-xs sm:text-sm font-semibold text-theme-primary">
+                ${estimatedCost.toFixed(0)}
               </p>
             </div>
           </div>
