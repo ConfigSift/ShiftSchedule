@@ -122,6 +122,11 @@ Manager/Admin tools:
 - `/business-hours` to configure open/close hours
 - `/chat` for team chat rooms and messages
 
+## Supabase Realtime Requirements
+
+- Enable the `chat_messages` table in the `supabase_realtime` publication (Database → Replication → Realtime) so the app can receive INSERT events.
+- Without both, the frontend can't stream new inserts and the chat UI will only refresh after a manual reload.
+
 
 After schema changes, restart the dev server:
 

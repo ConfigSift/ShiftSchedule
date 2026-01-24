@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { getSupabaseEnv } from '@/lib/supabase/env';
+import type { User } from '@supabase/supabase-js';
+import { isManagerRole } from '@/utils/role';
 
 export async function middleware(req: NextRequest) {
   const { supabaseUrl, supabaseAnonKey, isValid } = getSupabaseEnv();
@@ -21,9 +23,11 @@ export async function middleware(req: NextRequest) {
       },
     },
   });
+  let user: User | null = null;
 
   try {
-    await supabase.auth.getUser();
+    const { data } = await supabase.auth.getUser();
+    user = data.user ?? null;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (
@@ -33,6 +37,36 @@ export async function middleware(req: NextRequest) {
       // Ignore missing/invalid refresh tokens and proceed; user will naturally hit /login.
     } else {
       throw error;
+    }
+  }
+
+  const redirectTo = (destination: string) => {
+    const url = new URL(destination, req.url);
+    response.headers.set('location', url.toString());
+    response.status = 302;
+    response.headers.delete('x-middleware-next');
+    return response;
+  };
+
+  const { pathname } = req.nextUrl;
+  if (pathname.startsWith('/manager')) {
+    if (!user) {
+      return redirectTo('/login');
+    }
+
+    try {
+      const { data: profile } = await supabase
+        .from('users')
+        .select('role')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+
+      const roleValue = profile?.role ?? user.user_metadata?.role ?? undefined;
+      if (!isManagerRole(roleValue)) {
+        return redirectTo('/dashboard');
+      }
+    } catch {
+      return redirectTo('/dashboard');
     }
   }
   return response;

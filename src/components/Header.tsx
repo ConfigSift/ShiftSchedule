@@ -17,6 +17,7 @@ import {
   Users,
   Clock,
   ClipboardList,
+  ShieldCheck,
   Menu,
   X,
   MoreHorizontal,
@@ -213,6 +214,13 @@ export function Header() {
 
                 {isManagerRole(currentRole) && (
                   <>
+                    <Link
+                      href="/manager"
+                      className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      Site Manager
+                    </Link>
                     <Link
                       href="/staff"
                       className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"

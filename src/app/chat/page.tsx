@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MessageSquare, Plus, Send, Download, PencilLine, Trash2 } from 'lucide-react';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { useAuthStore } from '../../store/authStore';
-import { supabase } from '../../lib/supabase/client';
+import { createSupabaseBrowserClient } from '../../lib/supabase/browser';
 import { apiFetch } from '../../lib/apiClient';
 import { normalizeUserRow } from '../../utils/userMapper';
 import { formatTimestamp } from '../../utils/timeUtils';
@@ -32,6 +32,15 @@ type UserLookup = {
   initials: string;
 };
 
+const mapRowToChatMessage = (row: Record<string, any>): ChatMessage => ({
+  id: row.id,
+  roomId: row.room_id,
+  organizationId: row.organization_id,
+  authorAuthUserId: row.author_auth_user_id,
+  body: row.body,
+  createdAt: row.created_at,
+});
+
 export default function ChatPage() {
   const router = useRouter();
   const { currentUser, activeRestaurantId, init, isInitialized } = useAuthStore();
@@ -39,7 +48,6 @@ export default function ChatPage() {
   const messageListRef = useRef<HTMLDivElement>(null);
   const messageIdsRef = useRef<Set<string>>(new Set());
   const isNearBottomRef = useRef(true);
-
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -54,8 +62,119 @@ export default function ChatPage() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showNewIndicator, setShowNewIndicator] = useState(false);
   const [error, setError] = useState('');
-
   const isManager = isManagerRole(getUserRole(currentUser?.role));
+  const isDev = process.env.NODE_ENV !== 'production';
+  const supabaseClient = useMemo(() => createSupabaseBrowserClient(), []);
+
+  const handleIncomingMessage = useCallback(
+    (payload: RealtimePostgresChangesPayload<Record<string, any>>, roomId: string | null) => {
+      const row = payload.new as Record<string, any>;
+      if (!row?.id) return;
+      if (messageIdsRef.current.has(row.id)) return;
+      messageIdsRef.current.add(row.id);
+      const incoming = mapRowToChatMessage(row);
+      setMessages((prev) => {
+        const next = [...prev, incoming];
+        next.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        return next;
+      });
+      if (!isNearBottomRef.current) {
+        setShowNewIndicator(true);
+      }
+
+      if (isDev) {
+        console.debug(`[chat] room ${roomId ?? 'unknown'} realtime INSERT`, incoming);
+      }
+    },
+    [isDev]
+  );
+
+  const loadRooms = async (organizationId: string) => {
+    setLoadingRooms(true);
+    const { data, error: roomsError } = (await supabaseClient
+      .from('chat_rooms')
+      .select('id,name,organization_id,created_at')
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: true })) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    if (roomsError) {
+      setError(roomsError.message);
+      setLoadingRooms(false);
+      return;
+    }
+
+    const mapped = (data || []).map((room) => ({
+      id: room.id,
+      name: room.name,
+      organizationId: room.organization_id,
+      createdAt: room.created_at,
+    }));
+
+    setRooms(mapped);
+    setLoadingRooms(false);
+    if (!activeRoomId && mapped.length > 0) {
+      setActiveRoomId(mapped[0].id);
+    }
+  };
+
+  const loadMessages = useCallback(async (roomId: string) => {
+    setLoadingMessages(true);
+    const { data, error: messagesError } = (await supabaseClient
+      .from('chat_messages')
+      .select('id,room_id,organization_id,author_auth_user_id,body,created_at')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: true })) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    if (messagesError) {
+      setError(messagesError.message);
+      setLoadingMessages(false);
+      return;
+    }
+
+    const mapped = (data || []).map(mapRowToChatMessage);
+
+    messageIdsRef.current = new Set(mapped.map((msg) => msg.id));
+    setMessages(mapped);
+    setShowNewIndicator(false);
+    setLoadingMessages(false);
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    });
+  }, [supabaseClient]);
+
+  const loadUsers = async (organizationId: string) => {
+    const { data, error: usersError } = (await supabaseClient
+      .from('users')
+      .select('*')
+      .eq('organization_id', organizationId)) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    if (usersError) return;
+
+    const lookup: Record<string, UserLookup> = {};
+    (data || []).forEach((row) => {
+      const normalized = normalizeUserRow(row);
+      const name = normalized.fullName || normalized.email || 'Team Member';
+      const initials = name
+        .split(' ')
+        .map((part) => part[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase();
+      if (normalized.authUserId) {
+        lookup[normalized.authUserId] = { name, initials };
+      }
+    });
+    setUsersByAuthId(lookup);
+  };
 
   useEffect(() => {
     init();
@@ -75,48 +194,47 @@ export default function ChatPage() {
   }, [activeRestaurantId, currentUser]);
 
   useEffect(() => {
-    if (activeRoomId) {
-      loadMessages(activeRoomId);
+    messageIdsRef.current = new Set();
+    setMessages([]);
+    setShowNewIndicator(false);
+    isNearBottomRef.current = true;
+
+    if (!activeRoomId) {
+      setLoadingMessages(false);
+      return;
     }
-  }, [activeRoomId]);
 
-  useEffect(() => {
-    if (!activeRoomId) return;
-    const channel = supabase
-      .channel(`chat-room-${activeRoomId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'chat_messages',
-          filter: `room_id=eq.${activeRoomId}`,
-        },
-        (payload: RealtimePostgresChangesPayload<Record<string, any>>) => {
-          const row = payload.new as Record<string, any>;
-          if (!row?.id) return;
-          if (messageIdsRef.current.has(row.id)) return;
-          messageIdsRef.current.add(row.id);
-          const incoming: ChatMessage = {
-            id: row.id,
-            roomId: row.room_id,
-            organizationId: row.organization_id,
-            authorAuthUserId: row.author_auth_user_id,
-            body: row.body,
-            createdAt: row.created_at,
-          };
-          setMessages((prev) => [...prev, incoming]);
-          if (!isNearBottomRef.current) {
-            setShowNewIndicator(true);
-          }
+    loadMessages(activeRoomId);
+
+    const channel = supabaseClient.channel(`chat-room-${activeRoomId}`);
+    channel.on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'chat_messages',
+        filter: `room_id=eq.${activeRoomId}`,
+      },
+      (payload: RealtimePostgresChangesPayload<Record<string, any>>) => {
+        handleIncomingMessage(payload, activeRoomId);
+      }
+    );
+
+    channel.subscribe(({ status }) => {
+      if (isDev) {
+        console.debug(`[chat] room ${activeRoomId} realtime status`, status);
+        if (status === 'SUBSCRIBED') {
+          console.debug(`[chat] room ${activeRoomId} realtime channel subscribed`);
         }
-      )
-      .subscribe();
+      }
+    });
 
+    // Realtime streaming must be enabled for `chat_messages` and the RLS policies
+    // must allow org members to SELECT so events can flow through Supabase Realtime.
     return () => {
-      supabase.removeChannel(channel);
+      void supabaseClient.removeChannel(channel);
     };
-  }, [activeRoomId]);
+  }, [activeRoomId, handleIncomingMessage, isDev, loadMessages, supabaseClient]);
 
   useEffect(() => {
     if (!messageListRef.current) return;
@@ -124,100 +242,6 @@ export default function ChatPage() {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
-
-  const loadRooms = async (organizationId: string) => {
-    setLoadingRooms(true);
-    const { data, error } = (await supabase
-      .from('chat_rooms')
-      .select('id,name,organization_id,created_at')
-      .eq('organization_id', organizationId)
-      .order('created_at', { ascending: true })) as {
-        data: Array<Record<string, any>> | null;
-        error: { message: string } | null;
-      };
-
-    if (error) {
-      setError(error.message);
-      setLoadingRooms(false);
-      return;
-    }
-
-    const mapped = (data || []).map((room) => ({
-      id: room.id,
-      name: room.name,
-      organizationId: room.organization_id,
-      createdAt: room.created_at,
-    }));
-
-    setRooms(mapped);
-    setLoadingRooms(false);
-    if (!activeRoomId && mapped.length > 0) {
-      setActiveRoomId(mapped[0].id);
-    }
-  };
-
-  const loadMessages = async (roomId: string) => {
-    setLoadingMessages(true);
-    const { data, error } = (await supabase
-      .from('chat_messages')
-      .select('id,room_id,organization_id,author_auth_user_id,body,created_at')
-      .eq('room_id', roomId)
-      .order('created_at', { ascending: true })) as {
-        data: Array<Record<string, any>> | null;
-        error: { message: string } | null;
-      };
-
-    if (error) {
-      setError(error.message);
-      setLoadingMessages(false);
-      return;
-    }
-
-    const mapped = (data || []).map((row) => ({
-      id: row.id,
-      roomId: row.room_id,
-      organizationId: row.organization_id,
-      authorAuthUserId: row.author_auth_user_id,
-      body: row.body,
-      createdAt: row.created_at,
-    }));
-
-    messageIdsRef.current = new Set(mapped.map((msg) => msg.id));
-    setMessages(mapped);
-    setShowNewIndicator(false);
-    setLoadingMessages(false);
-    requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-    });
-  };
-
-  const loadUsers = async (organizationId: string) => {
-    const { data, error } = (await supabase
-      .from('users')
-      .select('*')
-      .eq('organization_id', organizationId)) as {
-        data: Array<Record<string, any>> | null;
-        error: { message: string } | null;
-      };
-
-    if (error) return;
-
-    const lookup: Record<string, UserLookup> = {};
-    (data || []).forEach((row) => {
-      const normalized = normalizeUserRow(row);
-      const name = normalized.fullName || normalized.email || 'Team Member';
-      const initials = name
-        .split(' ')
-        .map((part) => part[0])
-        .join('')
-        .slice(0, 2)
-        .toUpperCase();
-      if (normalized.authUserId) {
-        lookup[normalized.authUserId] = { name, initials };
-      }
-    });
-    setUsersByAuthId(lookup);
-  };
 
   const handleMessageScroll = () => {
     const el = messageListRef.current;
