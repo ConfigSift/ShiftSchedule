@@ -7,6 +7,7 @@ import { getWeekDates, dateToString, isSameDay, formatHour, shiftsOverlap } from
 import { Palmtree } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getJobColorClasses } from '../lib/jobColors';
 
 export function WeekView() {
   const {
@@ -222,7 +223,10 @@ export function WeekView() {
                 key={employee.id}
                 className="flex min-h-[60px] border-b border-theme-primary/50 hover:bg-theme-hover/30 transition-colors group"
               >
-                <div className="w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3 py-2 sticky left-0 z-20 bg-theme-timeline group-hover:bg-theme-hover/30">
+                <div
+                  className="w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3 py-2 sticky left-0 z-30 bg-theme-timeline group-hover:bg-theme-hover/30"
+                  style={{ boxShadow: '-4px 0 8px rgba(0,0,0,0.08)' }}
+                >
                   <div
                     className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
                     style={{
@@ -236,11 +240,9 @@ export function WeekView() {
                     <p className="text-sm font-medium text-theme-primary truncate">
                       {employee.name}
                     </p>
-                    <p className="text-xs text-theme-muted truncate">
-                      {sectionConfig.label}
-                    </p>
                   </div>
                 </div>
+                <div className="absolute right-0 top-0 bottom-0 w-[1px] bg-gradient-to-r from-theme-timeline/0 to-theme-primary/30" aria-hidden="true" />
 
                 <div className="flex-1 flex">
                   {weekDates.map((date) => {
@@ -302,6 +304,7 @@ export function WeekView() {
                               `${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`,
                               metaLabel,
                             ].filter(Boolean);
+                            const jobColor = getJobColorClasses(shift.job);
 
                             return (
                               <div
@@ -312,9 +315,9 @@ export function WeekView() {
                                 onMouseLeave={() => setHoveredShiftId(null)}
                                 className="mb-1 px-2 py-1 rounded-md text-xs truncate cursor-pointer hover:scale-[1.02] transition-transform"
                                 style={{
-                                  backgroundColor: sectionConfig.bgColor,
-                                  borderLeft: `3px solid ${sectionConfig.color}`,
-                                  color: sectionConfig.color,
+                                  backgroundColor: jobColor.bgColor,
+                                  borderLeft: `3px solid ${jobColor.color}`,
+                                  color: jobColor.color,
                                 }}
                                 title={titleParts.join(' | ')}
                               >

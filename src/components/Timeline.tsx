@@ -7,6 +7,7 @@ import { formatHourShort, getShiftPosition, formatHour, shiftsOverlap } from '..
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { Palmtree } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
+import { getJobColorClasses } from '../lib/jobColors';
 
 export function Timeline() {
   const {
@@ -405,9 +406,10 @@ export function Timeline() {
                     } ${allowHover ? 'hover:bg-theme-hover/50' : ''}`}
                   >
                     <div
-                      className={`w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3 sticky left-0 z-20 bg-theme-timeline ${
+                      className={`w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3 sticky left-0 z-30 bg-theme-timeline ${
                         rowBackground
                       } ${allowHover ? 'group-hover:bg-theme-hover/50' : ''}`}
+                      style={{ boxShadow: '4px 0 8px rgba(0,0,0,0.08)' }}
                     >
                       <div
                         className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
@@ -422,11 +424,9 @@ export function Timeline() {
                         <p className="text-sm font-medium text-theme-primary truncate">
                           {employee.name}
                         </p>
-                        <p className="text-xs text-theme-muted truncate">
-                          {sectionConfig.label}
-                        </p>
                       </div>
                     </div>
+                    <div className="absolute right-0 top-0 bottom-0 w-[1px] bg-gradient-to-r from-theme-timeline/0 to-theme-primary/30" aria-hidden="true" />
 
                     <div 
                       ref={timelineRef}
@@ -485,6 +485,7 @@ export function Timeline() {
                         const isDragging = dragging?.shiftId === shift.id;
                         const isStartDrag = isDragging && dragging?.edge === 'start';
                         const isEndDrag = isDragging && dragging?.edge === 'end';
+                        const jobColor = getJobColorClasses(shift.job);
 
                         return (
                           <div
@@ -496,9 +497,9 @@ export function Timeline() {
                             style={{
                               left: position.left,
                               width: position.width,
-                              backgroundColor: isHovered || isDragging ? sectionConfig.color : sectionConfig.bgColor,
+                              backgroundColor: isHovered || isDragging ? jobColor.hoverBgColor : jobColor.bgColor,
                               borderWidth: '2px',
-                              borderColor: sectionConfig.color,
+                              borderColor: jobColor.color,
                               transform: isHovered && !isDragging ? 'scale(1.02)' : 'scale(1)',
                             }}
                             onMouseEnter={(e) => {
@@ -531,20 +532,21 @@ export function Timeline() {
                               onTouchStart={(e) => handleTouchStart(e, shift.id, 'move')}
                             >
                               <div className="h-full flex items-center justify-center px-2 overflow-hidden">
-                                <span
-                                  className={`text-xs font-medium truncate ${
-                                    isHovered || isDragging ? 'text-white' : ''
-                                  }`}
-                                  style={{ color: isHovered || isDragging ? 'white' : sectionConfig.color }}
-                                >
+                              <span
+                                className={`text-xs font-medium truncate ${
+                                  isHovered || isDragging ? 'text-white' : ''
+                                }`}
+                                style={{ color: isHovered || isDragging ? '#fff' : jobColor.color }}
+                              >
                                   {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
                                 </span>
                               </div>
                               {shift.job && (
                                 <span
                                   className={`absolute left-2 bottom-1 text-[11px] ${
-                                    isHovered || isDragging ? 'text-white/90' : 'text-theme-muted'
+                                    isHovered || isDragging ? 'text-white/90' : ''
                                   }`}
+                                  style={{ color: isHovered || isDragging ? '#fff' : jobColor.color }}
                                 >
                                   {shift.job}
                                 </span>
