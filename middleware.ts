@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+﻿import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { getSupabaseEnv } from '@/lib/supabase/env';
 import type { User } from '@supabase/supabase-js';
@@ -43,10 +43,13 @@ export async function middleware(req: NextRequest) {
   const redirectTo = (destination: string) => {
     const url = new URL(destination, req.url);
     response.headers.set('location', url.toString());
-    response.status = 302;
-    response.headers.delete('x-middleware-next');
-    return response;
-  };
+    const redirect = NextResponse.redirect(url, 302);
+
+// copy cookies from the existing response (important for Supabase auth cookies)
+response.cookies.getAll().forEach((c) => redirect.cookies.set(c));
+
+return redirect;
+};
 
   const { pathname } = req.nextUrl;
   if (pathname.startsWith('/manager')) {
@@ -82,3 +85,4 @@ export const config = {
     '/api/:path*',
   ],
 };
+
