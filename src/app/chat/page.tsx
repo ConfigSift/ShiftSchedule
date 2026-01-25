@@ -220,7 +220,7 @@ export default function ChatPage() {
       }
     );
 
-    channel.subscribe((status) => {
+    channel.subscribe((status: string) => {
       if (isDev) {
         console.debug(`[chat] room ${activeRoomId} realtime status`, status);
         if (status === 'SUBSCRIBED') {
@@ -661,4 +661,5 @@ export default function ChatPage() {
     </div>
   );
 }
+
 
