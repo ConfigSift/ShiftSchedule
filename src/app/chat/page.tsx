@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -220,7 +220,7 @@ export default function ChatPage() {
       }
     );
 
-    channel.subscribe(({ status }) => {
+    channel.subscribe((status) => {
       if (isDev) {
         console.debug(`[chat] room ${activeRoomId} realtime status`, status);
         if (status === 'SUBSCRIBED') {
@@ -661,3 +661,4 @@ export default function ChatPage() {
     </div>
   );
 }
+
