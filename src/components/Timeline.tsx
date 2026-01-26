@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
@@ -77,7 +77,7 @@ export function Timeline() {
 
   // Get the effective hour range from settings
   const dayOfWeek = selectedDate.getDay();
-  const { start: HOURS_START, end: HOURS_END } = getEffectiveHourRange(dayOfWeek);
+  const { startHour: HOURS_START, endHour: HOURS_END } = getEffectiveHourRange(dayOfWeek);
   const TOTAL_HOURS = HOURS_END - HOURS_START;
   const hours = Array.from({ length: TOTAL_HOURS }, (_, i) => HOURS_START + i);
 
@@ -739,3 +739,4 @@ export function Timeline() {
     </div>
   );
 }
+

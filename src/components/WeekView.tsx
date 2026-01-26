@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
@@ -178,7 +178,7 @@ export function WeekView() {
 
     // Get effective hour range for this day
     const clickDate = new Date(date);
-    const { start: HOURS_START, end: HOURS_END } = getEffectiveHourRange(clickDate.getDay());
+    const { startHour: HOURS_START, endHour: HOURS_END } = getEffectiveHourRange(clickDate.getDay());
     const TOTAL_HOURS = HOURS_END - HOURS_START;
 
     const rect = e.currentTarget.getBoundingClientRect();
@@ -422,3 +422,4 @@ export function WeekView() {
     </div>
   );
 }
+
