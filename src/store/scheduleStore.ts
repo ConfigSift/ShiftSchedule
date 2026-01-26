@@ -14,6 +14,8 @@ import {
   TimeOffStatus,
   DropRequestStatus,
   JOB_OPTIONS,
+  ScheduleViewSettings,
+  ScheduleHourMode,
 } from '../types';
 import { STORAGE_KEYS, saveToStorage, loadFromStorage } from '../utils/storage';
 import { generateId, shiftsOverlap } from '../utils/timeUtils';
@@ -72,6 +74,7 @@ interface ScheduleState {
   timeOffRequests: TimeOffRequest[];
   blockedDayRequests: BlockedDayRequest[];
   businessHours: BusinessHour[];
+  scheduleViewSettings: ScheduleViewSettings | null;
   locations: Location[];
   dropRequests: DropShiftRequest[];
   chatMessages: ChatMessage[];
@@ -188,6 +191,9 @@ interface ScheduleState {
   getShiftsForRestaurant: (restaurantId: string | null) => Shift[];
   getPendingTimeOffRequests: () => TimeOffRequest[];
   getOpenDropRequests: () => DropShiftRequest[];
+
+  getEffectiveHourRange: (dayOfWeek?: number) => { startHour: number; endHour: number };
+  setScheduleViewSettings: (settings: ScheduleViewSettings | null) => void;
 }
 
 export const useScheduleStore = create<ScheduleState>((set, get) => ({
@@ -196,6 +202,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   timeOffRequests: [],
   blockedDayRequests: [],
   businessHours: [],
+  scheduleViewSettings: null,
   locations: [],
   dropRequests: [],
   chatMessages: [],
@@ -223,6 +230,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       timeOffRequests: [],
       blockedDayRequests: [],
       businessHours: [],
+      scheduleViewSettings: null,
       dropRequests,
       chatMessages,
       isHydrated: true,
@@ -238,6 +246,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
+        scheduleViewSettings: null,
         locations: [],
         shiftLoadCounts: { total: 0, visible: 0 },
       });
@@ -263,6 +272,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
+        scheduleViewSettings: null,
         locations: [],
         shiftLoadCounts: { total: 0, visible: 0 },
       });
@@ -330,6 +340,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
+        scheduleViewSettings: null,
         locations,
         shiftLoadCounts: { total: 0, visible: 0 },
       });
@@ -483,6 +494,26 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           enabled: Boolean(row.enabled),
         }));
 
+    // Load schedule view settings
+    const { data: settingsData, error: settingsError } = (await (supabase as any)
+      .from('schedule_view_settings')
+      .select('*')
+      .eq('organization_id', restaurantId)
+      .maybeSingle()) as {
+        data: Record<string, any> | null;
+        error: { message: string } | null;
+      };
+
+    const scheduleViewSettings: ScheduleViewSettings | null = settingsError || !settingsData
+      ? null
+      : {
+          id: settingsData.id,
+          organizationId: settingsData.organization_id,
+          hourMode: (settingsData.hour_mode ?? 'full24') as ScheduleHourMode,
+          customStartHour: Number(settingsData.custom_start_hour ?? 0),
+          customEndHour: Number(settingsData.custom_end_hour ?? 24),
+        };
+
     set({
       employees,
       shifts,
@@ -490,6 +521,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       timeOffRequests,
       blockedDayRequests,
       businessHours,
+      scheduleViewSettings,
       locations,
       shiftLoadCounts: {
         total: shiftData?.length ?? 0,
@@ -1284,4 +1316,58 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
   getPendingTimeOffRequests: () => get().timeOffRequests.filter((r) => r.status === 'PENDING'),
   getOpenDropRequests: () => get().dropRequests.filter((r) => r.status === 'open'),
+
+  getEffectiveHourRange: (dayOfWeek?: number) => {
+    const state = get();
+    const settings = state.scheduleViewSettings;
+
+    // Default to full 24 hours if no settings
+    if (!settings) {
+      return { startHour: 0, endHour: 24 };
+    }
+
+    switch (settings.hourMode) {
+      case 'business': {
+        // Find business hours for the given day or use a reasonable default
+        const day = dayOfWeek ?? new Date().getDay();
+        const hoursRow = state.businessHours.find((h) => h.dayOfWeek === day && h.enabled);
+        if (hoursRow?.openTime && hoursRow?.closeTime) {
+          const openHour = parseTimeToDecimal(hoursRow.openTime);
+          const closeHour = parseTimeToDecimal(hoursRow.closeTime);
+          if (closeHour > openHour) {
+            // Add padding of 1 hour before and after
+            return {
+              startHour: Math.max(0, Math.floor(openHour) - 1),
+              endHour: Math.min(24, Math.ceil(closeHour) + 1),
+            };
+          }
+        }
+        // Fallback if no valid business hours for that day
+        // Find any enabled business hours to use as a guide
+        const anyHours = state.businessHours.find((h) => h.enabled && h.openTime && h.closeTime);
+        if (anyHours?.openTime && anyHours?.closeTime) {
+          const openHour = parseTimeToDecimal(anyHours.openTime);
+          const closeHour = parseTimeToDecimal(anyHours.closeTime);
+          if (closeHour > openHour) {
+            return {
+              startHour: Math.max(0, Math.floor(openHour) - 1),
+              endHour: Math.min(24, Math.ceil(closeHour) + 1),
+            };
+          }
+        }
+        // Final fallback: typical restaurant hours
+        return { startHour: 6, endHour: 24 };
+      }
+      case 'custom':
+        return {
+          startHour: Math.max(0, Math.min(23, settings.customStartHour)),
+          endHour: Math.max(1, Math.min(24, settings.customEndHour)),
+        };
+      case 'full24':
+      default:
+        return { startHour: 0, endHour: 24 };
+    }
+  },
+
+  setScheduleViewSettings: (settings) => set({ scheduleViewSettings: settings }),
 }));

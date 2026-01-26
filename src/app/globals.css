@@ -80,6 +80,15 @@
   .text-theme-secondary { color: var(--text-secondary); }
   .text-theme-tertiary { color: var(--text-tertiary); }
   .text-theme-muted { color: var(--text-muted); }
+
+  /* Hide scrollbar while keeping functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
   
   .transition-theme { 
     transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; 

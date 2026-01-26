@@ -154,6 +154,16 @@ export interface BusinessHour {
   enabled: boolean;
 }
 
+export type ScheduleHourMode = 'business' | 'full24' | 'custom';
+
+export interface ScheduleViewSettings {
+  id: string;
+  organizationId: string;
+  hourMode: ScheduleHourMode;
+  customStartHour: number; // 0-23
+  customEndHour: number;   // 1-24
+}
+
 export interface Location {
   id: string;
   organizationId: string;
@@ -215,7 +225,7 @@ export const SECTIONS: Record<Section, SectionConfig> = {
   },
 };
 
-export const HOURS_START = 6;
+export const HOURS_START = 0;
 export const HOURS_END = 24;
 export const TOTAL_HOURS = HOURS_END - HOURS_START;
 
