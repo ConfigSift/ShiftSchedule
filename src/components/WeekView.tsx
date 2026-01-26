@@ -2,12 +2,15 @@
 
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
-import { HOURS_END, HOURS_START, SECTIONS } from '../types';
+import { SECTIONS } from '../types';
 import { getWeekDates, dateToString, isSameDay, formatHour, shiftsOverlap } from '../utils/timeUtils';
 import { Palmtree } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
+
+// Compact sizing - pixels per day column
+const PX_PER_DAY = 100;
 
 export function WeekView() {
   const {
@@ -17,8 +20,6 @@ export function WeekView() {
     locations,
     setSelectedDate,
     setViewMode,
-    goToPrevious,
-    goToNext,
     openModal,
     showToast,
     hasApprovedTimeOff,
@@ -26,6 +27,7 @@ export function WeekView() {
     hasOrgBlackoutOnDate,
     dateNavDirection,
     dateNavKey,
+    getEffectiveHourRange,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
@@ -38,14 +40,25 @@ export function WeekView() {
     [locations]
   );
   const today = new Date();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const scrollLockRef = useRef(false);
-  const edgeShiftCountRef = useRef(0);
-  const edgeShiftResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Refs for scroll syncing
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+  const namesScrollRef = useRef<HTMLDivElement>(null);
+
+  // Drag-to-scroll state
+  const [isDragScrolling, setIsDragScrolling] = useState(false);
+  const dragScrollRef = useRef<{
+    startX: number;
+    scrollLeft: number;
+  } | null>(null);
+
   const cellPointerRef = useRef<{ x: number; y: number; employeeId: string; date: string } | null>(null);
   const [isSliding, setIsSliding] = useState(false);
   const [slideDirection, setSlideDirection] = useState<'prev' | 'next' | null>(null);
   const [hoveredShiftId, setHoveredShiftId] = useState<string | null>(null);
+
+  // Calculate grid width based on days
+  const gridWidth = 7 * PX_PER_DAY;
 
   const handleDayClick = (date: Date) => {
     setSelectedDate(date);
@@ -59,48 +72,81 @@ export function WeekView() {
     openModal('editShift', shift);
   };
 
-  const handleScrollEdge = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el || scrollLockRef.current) return;
-    if (el.scrollWidth <= el.clientWidth) return;
-    const threshold = 24;
-    if (el.scrollLeft <= threshold) {
-      if (edgeShiftCountRef.current >= 7) return;
-      scrollLockRef.current = true;
-      edgeShiftCountRef.current += 1;
-      goToPrevious();
-      requestAnimationFrame(() => {
-        if (scrollRef.current) {
-          scrollRef.current.scrollLeft =
-            (scrollRef.current.scrollWidth - scrollRef.current.clientWidth) / 2;
-        }
-      });
-      setTimeout(() => {
-        scrollLockRef.current = false;
-      }, 300);
-    } else if (el.scrollLeft + el.clientWidth >= el.scrollWidth - threshold) {
-      if (edgeShiftCountRef.current >= 7) return;
-      scrollLockRef.current = true;
-      edgeShiftCountRef.current += 1;
-      goToNext();
-      requestAnimationFrame(() => {
-        if (scrollRef.current) {
-          scrollRef.current.scrollLeft =
-            (scrollRef.current.scrollWidth - scrollRef.current.clientWidth) / 2;
-        }
-      });
-      setTimeout(() => {
-        scrollLockRef.current = false;
-      }, 300);
-    }
+  // Drag-to-scroll handlers
+  const handleGridDragStart = useCallback((clientX: number) => {
+    if (!gridScrollRef.current) return;
+    setIsDragScrolling(true);
+    dragScrollRef.current = {
+      startX: clientX,
+      scrollLeft: gridScrollRef.current.scrollLeft,
+    };
+  }, []);
 
-    if (edgeShiftResetRef.current) {
-      clearTimeout(edgeShiftResetRef.current);
+  const handleGridDragMove = useCallback((clientX: number) => {
+    if (!isDragScrolling || !dragScrollRef.current || !gridScrollRef.current) return;
+    const dx = clientX - dragScrollRef.current.startX;
+    gridScrollRef.current.scrollLeft = dragScrollRef.current.scrollLeft - dx;
+  }, [isDragScrolling]);
+
+  const handleGridDragEnd = useCallback(() => {
+    setIsDragScrolling(false);
+    dragScrollRef.current = null;
+  }, []);
+
+  const handleGridMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('[data-shift]')) return;
+    if ((e.target as HTMLElement).closest('button')) return;
+    if (e.button !== 0) return;
+    handleGridDragStart(e.clientX);
+  };
+
+  const handleGridMouseMove = (e: React.MouseEvent) => {
+    if (isDragScrolling) {
+      handleGridDragMove(e.clientX);
     }
-    edgeShiftResetRef.current = setTimeout(() => {
-      edgeShiftCountRef.current = 0;
-    }, 900);
-  }, [goToPrevious, goToNext]);
+  };
+
+  const handleGridMouseUp = () => {
+    handleGridDragEnd();
+  };
+
+  const handleGridMouseLeave = () => {
+    handleGridDragEnd();
+  };
+
+  // Touch handlers for drag-to-scroll
+  const handleGridTouchStart = (e: React.TouchEvent) => {
+    if ((e.target as HTMLElement).closest('[data-shift]')) return;
+    if ((e.target as HTMLElement).closest('button')) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    handleGridDragStart(touch.clientX);
+  };
+
+  const handleGridTouchMove = (e: React.TouchEvent) => {
+    if (isDragScrolling) {
+      const touch = e.touches[0];
+      if (!touch) return;
+      handleGridDragMove(touch.clientX);
+    }
+  };
+
+  const handleGridTouchEnd = () => {
+    handleGridDragEnd();
+  };
+
+  // Sync vertical scroll between names column and grid
+  const handleGridScroll = useCallback(() => {
+    if (namesScrollRef.current && gridScrollRef.current) {
+      namesScrollRef.current.scrollTop = gridScrollRef.current.scrollTop;
+    }
+  }, []);
+
+  const handleNamesScroll = useCallback(() => {
+    if (namesScrollRef.current && gridScrollRef.current) {
+      gridScrollRef.current.scrollTop = namesScrollRef.current.scrollTop;
+    }
+  }, []);
 
   useEffect(() => {
     if (!dateNavDirection) return;
@@ -130,9 +176,14 @@ export function WeekView() {
     cellPointerRef.current = null;
     if (distance > 6) return;
 
+    // Get effective hour range for this day
+    const clickDate = new Date(date);
+    const { start: HOURS_START, end: HOURS_END } = getEffectiveHourRange(clickDate.getDay());
+    const TOTAL_HOURS = HOURS_END - HOURS_START;
+
     const rect = e.currentTarget.getBoundingClientRect();
     const percentage = (e.clientX - rect.left) / rect.width;
-    const rawHour = HOURS_START + percentage * (HOURS_END - HOURS_START);
+    const rawHour = HOURS_START + percentage * TOTAL_HOURS;
     const startHour = Math.max(HOURS_START, Math.min(HOURS_END, Math.round(rawHour * 4) / 4));
     const endHour = Math.min(HOURS_END, Math.round((startHour + 2) * 4) / 4);
     const hasOverlap = scopedShifts.some(
@@ -157,23 +208,78 @@ export function WeekView() {
 
   return (
     <div className="flex-1 flex flex-col bg-theme-timeline overflow-hidden transition-theme">
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-x-auto overflow-y-hidden scroll-smooth"
-        onScroll={handleScrollEdge}
-      >
+      <div className="flex-1 flex overflow-hidden">
+        {/* Fixed Employee Names Column - compact */}
+        <div className="w-36 shrink-0 flex flex-col bg-theme-timeline z-20 border-r border-theme-primary">
+          {/* Header spacer */}
+          <div className="h-10 border-b border-theme-primary shrink-0" />
+
+          {/* Employee names list - synced scroll */}
+          <div
+            ref={namesScrollRef}
+            className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide"
+            onScroll={handleNamesScroll}
+          >
+            {filteredEmployees.length === 0 ? (
+              <div className="h-full" />
+            ) : (
+              filteredEmployees.map((employee) => {
+                const sectionConfig = SECTIONS[employee.section];
+
+                return (
+                  <div
+                    key={employee.id}
+                    className="h-12 border-b border-theme-primary/50 flex items-center gap-2 px-2 bg-theme-timeline"
+                    style={{ boxShadow: '4px 0 8px rgba(0,0,0,0.08)' }}
+                  >
+                    <div
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0"
+                      style={{
+                        backgroundColor: sectionConfig.bgColor,
+                        color: sectionConfig.color,
+                      }}
+                    >
+                      {employee.name.split(' ').map(n => n[0]).join('')}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium text-theme-primary truncate">
+                        {employee.name}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* Scrollable Week Grid */}
         <div
-          className={`min-w-[1100px] flex flex-col h-full transition-transform transition-opacity duration-200 ${
-            isSliding
-              ? slideDirection === 'next'
-                ? '-translate-x-2 opacity-90'
-                : 'translate-x-2 opacity-90'
-              : 'translate-x-0 opacity-100'
-          }`}
+          ref={gridScrollRef}
+          className={`flex-1 overflow-x-auto overflow-y-auto ${isDragScrolling ? 'cursor-grabbing' : 'cursor-grab'}`}
+          style={{ scrollBehavior: isDragScrolling ? 'auto' : 'smooth' }}
+          onMouseDown={handleGridMouseDown}
+          onMouseMove={handleGridMouseMove}
+          onMouseUp={handleGridMouseUp}
+          onMouseLeave={handleGridMouseLeave}
+          onTouchStart={handleGridTouchStart}
+          onTouchMove={handleGridTouchMove}
+          onTouchEnd={handleGridTouchEnd}
+          onTouchCancel={handleGridTouchEnd}
+          onScroll={handleGridScroll}
         >
-          <div className="h-12 border-b border-theme-primary flex shrink-0">
-            <div className="w-44 shrink-0 border-r border-theme-primary sticky left-0 z-30 bg-theme-timeline" />
-            <div className="flex-1 flex">
+          <div
+            className={`flex flex-col h-max min-h-full transition-transform transition-opacity duration-200 ${
+              isSliding
+                ? slideDirection === 'next'
+                  ? '-translate-x-2 opacity-90'
+                  : 'translate-x-2 opacity-90'
+                : 'translate-x-0 opacity-100'
+            }`}
+            style={{ width: `${gridWidth}px`, minWidth: `${gridWidth}px` }}
+          >
+            {/* Day Headers */}
+            <div className="h-10 border-b border-theme-primary flex shrink-0 sticky top-0 bg-theme-timeline z-10">
               {weekDates.map((date) => {
                 const isToday = isSameDay(date, today);
                 const isSelected = isSameDay(date, selectedDate);
@@ -182,20 +288,21 @@ export function WeekView() {
                   <button
                     key={date.toISOString()}
                     onClick={() => handleDayClick(date)}
-                    className={`flex-1 border-r border-theme-primary/50 flex flex-col items-center justify-center transition-colors ${
+                    className={`border-r border-theme-primary/50 flex flex-col items-center justify-center transition-colors ${
                       isToday
                         ? 'bg-amber-500/10'
                         : isSelected
                         ? 'bg-theme-hover'
                         : 'hover:bg-theme-hover/50'
                     }`}
+                    style={{ width: `${PX_PER_DAY}px`, minWidth: `${PX_PER_DAY}px` }}
                   >
-                    <span className={`text-xs font-medium ${
+                    <span className={`text-[10px] font-medium ${
                       isToday ? 'text-amber-500' : 'text-theme-muted'
                     }`}>
                       {date.toLocaleDateString('en-US', { weekday: 'short' })}
                     </span>
-                    <span className={`text-sm font-semibold ${
+                    <span className={`text-xs font-semibold ${
                       isToday ? 'text-amber-500' : 'text-theme-secondary'
                     }`}>
                       {date.getDate()}
@@ -204,141 +311,111 @@ export function WeekView() {
                 );
               })}
             </div>
-          </div>
 
-          <div className="flex-1 overflow-y-auto">
-        {filteredEmployees.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-theme-muted">
-            <div className="text-center">
-              <p className="text-lg font-medium mb-1">No staff selected</p>
-              <p className="text-sm">Use the sidebar to select employees to view</p>
-            </div>
-          </div>
-        ) : (
-          filteredEmployees.map((employee) => {
-            const sectionConfig = SECTIONS[employee.section];
-
-            return (
-              <div
-                key={employee.id}
-                className="flex min-h-[60px] border-b border-theme-primary/50 hover:bg-theme-hover/30 transition-colors group"
-              >
-                <div
-                  className="w-44 shrink-0 border-r border-theme-primary flex items-center gap-3 px-3 py-2 sticky left-0 z-30 bg-theme-timeline group-hover:bg-theme-hover/30"
-                  style={{ boxShadow: '-4px 0 8px rgba(0,0,0,0.08)' }}
-                >
-                  <div
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
-                    style={{
-                      backgroundColor: sectionConfig.bgColor,
-                      color: sectionConfig.color,
-                    }}
-                  >
-                    {employee.name.split(' ').map(n => n[0]).join('')}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-theme-primary truncate">
-                      {employee.name}
-                    </p>
+            {/* Week Grid Rows */}
+            <div className="flex-1">
+              {filteredEmployees.length === 0 ? (
+                <div className="flex items-center justify-center h-full text-theme-muted">
+                  <div className="text-center">
+                    <p className="text-sm font-medium mb-1">No staff selected</p>
+                    <p className="text-xs">Use the sidebar to select employees</p>
                   </div>
                 </div>
-                <div className="absolute right-0 top-0 bottom-0 w-[1px] bg-gradient-to-r from-theme-timeline/0 to-theme-primary/30" aria-hidden="true" />
+              ) : (
+                filteredEmployees.map((employee) => {
+                  return (
+                    <div
+                      key={employee.id}
+                      className="flex h-12 border-b border-theme-primary/50 hover:bg-theme-hover/30 transition-colors group"
+                    >
+                      {weekDates.map((date) => {
+                        const dateStr = dateToString(date);
+                        const dayShifts = scopedShifts.filter(
+                          s => s.employeeId === employee.id && s.date === dateStr && !s.isBlocked
+                        );
+                        const isToday = isSameDay(date, today);
+                        const hasTimeOff = hasApprovedTimeOff(employee.id, dateStr);
+                        const hasBlocked = hasBlockedShiftOnDate(employee.id, dateStr);
+                        const hasOrgBlackout = hasOrgBlackoutOnDate(dateStr);
 
-                <div className="flex-1 flex">
-                  {weekDates.map((date) => {
-                    const dateStr = dateToString(date);
-                    const dayShifts = scopedShifts.filter(
-                      s => s.employeeId === employee.id && s.date === dateStr && !s.isBlocked
-                    );
-                    const isToday = isSameDay(date, today);
-                    const hasTimeOff = hasApprovedTimeOff(employee.id, dateStr);
-                    const hasBlocked = hasBlockedShiftOnDate(employee.id, dateStr);
-                    const hasOrgBlackout = hasOrgBlackoutOnDate(dateStr);
-
-                    return (
-                      <div
-                        key={date.toISOString()}
-                        className={`flex-1 border-r border-theme-primary/30 p-1 group relative ${
-                          isToday ? 'bg-amber-500/5' : ''
-                        } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''} ${hasOrgBlackout ? 'bg-amber-500/5' : ''}`}
-                        onMouseDown={(e) => handleCellMouseDown(employee.id, dateStr, e)}
-                        onMouseUp={(e) => handleCellMouseUp(employee.id, dateStr, e)}
-                      >
-                        {!hasTimeOff && !hasBlocked && !hasOrgBlackout && isManager && (
+                        return (
                           <div
-                            className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity ${
-                              hoveredShiftId ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'
-                            }`}
+                            key={date.toISOString()}
+                            className={`border-r border-theme-primary/30 p-0.5 group relative overflow-hidden ${
+                              isToday ? 'bg-amber-500/5' : ''
+                            } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''} ${hasOrgBlackout ? 'bg-amber-500/5' : ''}`}
+                            style={{ width: `${PX_PER_DAY}px`, minWidth: `${PX_PER_DAY}px` }}
+                            onMouseDown={(e) => handleCellMouseDown(employee.id, dateStr, e)}
+                            onMouseUp={(e) => handleCellMouseUp(employee.id, dateStr, e)}
                           >
-                            <span className="text-[11px] text-theme-muted">
-                              Click to add shift
-                            </span>
-                          </div>
-                        )}
-                        {hasTimeOff ? (
-                          <div className="h-full flex items-center justify-center">
-                            <div className="flex items-center gap-1 px-2 py-1 bg-emerald-500/20 rounded text-emerald-500">
-                              <Palmtree className="w-3 h-3" />
-                              <span className="text-xs font-medium">OFF</span>
-                            </div>
-                          </div>
-                        ) : hasBlocked ? (
-                          <div className="h-full flex items-center justify-center">
-                            <div className="flex items-center gap-1 px-2 py-1 bg-red-500/20 rounded text-red-400">
-                              <span className="text-xs font-medium">BLOCKED</span>
-                            </div>
-                          </div>
-                        ) : hasOrgBlackout ? (
-                          <div className="h-full flex items-center justify-center">
-                            <div className="flex items-center gap-1 px-2 py-1 bg-amber-500/20 rounded text-amber-500">
-                              <span className="text-xs font-medium">BLACKOUT</span>
-                            </div>
-                          </div>
-                        ) : (
-                          dayShifts.map((shift) => {
-                            const locationName = shift.locationId ? locationMap.get(shift.locationId) : undefined;
-                            const jobLabel = shift.job ? shift.job : isManager ? '(No job)' : '';
-                            const metaParts = [jobLabel, locationName].filter(Boolean);
-                            const metaLabel = metaParts.join(' • ');
-                            const titleParts = [
-                              `${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`,
-                              metaLabel,
-                            ].filter(Boolean);
-                            const jobColor = getJobColorClasses(shift.job);
-
-                            return (
+                            {!hasTimeOff && !hasBlocked && !hasOrgBlackout && isManager && (
                               <div
-                                key={shift.id}
-                                data-shift="true"
-                                onClick={(e) => handleShiftClick(shift, e)}
-                                onMouseEnter={() => setHoveredShiftId(shift.id)}
-                                onMouseLeave={() => setHoveredShiftId(null)}
-                                className="mb-1 px-2 py-1 rounded-md text-xs truncate cursor-pointer hover:scale-[1.02] transition-transform"
-                                style={{
-                                  backgroundColor: jobColor.bgColor,
-                                  borderLeft: `3px solid ${jobColor.color}`,
-                                  color: jobColor.color,
-                                }}
-                                title={titleParts.join(' | ')}
+                                className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity ${
+                                  hoveredShiftId ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'
+                                }`}
                               >
-                                {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
-                                {metaLabel && (
-                                  <span className="ml-1 text-[10px] text-theme-muted">
-                                    {metaLabel}
+                                <span className="text-[9px] text-theme-muted">+</span>
+                              </div>
+                            )}
+                            {hasTimeOff ? (
+                              <div className="h-full flex items-center justify-center">
+                                <div className="flex items-center gap-0.5 px-1 py-0.5 bg-emerald-500/20 rounded text-emerald-500">
+                                  <Palmtree className="w-2.5 h-2.5" />
+                                  <span className="text-[9px] font-medium">OFF</span>
+                                </div>
+                              </div>
+                            ) : hasBlocked ? (
+                              <div className="h-full flex items-center justify-center">
+                                <div className="flex items-center px-1 py-0.5 bg-red-500/20 rounded text-red-400">
+                                  <span className="text-[9px] font-medium">X</span>
+                                </div>
+                              </div>
+                            ) : hasOrgBlackout ? (
+                              <div className="h-full flex items-center justify-center">
+                                <div className="flex items-center px-1 py-0.5 bg-amber-500/20 rounded text-amber-500">
+                                  <span className="text-[9px] font-medium">BO</span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col gap-0.5 overflow-hidden h-full">
+                                {dayShifts.slice(0, 2).map((shift) => {
+                                  const jobColor = getJobColorClasses(shift.job);
+                                  const shiftDuration = shift.endHour - shift.startHour;
+
+                                  return (
+                                    <div
+                                      key={shift.id}
+                                      data-shift="true"
+                                      onClick={(e) => handleShiftClick(shift, e)}
+                                      onMouseEnter={() => setHoveredShiftId(shift.id)}
+                                      onMouseLeave={() => setHoveredShiftId(null)}
+                                      className="px-1 py-0.5 rounded text-[9px] truncate cursor-pointer hover:scale-[1.02] transition-transform"
+                                      style={{
+                                        backgroundColor: jobColor.bgColor,
+                                        borderLeft: `2px solid ${jobColor.color}`,
+                                        color: jobColor.color,
+                                      }}
+                                      title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
+                                    >
+                                      {Math.round(shiftDuration)}h
+                                    </div>
+                                  );
+                                })}
+                                {dayShifts.length > 2 && (
+                                  <span className="text-[9px] text-theme-muted text-center">
+                                    +{dayShifts.length - 2}
                                   </span>
                                 )}
                               </div>
-                            );
-                          })
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })
-        )}
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         </div>
       </div>
