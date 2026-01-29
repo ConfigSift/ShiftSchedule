@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { Header } from './Header';
 import { StatsFooter } from './StatsFooter';
@@ -19,6 +20,7 @@ type AppShellProps = {
 export function AppShell({ children, showFooter = true }: AppShellProps) {
   const pathname = usePathname();
   const isStandalonePage = pathname === '/login' || pathname === '/setup';
+  const isChatPage = pathname === '/chat';
 
   const { currentUser, activeRestaurantId, refreshProfile } = useAuthStore();
   const { showToast } = useScheduleStore();
@@ -48,12 +50,46 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
     );
   }
 
+  useEffect(() => {
+    if (!isChatPage) return;
+    const html = document.documentElement;
+    const body = document.body;
+    const prev = {
+      htmlOverflow: html.style.overflow,
+      htmlHeight: html.style.height,
+      bodyOverflow: body.style.overflow,
+      bodyHeight: body.style.height,
+    };
+    html.style.overflow = 'hidden';
+    html.style.height = '100%';
+    body.style.overflow = 'hidden';
+    body.style.height = '100%';
+    return () => {
+      html.style.overflow = prev.htmlOverflow;
+      html.style.height = prev.htmlHeight;
+      body.style.overflow = prev.bodyOverflow;
+      body.style.height = prev.bodyHeight;
+    };
+  }, [isChatPage]);
+
   return (
-    <div className="min-h-[100dvh] bg-theme-primary text-theme-primary transition-theme flex flex-col">
+    <div
+      className={`min-h-[100dvh] bg-theme-primary text-theme-primary transition-theme flex flex-col ${
+        isChatPage ? 'h-[100dvh] overflow-hidden' : ''
+      }`}
+      data-chat-shell={isChatPage ? 'true' : undefined}
+    >
       <Header />
       {/* Main content area - accounts for fixed header and footer */}
-      <div className={`flex-1 pt-14 sm:pt-16 ${showFooter ? 'pb-12 sm:pb-14' : ''} bg-theme-timeline`}>
-        <div className="h-full overflow-y-auto bg-theme-timeline">
+      <div
+        className={`flex-1 min-h-0 pt-14 sm:pt-16 ${showFooter ? 'pb-12 sm:pb-14' : ''} bg-theme-timeline ${
+          isChatPage ? 'overflow-hidden' : ''
+        }`}
+        data-chat-content={isChatPage ? 'true' : undefined}
+      >
+        <div
+          className={`h-full bg-theme-timeline ${isChatPage ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
+        >
           {children}
         </div>
       </div>

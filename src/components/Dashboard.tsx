@@ -64,7 +64,7 @@ export function Dashboard() {
         
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* Controls bar */}
-          <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/70 px-2 sm:px-4 py-2 sm:py-3">
+            <div className={`shrink-0 border-b border-theme-primary bg-theme-secondary/70 px-2 sm:px-4 py-2 sm:py-3 ${viewMode === 'day' ? 'hidden' : ''}`}>
             <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
               {/* Date navigation row */}
               <div className="flex items-center gap-1 sm:gap-2">

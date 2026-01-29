@@ -49,6 +49,25 @@ function formatTimeFromDecimal(value: number): string {
   return `${paddedHours}:${paddedMinutes}:00`;
 }
 
+const DEBUG_SHIFT_SAVE = false;
+
+function clampForEditShift(startHour: number, endHour: number) {
+  const minHour = 0;
+  const maxHour = 24;
+  const nextStart = Math.max(minHour, Math.min(maxHour, startHour));
+  const nextEnd = Math.max(minHour, Math.min(maxHour, endHour));
+  return { startHour: nextStart, endHour: nextEnd };
+}
+
+function clampForNewShift(startHour: number, endHour: number) {
+  // New shift constraints are enforced elsewhere (business hours, overlap checks).
+  const minHour = 0;
+  const maxHour = 24;
+  const nextStart = Math.max(minHour, Math.min(maxHour, startHour));
+  const nextEnd = Math.max(minHour, Math.min(maxHour, endHour));
+  return { startHour: nextStart, endHour: nextEnd };
+}
+
 function isValidJob(value: unknown): value is string {
   if (!value) return false;
   return JOB_OPTIONS.includes(String(value) as (typeof JOB_OPTIONS)[number]);
@@ -712,7 +731,43 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     if (!shift) return { success: false, error: 'Shift not found' };
     if (shift.isBlocked) return { success: false, error: 'Blocked entries cannot be edited here' };
 
+    const updateId = `${id}-${Date.now()}`;
     const updatedShift = { ...shift, ...updates };
+    if (DEBUG_SHIFT_SAVE) {
+      console.log('SHIFT_SAVE', {
+        stage: 'input',
+        updateId,
+        shiftId: id,
+        employeeId: updatedShift.employeeId,
+        date: updatedShift.date,
+        startMin: updatedShift.startHour * 60,
+        endMin: updatedShift.endHour * 60,
+      });
+    }
+    if (DEBUG_SHIFT_SAVE) {
+      console.log('SAVE LAYER', {
+        before: { start: updatedShift.startHour, end: updatedShift.endHour },
+      });
+    }
+    const clampedEdit = clampForEditShift(updatedShift.startHour, updatedShift.endHour);
+    updatedShift.startHour = clampedEdit.startHour;
+    updatedShift.endHour = clampedEdit.endHour;
+
+    if (DEBUG_SHIFT_SAVE) {
+      console.log('SAVE LAYER', {
+        afterClamp: { start: updatedShift.startHour, end: updatedShift.endHour },
+        formatted: {
+          start: formatTimeFromDecimal(updatedShift.startHour),
+          end: formatTimeFromDecimal(updatedShift.endHour),
+        },
+      });
+      console.log('SHIFT_SAVE', {
+        stage: 'afterClamp',
+        updateId,
+        startMin: updatedShift.startHour * 60,
+        endMin: updatedShift.endHour * 60,
+      });
+    }
 
     if (state.hasApprovedTimeOff(updatedShift.employeeId, updatedShift.date) && !options?.allowTimeOffOverride) {
       return { success: false, error: 'Employee has approved time off on this date' };
@@ -737,9 +792,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return { success: false, error: 'Job is required for this shift' };
     }
     const safeJob = updatedShift.job;
-    const { error } = await (supabase as any)
-      .from('shifts')
-      .update({
+    const payload = {
         organization_id: updatedShift.restaurantId,
         user_id: updatedShift.employeeId,
         shift_date: updatedShift.date,
@@ -749,15 +802,59 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         is_blocked: false,
         job: safeJob,
         location_id: updatedShift.locationId ?? null,
-      })
-      .eq('id', id);
+      };
+
+    if (DEBUG_SHIFT_SAVE) {
+      console.log('SHIFT_SAVE', {
+        stage: 'payload',
+        updateId,
+        payload,
+      });
+    }
+
+    const { data: updatedRow, error } = await (supabase as any)
+      .from('shifts')
+      .update(payload)
+      .eq('id', id)
+      .select('id,shift_date,start_time,end_time,user_id')
+      .single();
 
     if (error) {
       return { success: false, error: error.message };
     }
 
+    if (DEBUG_SHIFT_SAVE) {
+      console.log('SHIFT_SAVE', {
+        stage: 'response',
+        updateId,
+        row: updatedRow ?? null,
+      });
+      const { data: readback } = await (supabase as any)
+        .from('shifts')
+        .select('id,shift_date,start_time,end_time,user_id')
+        .eq('id', id)
+        .single();
+      console.log('SHIFT_SAVE', {
+        stage: 'readback',
+        updateId,
+        row: readback ?? null,
+      });
+    }
+
     const newShifts = state.shifts.map((s) => (s.id === id ? updatedShift : s));
     set({ shifts: newShifts });
+    if (DEBUG_SHIFT_SAVE) {
+      console.log('SAVE LAYER', {
+        saved: { start: updatedShift.startHour, end: updatedShift.endHour },
+      });
+      const stored = newShifts.find((s) => s.id === id);
+      console.log('SHIFT_SAVE', {
+        stage: 'store',
+        updateId,
+        startMin: stored ? stored.startHour * 60 : null,
+        endMin: stored ? stored.endHour * 60 : null,
+      });
+    }
     return { success: true };
   },
 
