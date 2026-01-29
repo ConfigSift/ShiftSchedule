@@ -13,13 +13,20 @@ export function StatsFooter() {
     selectedDate,
     viewMode,
     selectedEmployeeIds,
-    getShiftsForRestaurant,
-    getEmployeesForRestaurant,
+    shifts,      // Subscribe directly to shifts for reactivity
+    employees,   // Subscribe directly to employees for reactivity
   } = useScheduleStore();
   const { activeRestaurantId, currentUser } = useAuthStore();
 
-  const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
-  const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
+  // Filter to restaurant scope - these will recompute when shifts/employees change
+  const scopedEmployees = useMemo(() =>
+    activeRestaurantId ? employees.filter((e) => e.restaurantId === activeRestaurantId) : [],
+    [employees, activeRestaurantId]
+  );
+  const scopedShifts = useMemo(() =>
+    activeRestaurantId ? shifts.filter((s) => s.restaurantId === activeRestaurantId) : [],
+    [shifts, activeRestaurantId]
+  );
   const activeEmployees = useMemo(() => 
     scopedEmployees.filter((e) => e.isActive),
     [scopedEmployees]
@@ -84,15 +91,52 @@ export function StatsFooter() {
     [relevantShifts, scopedEmployees]
   );
 
-  const estimatedCost = useMemo(() => 
-    relevantShifts.reduce((sum, shift) => {
+  // Calculate estimated labor cost using per-job pay rates
+  const { estimatedCost, missingPayCount } = useMemo(() => {
+    let total = 0;
+    let missing = 0;
+
+    relevantShifts.forEach((shift) => {
       const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
-      const rate = employee?.hourlyPay ?? 0;
       const hours = shift.endHour - shift.startHour;
-      return sum + hours * rate;
-    }, 0),
-    [relevantShifts, scopedEmployees]
-  );
+
+      // Determine pay rate with fallback chain:
+      // 1. Job-specific rate from jobPay[shift.job]
+      // 2. Legacy hourlyPay
+      // 3. First job's pay rate (if jobs exist)
+      // 4. 0 (and flag as missing)
+      let rate = 0;
+      let foundRate = false;
+
+      if (shift.job && employee?.jobPay && employee.jobPay[shift.job] !== undefined) {
+        // Primary: job-specific rate
+        rate = employee.jobPay[shift.job];
+        foundRate = true;
+      } else if (employee?.hourlyPay !== undefined && employee.hourlyPay > 0) {
+        // Fallback 1: legacy hourlyPay
+        rate = employee.hourlyPay;
+        foundRate = true;
+      } else if (employee?.jobPay && employee.jobs && employee.jobs.length > 0) {
+        // Fallback 2: first selected job's pay
+        const firstJob = employee.jobs[0];
+        if (employee.jobPay[firstJob] !== undefined) {
+          rate = employee.jobPay[firstJob];
+          foundRate = true;
+        }
+      }
+
+      if (!foundRate && process.env.NODE_ENV === 'development') {
+        console.warn(
+          `[StatsFooter] Missing pay rate for shift ${shift.id}, employee ${employee?.name ?? shift.employeeId}, job: ${shift.job ?? 'none'}`
+        );
+        missing++;
+      }
+
+      total += hours * rate;
+    });
+
+    return { estimatedCost: total, missingPayCount: missing };
+  }, [relevantShifts, scopedEmployees]);
 
   return (
     <footer className="fixed bottom-0 left-0 right-0 h-12 sm:h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-3 sm:px-6 gap-3 sm:gap-8 shrink-0 transition-theme z-40">
@@ -141,8 +185,16 @@ export function StatsFooter() {
         <>
           <div className="flex-1" />
           <div className="hidden sm:flex items-center gap-2">
-            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-purple-500/10 flex items-center justify-center relative">
               <DollarSign className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-purple-400" />
+              {missingPayCount > 0 && (
+                <span
+                  className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-amber-500 text-zinc-900 text-[8px] font-bold rounded-full flex items-center justify-center"
+                  title={`${missingPayCount} shift(s) missing pay rate`}
+                >
+                  !
+                </span>
+              )}
             </div>
             <div>
               <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">Est. Labor</p>

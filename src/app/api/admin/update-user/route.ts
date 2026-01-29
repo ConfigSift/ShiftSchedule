@@ -13,11 +13,13 @@ type UpdatePayload = {
   userId: string;
   organizationId: string;
   fullName: string;
+  email?: string;
   phone?: string;
   accountType?: string;
   jobs?: string[];
   passcode?: string;
   hourlyPay?: number;
+  jobPay?: Record<string, number>;
 };
 
 export async function POST(request: NextRequest) {
@@ -52,7 +54,10 @@ export async function POST(request: NextRequest) {
 
   const requester = normalizeUserRow(requesterRow);
   const requesterRole = requester.role;
-  if (!isManagerRole(requesterRole)) {
+  const isSelfUpdate = requester.id === payload.userId;
+
+  // Allow self-updates or manager/admin updates
+  if (!isManagerRole(requesterRole) && !isSelfUpdate) {
     return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
   }
 
@@ -115,6 +120,13 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('You cannot change your own account type.', 403), response);
   }
 
+  // Employees doing self-updates can only change name, email, phone
+  if (isSelfUpdate && !isManagerRole(requesterRole)) {
+    if (payload.accountType || payload.jobs || payload.hourlyPay !== undefined || payload.jobPay || payload.passcode) {
+      return applySupabaseCookies(jsonError('You can only update your name, email, and phone.', 403), response);
+    }
+  }
+
   const normalizedJobs = payload.jobs ? normalizeJobs(payload.jobs) : normalizeJobs(targetRow.jobs);
   if ((targetRole === 'EMPLOYEE' || targetRole === 'MANAGER') && normalizedJobs.length === 0) {
     return applySupabaseCookies(
@@ -125,13 +137,22 @@ export async function POST(request: NextRequest) {
   const jobsPayload = serializeJobsForStorage(targetRow.jobs, normalizedJobs);
 
   const hourlyPayValue = payload.hourlyPay ?? targetRow.hourly_pay ?? 0;
-  const baseUpdatePayload = {
+  const jobPayValue = payload.jobPay ?? (targetRow.job_pay ? JSON.parse(targetRow.job_pay) : null);
+  const baseUpdatePayload: Record<string, unknown> = {
     full_name: payload.fullName,
     phone: payload.phone ?? '',
     account_type: targetRole,
     jobs: jobsPayload,
     hourly_pay: hourlyPayValue,
   };
+  // Only include email if provided
+  if (payload.email !== undefined) {
+    baseUpdatePayload.email = payload.email;
+  }
+  // Only include job_pay if provided (avoid errors on DBs without this column)
+  if (payload.jobPay !== undefined) {
+    baseUpdatePayload.job_pay = JSON.stringify(payload.jobPay);
+  }
 
   const updateResult = await supabaseAdmin
     .from('users')
@@ -152,6 +173,7 @@ export async function POST(request: NextRequest) {
           role: targetRole,
           jobs: jobsPayload,
           ...(safeHourlyPay === undefined ? {} : { hourly_pay: safeHourlyPay }),
+          ...(payload.email !== undefined ? { email: payload.email } : {}),
         })
         .eq('id', payload.userId);
       if (legacyResult.error) {

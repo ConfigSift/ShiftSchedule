@@ -16,6 +16,7 @@ type StaffProfileUser = {
   accountType: string;
   jobs: string[];
   hourlyPay?: number;
+  jobPay?: Record<string, number>;
 };
 
 type StaffProfileModalProps = {
@@ -47,19 +48,38 @@ export function StaffProfileModal({
 }: StaffProfileModalProps) {
   const allowAdminCreation = process.env.NEXT_PUBLIC_ENABLE_ADMIN_CREATION === 'true';
   const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [emailError, setEmailError] = useState('');
   const [phone, setPhone] = useState('');
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
   const [hourlyPay, setHourlyPay] = useState('0');
+  const [jobPay, setJobPay] = useState<Record<string, string>>({});
+  const [jobPayErrors, setJobPayErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (isOpen && user) {
       setFullName(user.fullName);
+      setEmail(user.email || '');
+      setEmailError('');
       setPhone(user.phone || '');
       setAccountType(getUserRole(user.accountType));
-      setJobs(normalizeJobs(user.jobs));
+      const normalizedJobs = normalizeJobs(user.jobs);
+      setJobs(normalizedJobs);
       setHourlyPay(String(user.hourlyPay ?? 0));
+
+      // Initialize per-job pay: use existing jobPay if available, otherwise use legacy hourlyPay as default
+      const defaultPay = String(user.hourlyPay ?? 0);
+      const existingJobPay = user.jobPay ?? {};
+      const initialJobPay: Record<string, string> = {};
+      normalizedJobs.forEach((job) => {
+        initialJobPay[job] = existingJobPay[job] !== undefined
+          ? String(existingJobPay[job])
+          : defaultPay;
+      });
+      setJobPay(initialJobPay);
+      setJobPayErrors({});
     }
   }, [isOpen, user]);
 
@@ -68,13 +88,95 @@ export function StaffProfileModal({
   const isSelf = Boolean(user?.authUserId && currentAuthUserId && user.authUserId === currentAuthUserId);
   const targetIsAdmin = getUserRole(user.accountType) === 'ADMIN';
   const showAdminFields = isManager || isAdmin;
-  const canEdit = mode === 'edit' && isManager && !(targetIsAdmin && !isAdmin);
+  // Manager/Admin can edit others; employees can only edit their own profile
+  const canEdit = mode === 'edit' && (isManager || isSelf) && !(targetIsAdmin && !isAdmin);
+  // Email can be edited by managers/admins for anyone, or by the user themselves
+  const canEditEmail = mode === 'edit' && (isManager || isSelf) && !(targetIsAdmin && !isAdmin);
   const canEditAccountType =
     canEdit && (isAdmin || isManager) && !isSelf && !(targetIsAdmin && !isAdmin);
   const requiresJobs = accountType === 'EMPLOYEE' || accountType === 'MANAGER';
 
+  // Email validation helper
+  const validateEmail = (emailValue: string): boolean => {
+    const trimmed = emailValue.trim();
+    if (!trimmed) {
+      setEmailError('Email is required.');
+      return false;
+    }
+    // Basic email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmed)) {
+      setEmailError('Please enter a valid email address.');
+      return false;
+    }
+    setEmailError('');
+    return true;
+  };
+
+  const handleEmailChange = (value: string) => {
+    setEmail(value);
+    // Clear error when user types
+    if (emailError) {
+      setEmailError('');
+    }
+  };
+
   const toggleJob = (job: string) => {
-    setJobs((prev) => (prev.includes(job) ? prev.filter((j) => j !== job) : [...prev, job]));
+    setJobs((prev) => {
+      if (prev.includes(job)) {
+        // Remove job
+        setJobPay((payPrev) => {
+          const updated = { ...payPrev };
+          delete updated[job];
+          return updated;
+        });
+        setJobPayErrors((errPrev) => {
+          const updated = { ...errPrev };
+          delete updated[job];
+          return updated;
+        });
+        return prev.filter((j) => j !== job);
+      } else {
+        // Add job - use legacy hourlyPay as default or 0
+        setJobPay((payPrev) => ({
+          ...payPrev,
+          [job]: hourlyPay || '0',
+        }));
+        return [...prev, job];
+      }
+    });
+  };
+
+  const updateJobPay = (job: string, value: string) => {
+    setJobPay((prev) => ({ ...prev, [job]: value }));
+    // Clear error when user types
+    if (jobPayErrors[job]) {
+      setJobPayErrors((prev) => {
+        const updated = { ...prev };
+        delete updated[job];
+        return updated;
+      });
+    }
+  };
+
+  const validateJobPay = (): boolean => {
+    const errors: Record<string, string> = {};
+    let isValid = true;
+    jobs.forEach((job) => {
+      const value = jobPay[job];
+      if (value === undefined || value === '') {
+        errors[job] = 'Required';
+        isValid = false;
+      } else {
+        const num = parseFloat(value);
+        if (isNaN(num) || num < 0) {
+          errors[job] = 'Invalid';
+          isValid = false;
+        }
+      }
+    });
+    setJobPayErrors(errors);
+    return isValid;
   };
 
   const handleSave = async () => {
@@ -83,11 +185,32 @@ export function StaffProfileModal({
       onError('Full name is required.');
       return;
     }
+    // Validate email if it can be edited
+    if (canEditEmail && !validateEmail(email)) {
+      return;
+    }
     if (requiresJobs && jobs.length === 0) {
       onError('At least one job is required for employees.');
       return;
     }
+    // Validate per-job pay
+    if (jobs.length > 0 && !validateJobPay()) {
+      onError('Please enter valid hourly pay for all selected jobs.');
+      return;
+    }
     setSubmitting(true);
+
+    // Convert jobPay strings to numbers
+    const jobPayNumeric: Record<string, number> = {};
+    jobs.forEach((job) => {
+      jobPayNumeric[job] = parseFloat(jobPay[job] || '0') || 0;
+    });
+
+    // Calculate average for legacy hourlyPay field (backwards compatibility)
+    const avgHourlyPay = jobs.length > 0
+      ? Object.values(jobPayNumeric).reduce((sum, v) => sum + v, 0) / jobs.length
+      : Number(hourlyPay || 0);
+
     try {
       const result = await apiFetch('/api/admin/update-user', {
         method: 'POST',
@@ -95,10 +218,12 @@ export function StaffProfileModal({
           userId: user.id,
           organizationId,
           fullName: fullName.trim(),
+          email: canEditEmail ? email.trim() : undefined,
           phone: phone.trim() || '',
           accountType: canEditAccountType ? accountType : undefined,
           jobs,
-          hourlyPay: Number(hourlyPay || 0),
+          hourlyPay: avgHourlyPay,
+          jobPay: jobPayNumeric,
         },
       });
       if (!result.ok) {
@@ -142,10 +267,16 @@ export function StaffProfileModal({
           <label className="text-sm text-theme-secondary">Email</label>
           <input
             type="email"
-            value={user.email || ''}
-            disabled
-            className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary opacity-60"
+            value={email}
+            onChange={(e) => handleEmailChange(e.target.value)}
+            disabled={!canEditEmail}
+            className={`w-full mt-1 px-3 py-2 bg-theme-tertiary border rounded-lg text-theme-primary disabled:opacity-60 ${
+              emailError ? 'border-red-500' : 'border-theme-primary'
+            }`}
           />
+          {emailError && (
+            <p className="text-xs text-red-400 mt-1">{emailError}</p>
+          )}
         </div>
 
         <div>
@@ -201,9 +332,45 @@ export function StaffProfileModal({
           </div>
         )}
 
-        {showAdminFields && (
+        {/* Per-Job Hourly Pay */}
+        {showAdminFields && jobs.length > 0 && (
           <div>
-            <label className="text-sm text-theme-secondary">Hourly Pay</label>
+            <label className="text-sm text-theme-secondary">Hourly Pay by Job</label>
+            <div className="mt-2 space-y-2">
+              {jobs.map((job) => (
+                <div key={job} className="flex items-center gap-2">
+                  <label className="text-xs text-theme-secondary w-32 shrink-0 truncate" title={job}>
+                    {job}
+                  </label>
+                  <div className="flex-1 flex items-center gap-1">
+                    <span className="text-xs text-theme-muted">$</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={jobPay[job] ?? ''}
+                      onChange={(e) => updateJobPay(job, e.target.value)}
+                      disabled={!canEdit}
+                      placeholder="0.00"
+                      className={`flex-1 px-2 py-1.5 bg-theme-tertiary border rounded-lg text-theme-primary text-sm disabled:opacity-60 ${
+                        jobPayErrors[job] ? 'border-red-500' : 'border-theme-primary'
+                      }`}
+                    />
+                    <span className="text-xs text-theme-muted">/hr</span>
+                  </div>
+                  {jobPayErrors[job] && (
+                    <span className="text-xs text-red-400">{jobPayErrors[job]}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Legacy Hourly Pay field - shown only when no jobs selected */}
+        {showAdminFields && jobs.length === 0 && (
+          <div>
+            <label className="text-sm text-theme-secondary">Default Hourly Pay</label>
             <input
               type="number"
               min="0"
@@ -213,6 +380,7 @@ export function StaffProfileModal({
               disabled={!canEdit}
               className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
             />
+            <p className="text-xs text-theme-muted mt-1">This will be used as the default when jobs are selected.</p>
           </div>
         )}
 

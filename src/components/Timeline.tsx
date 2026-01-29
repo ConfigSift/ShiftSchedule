@@ -4,8 +4,9 @@ import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { SECTIONS } from '../types';
 import { formatHourShort, formatHour, shiftsOverlap } from '../utils/timeUtils';
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { Palmtree, ChevronLeft, ChevronRight, CalendarDays, Sun, Calendar, ArrowLeftRight, Copy } from 'lucide-react';
+import { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { Palmtree, ChevronLeft, ChevronRight, CalendarDays, Sun, Calendar, ArrowLeftRight, Copy, MoreHorizontal } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { getJobColorClasses } from '../lib/jobColors';
 import Link from 'next/link';
@@ -37,9 +38,13 @@ const NON_GRAB_SCROLL_SELECTOR = [
   '[contenteditable="true"]',
 ].join(',');
 
-// Helper to get date string (YYYY-MM-DD) from Date
+// Helper to get date string (YYYY-MM-DD) from Date using LOCAL timezone
+// Note: Using local timezone ensures consistent date comparison for now-line positioning
 function toDateString(date: Date): string {
-  return date.toISOString().split('T')[0];
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 // Helper to get midnight of a date
@@ -160,6 +165,17 @@ export function Timeline() {
 
   // Continuous Days state
   const [continuousDays, setContinuousDays] = useState(false);
+  // Mobile toolbar "More" menu state
+  const [mobileMoreMenuOpen, setMobileMoreMenuOpen] = useState(false);
+  const mobileMoreMenuRef = useRef<HTMLDivElement>(null);
+  // Date picker dropdown state
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const datePickerMobileRef = useRef<HTMLDivElement>(null);
+  const datePickerDesktopRef = useRef<HTMLDivElement>(null);
+  const dateButtonMobileRef = useRef<HTMLButtonElement>(null);
+  const dateButtonDesktopRef = useRef<HTMLButtonElement>(null);
+  const datePickerDropdownRef = useRef<HTMLDivElement>(null);
+  const [datePickerPosition, setDatePickerPosition] = useState<{ top: number; left: number; width: number } | null>(null);
   // Window start date for continuous mode (first of 3 days)
   const [windowStartDate, setWindowStartDate] = useState<Date>(() => addDays(getMidnight(new Date()), -1));
   const continuousAnchorDateRef = useRef<Date | null>(null);
@@ -196,6 +212,115 @@ export function Timeline() {
       continuousAnchorDateRef.current = null;
     }
   }, [continuousDays, selectedDate]);
+
+  // Close mobile more menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (mobileMoreMenuRef.current && !mobileMoreMenuRef.current.contains(e.target as Node)) {
+        setMobileMoreMenuOpen(false);
+      }
+    };
+    if (mobileMoreMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [mobileMoreMenuOpen]);
+
+  // Close date picker on click-outside or Escape key
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      // Check if click is inside the dropdown (portal), button, or container
+      const inDropdown = datePickerDropdownRef.current?.contains(target);
+      const inMobileButton = dateButtonMobileRef.current?.contains(target);
+      const inDesktopButton = dateButtonDesktopRef.current?.contains(target);
+      if (!inDropdown && !inMobileButton && !inDesktopButton) {
+        setDatePickerOpen(false);
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setDatePickerOpen(false);
+      }
+    };
+    if (datePickerOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleEscape);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [datePickerOpen]);
+
+  // Calculate date picker dropdown position (for portal rendering)
+  const updateDatePickerPosition = useCallback(() => {
+    // Find which button is visible (mobile or desktop)
+    const mobileButton = dateButtonMobileRef.current;
+    const desktopButton = dateButtonDesktopRef.current;
+    // Check which one is actually visible using offsetParent or getComputedStyle
+    const button = desktopButton && desktopButton.offsetParent !== null ? desktopButton : mobileButton;
+    if (!button) return;
+
+    const rect = button.getBoundingClientRect();
+    const dropdownWidth = 288; // w-72 = 18rem = 288px
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    // Default: center below the button
+    let left = rect.left + rect.width / 2 - dropdownWidth / 2;
+    let top = rect.bottom + 4; // 4px gap
+
+    // Clamp to viewport edges
+    const margin = 8;
+    if (left < margin) left = margin;
+    if (left + dropdownWidth > viewportWidth - margin) {
+      left = viewportWidth - dropdownWidth - margin;
+    }
+
+    // On mobile, use full width with margins
+    const isMobile = window.innerWidth < 640;
+    const width = isMobile ? viewportWidth - margin * 2 : dropdownWidth;
+    if (isMobile) {
+      left = margin;
+    }
+
+    // TODO: flip above if near bottom (optional enhancement)
+    // For now, just ensure it doesn't go below viewport
+    const estimatedHeight = 340; // approximate dropdown height
+    if (top + estimatedHeight > viewportHeight - margin) {
+      // Try to flip above
+      const topAbove = rect.top - estimatedHeight - 4;
+      if (topAbove > margin) {
+        top = topAbove;
+      }
+    }
+
+    setDatePickerPosition({ top, left, width });
+  }, []);
+
+  // Update position when dropdown opens and on scroll/resize
+  useLayoutEffect(() => {
+    if (!datePickerOpen) {
+      setDatePickerPosition(null);
+      return;
+    }
+
+    // Initial position calculation
+    updateDatePickerPosition();
+
+    // Recalculate on scroll (capture phase to catch all scrolls) and resize
+    const handleScroll = () => updateDatePickerPosition();
+    const handleResize = () => updateDatePickerPosition();
+
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [datePickerOpen, updateDatePickerPosition]);
 
   // Save continuous days preference to localStorage
   const toggleContinuousDays = useCallback(() => {
@@ -1285,6 +1410,138 @@ export function Timeline() {
     day: 'numeric',
   });
 
+  // Date picker: track which month is being viewed (defaults to current selected date's month)
+  const currentDisplayDate = continuousDays ? displayedDate : selectedDate;
+  const [datePickerMonth, setDatePickerMonth] = useState<Date>(() => getMidnight(currentDisplayDate));
+
+  // Sync date picker month when selected date changes significantly
+  useEffect(() => {
+    if (!datePickerOpen) {
+      setDatePickerMonth(getMidnight(currentDisplayDate));
+    }
+  }, [currentDisplayDate, datePickerOpen]);
+
+  // Generate calendar grid for a month
+  const getCalendarDays = useCallback((monthDate: Date) => {
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const startDayOfWeek = firstDay.getDay(); // 0 = Sunday
+    const daysInMonth = lastDay.getDate();
+
+    const days: (Date | null)[] = [];
+    // Add empty slots for days before the 1st
+    for (let i = 0; i < startDayOfWeek; i++) {
+      days.push(null);
+    }
+    // Add all days in the month
+    for (let d = 1; d <= daysInMonth; d++) {
+      days.push(new Date(year, month, d));
+    }
+    return days;
+  }, []);
+
+  const datePickerDays = useMemo(() => getCalendarDays(datePickerMonth), [getCalendarDays, datePickerMonth]);
+
+  const handleDatePickerSelect = useCallback((date: Date) => {
+    handleGoToDate(date, { reanchor: true });
+    setDatePickerOpen(false);
+  }, [handleGoToDate]);
+
+  const handleDatePickerPrevMonth = useCallback(() => {
+    setDatePickerMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  }, []);
+
+  const handleDatePickerNextMonth = useCallback(() => {
+    setDatePickerMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+  }, []);
+
+  // Render the date picker dropdown calendar (via portal to avoid clipping)
+  const renderDatePickerDropdown = () => {
+    if (!datePickerPosition || typeof document === 'undefined') return null;
+
+    const todayStr = toDateString(new Date());
+    const selectedStr = toDateString(currentDisplayDate);
+    const monthLabel = datePickerMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+    const dropdown = (
+      <div
+        ref={datePickerDropdownRef}
+        className="fixed bg-theme-secondary border border-theme-primary rounded-xl shadow-2xl z-[9999]"
+        style={{
+          top: datePickerPosition.top,
+          left: datePickerPosition.left,
+          width: datePickerPosition.width,
+        }}
+      >
+        {/* Month navigation header */}
+        <div className="flex items-center justify-between px-3 py-2 border-b border-theme-primary">
+          <button
+            onClick={handleDatePickerPrevMonth}
+            className="p-1.5 rounded-lg hover:bg-theme-hover transition-colors"
+            aria-label="Previous month"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <span className="font-medium text-sm text-theme-primary">{monthLabel}</span>
+          <button
+            onClick={handleDatePickerNextMonth}
+            className="p-1.5 rounded-lg hover:bg-theme-hover transition-colors"
+            aria-label="Next month"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+        {/* Day headers */}
+        <div className="grid grid-cols-7 gap-0.5 px-2 pt-2">
+          {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => (
+            <div key={day} className="text-center text-[10px] font-medium text-theme-muted py-1">
+              {day}
+            </div>
+          ))}
+        </div>
+        {/* Calendar grid */}
+        <div className="grid grid-cols-7 gap-0.5 px-2 pb-2">
+          {datePickerDays.map((date, idx) => {
+            if (!date) {
+              return <div key={`empty-${idx}`} className="aspect-square" />;
+            }
+            const dateStr = toDateString(date);
+            const isSelected = dateStr === selectedStr;
+            const isToday = dateStr === todayStr;
+            return (
+              <button
+                key={dateStr}
+                onClick={() => handleDatePickerSelect(date)}
+                className={`aspect-square flex items-center justify-center text-sm rounded-lg transition-colors ${
+                  isSelected
+                    ? 'bg-amber-500 text-zinc-900 font-semibold'
+                    : isToday
+                    ? 'bg-amber-500/20 text-amber-500 font-medium hover:bg-amber-500/30'
+                    : 'text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
+                }`}
+              >
+                {date.getDate()}
+              </button>
+            );
+          })}
+        </div>
+        {/* Quick actions */}
+        <div className="border-t border-theme-primary px-2 py-2">
+          <button
+            onClick={() => handleDatePickerSelect(new Date())}
+            className="w-full py-1.5 text-xs font-medium text-amber-500 hover:bg-amber-500/10 rounded-lg transition-colors"
+          >
+            Go to Today
+          </button>
+        </div>
+      </div>
+    );
+
+    return createPortal(dropdown, document.body);
+  };
+
   // Determine if we should show every-other-hour labels for very compact views
   const showEveryOtherLabel = PX_PER_HOUR < 40;
 
@@ -1886,9 +2143,153 @@ export function Timeline() {
       ref={containerRef}
       className="flex-1 flex flex-col bg-theme-timeline overflow-hidden relative transition-theme"
     >
-      {/* Unified toolbar */}
-      <div className="h-10 border-b border-theme-primary bg-theme-timeline shrink-0 overflow-x-auto">
-        <div className="flex items-center gap-2 px-3 py-1 h-full min-w-max whitespace-nowrap">
+      {/* Unified toolbar - responsive: 2 rows on mobile, 1 row on desktop */}
+      <div className="border-b border-theme-primary bg-theme-timeline shrink-0">
+        {/* Mobile: 2 rows layout */}
+        <div className="flex flex-col sm:hidden">
+          {/* Row 1: Date navigation - centered */}
+          <div className="flex items-center justify-center gap-1 px-2 py-1.5 border-b border-theme-primary/50">
+            <button
+              onClick={() => {
+                const baseDate = continuousDays ? displayedDate : selectedDate;
+                handleGoToDate(addDays(baseDate, -1));
+              }}
+              className="min-w-[40px] min-h-[40px] px-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors flex items-center justify-center"
+              title="Previous day"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <div ref={datePickerMobileRef} className="relative flex-1 max-w-[180px]">
+              <button
+                ref={dateButtonMobileRef}
+                onClick={() => setDatePickerOpen(!datePickerOpen)}
+                className="w-full px-3 py-2 rounded-xl bg-theme-tertiary text-theme-primary font-medium text-sm text-center truncate hover:bg-theme-hover transition-colors cursor-pointer"
+                aria-expanded={datePickerOpen}
+                aria-haspopup="true"
+              >
+                {formattedDate}
+              </button>
+            </div>
+            <button
+              onClick={() => {
+                const baseDate = continuousDays ? displayedDate : selectedDate;
+                handleGoToDate(addDays(baseDate, 1));
+              }}
+              className="min-w-[40px] min-h-[40px] px-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors flex items-center justify-center"
+              title="Next day"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
+          {/* Row 2: Today + View toggle + More menu + Continuous - horizontal scroll */}
+          <div className="flex items-center gap-1.5 px-2 py-1.5 overflow-x-auto scrollbar-hide">
+            <button
+              onClick={handleToday}
+              disabled={isToday}
+              className={`min-h-[40px] px-3 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center shrink-0 ${
+                isToday
+                  ? 'bg-theme-tertiary text-theme-muted cursor-not-allowed'
+                  : 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
+              }`}
+            >
+              Today
+            </button>
+            {/* View mode toggle */}
+            <div className="flex items-center gap-0.5 bg-theme-tertiary rounded-lg p-1 shrink-0">
+              <button
+                onClick={() => handleViewMode('day')}
+                className={`min-h-[32px] flex items-center justify-center px-2 rounded-md text-xs font-medium transition-colors ${
+                  viewMode === 'day'
+                    ? 'bg-theme-secondary text-theme-primary shadow-sm'
+                    : 'text-theme-tertiary hover:text-theme-primary'
+                }`}
+                aria-pressed={viewMode === 'day'}
+                aria-label="Day view"
+              >
+                <Sun className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => handleViewMode('week')}
+                className={`min-h-[32px] flex items-center justify-center px-2 rounded-md text-xs font-medium transition-colors ${
+                  viewMode === 'week'
+                    ? 'bg-theme-secondary text-theme-primary shadow-sm'
+                    : 'text-theme-tertiary hover:text-theme-primary'
+                }`}
+                aria-pressed={viewMode === 'week'}
+                aria-label="Week view"
+              >
+                <CalendarDays className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => handleViewMode('month')}
+                className={`min-h-[32px] flex items-center justify-center px-2 rounded-md text-xs font-medium transition-colors ${
+                  viewMode === 'month'
+                    ? 'bg-theme-secondary text-theme-primary shadow-sm'
+                    : 'text-theme-tertiary hover:text-theme-primary'
+                }`}
+                aria-pressed={viewMode === 'month'}
+                aria-label="Month view"
+              >
+                <Calendar className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Mobile More menu for secondary actions */}
+            <div ref={mobileMoreMenuRef} className="relative shrink-0">
+              <button
+                onClick={() => setMobileMoreMenuOpen(!mobileMoreMenuOpen)}
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                aria-label="More actions"
+                aria-expanded={mobileMoreMenuOpen}
+              >
+                <MoreHorizontal className="w-5 h-5" />
+              </button>
+              {mobileMoreMenuOpen && (
+                <div className="absolute left-0 top-full mt-1 w-44 bg-theme-secondary border border-theme-primary rounded-lg shadow-xl py-1 z-50">
+                  <Link
+                    href="/shift-exchange"
+                    className="flex items-center gap-2 px-3 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                    onClick={() => setMobileMoreMenuOpen(false)}
+                  >
+                    <ArrowLeftRight className="w-4 h-4" />
+                    Shift Exchange
+                  </Link>
+                  {isManager && (
+                    <button
+                      type="button"
+                      onClick={() => { handleCopySchedule(); setMobileMoreMenuOpen(false); }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                    >
+                      <Copy className="w-4 h-4" />
+                      Copy Schedule
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            {/* Continuous toggle - pushed to right */}
+            <div className="ml-auto flex items-center gap-1.5 shrink-0">
+              <span className="text-[10px] text-theme-muted whitespace-nowrap">Continuous</span>
+              <button
+                onClick={toggleContinuousDays}
+                aria-checked={continuousDays}
+                role="switch"
+                type="button"
+                className={`relative w-10 h-5 rounded-full p-0.5 flex items-center transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 ${
+                  continuousDays ? 'bg-amber-500' : 'bg-theme-tertiary'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                    continuousDays ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Desktop: single row layout (sm and up) */}
+        <div className="hidden sm:flex items-center gap-2 px-3 py-1 h-10 min-w-max whitespace-nowrap">
           <button
             onClick={() => {
               const baseDate = continuousDays ? displayedDate : selectedDate;
@@ -1899,8 +2300,16 @@ export function Timeline() {
           >
             <ChevronLeft className="w-4 h-4" />
           </button>
-          <div className="px-3 py-1.5 rounded-xl bg-theme-tertiary text-theme-primary font-medium text-sm min-w-[150px] text-center truncate">
-            {formattedDate}
+          <div ref={datePickerDesktopRef} className="relative">
+            <button
+              ref={dateButtonDesktopRef}
+              onClick={() => setDatePickerOpen(!datePickerOpen)}
+              className="px-3 py-1.5 rounded-xl bg-theme-tertiary text-theme-primary font-medium text-sm min-w-[150px] text-center truncate hover:bg-theme-hover transition-colors cursor-pointer"
+              aria-expanded={datePickerOpen}
+              aria-haspopup="true"
+            >
+              {formattedDate}
+            </button>
           </div>
           <button
             onClick={() => {
@@ -1934,7 +2343,7 @@ export function Timeline() {
               aria-pressed={viewMode === 'day'}
             >
               <Sun className="w-4 h-4" />
-              <span className="hidden xs:inline">Day</span>
+              <span className="hidden md:inline">Day</span>
             </button>
             <button
               onClick={() => handleViewMode('week')}
@@ -1946,7 +2355,7 @@ export function Timeline() {
               aria-pressed={viewMode === 'week'}
             >
               <CalendarDays className="w-4 h-4" />
-              <span className="hidden xs:inline">Week</span>
+              <span className="hidden md:inline">Week</span>
             </button>
             <button
               onClick={() => handleViewMode('month')}
@@ -1958,7 +2367,7 @@ export function Timeline() {
               aria-pressed={viewMode === 'month'}
             >
               <Calendar className="w-4 h-4" />
-              <span className="hidden xs:inline">Month</span>
+              <span className="hidden md:inline">Month</span>
             </button>
           </div>
           <Link
@@ -1966,8 +2375,8 @@ export function Timeline() {
             className="h-9 flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs font-medium shrink-0"
           >
             <ArrowLeftRight className="w-4 h-4" />
-            <span className="hidden sm:inline">Shift Exchange</span>
-            <span className="sm:hidden">Exchange</span>
+            <span className="hidden lg:inline">Shift Exchange</span>
+            <span className="lg:hidden">Exchange</span>
           </Link>
           {isManager && (
             <button
@@ -1976,8 +2385,8 @@ export function Timeline() {
               className="h-9 flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs font-medium shrink-0"
             >
               <Copy className="w-4 h-4" />
-              <span className="hidden sm:inline">Copy Schedule</span>
-              <span className="sm:hidden">Copy</span>
+              <span className="hidden lg:inline">Copy Schedule</span>
+              <span className="lg:hidden">Copy</span>
             </button>
           )}
           <div className="ml-auto flex items-center gap-2 shrink-0">
@@ -2077,7 +2486,8 @@ export function Timeline() {
         </div>
       )}
 
-
+      {/* Date picker dropdown - rendered via portal to avoid clipping */}
+      {datePickerOpen && renderDatePickerDropdown()}
     </div>
   );
 }

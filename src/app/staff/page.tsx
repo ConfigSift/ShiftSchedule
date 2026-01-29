@@ -23,6 +23,7 @@ interface OrgUser {
   accountType: string;
   jobs: string[];
   hourlyPay?: number;
+  jobPay?: Record<string, number>;
 }
 
 const EMPTY_FORM = {
@@ -128,6 +129,7 @@ export default function StaffPage() {
         accountType: normalized.role,
         jobs: normalized.jobs,
         hourlyPay: normalized.hourlyPay,
+        jobPay: normalized.jobPay,
       };
     });
 

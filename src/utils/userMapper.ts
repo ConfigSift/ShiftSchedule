@@ -13,13 +13,33 @@ export type NormalizedUser = {
   role: 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
   jobs: string[];
   hourlyPay: number;
+  jobPay: Record<string, number>;
 };
+
+function parseJobPay(raw: unknown): Record<string, number> {
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null) {
+        return parsed as Record<string, number>;
+      }
+    } catch {
+      return {};
+    }
+  }
+  if (typeof raw === 'object' && raw !== null) {
+    return raw as Record<string, number>;
+  }
+  return {};
+}
 
 export function normalizeUserRow(row: RawUserRow): NormalizedUser {
   const fullName =
     row.full_name
     || `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim();
   const hourlyPay = Number(row.hourly_pay ?? 0);
+  const jobPay = parseJobPay(row.job_pay);
 
   return {
     id: row.id,
@@ -31,6 +51,7 @@ export function normalizeUserRow(row: RawUserRow): NormalizedUser {
     role: getUserRole(row.account_type ?? row.role),
     jobs: normalizeJobs(row.jobs),
     hourlyPay: Number.isFinite(hourlyPay) ? hourlyPay : 0,
+    jobPay,
   };
 }
 

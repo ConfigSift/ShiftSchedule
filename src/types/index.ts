@@ -20,6 +20,7 @@ export interface Employee {
   isActive: boolean;
   jobs?: string[];
   hourlyPay?: number;
+  jobPay?: Record<string, number>; // Per-job hourly pay rates
   email?: string | null;
   phone?: string | null;
 }
@@ -42,6 +43,7 @@ export interface UserProfile {
   role: UserRole;
   jobs: string[];
   hourlyPay?: number;
+  jobPay?: Record<string, number>; // Per-job hourly pay rates
 }
 
 export interface Shift {
