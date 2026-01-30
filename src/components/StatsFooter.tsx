@@ -91,41 +91,41 @@ export function StatsFooter() {
     [relevantShifts, scopedEmployees]
   );
 
-  // Calculate estimated labor cost using per-job pay rates
+  // Calculate estimated labor cost using shift.payRate (from DB) or fallback to employee rates
   const { estimatedCost, missingPayCount } = useMemo(() => {
     let total = 0;
     let missing = 0;
 
     relevantShifts.forEach((shift) => {
-      const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
       const hours = shift.endHour - shift.startHour;
-
-      // Determine pay rate with fallback chain:
-      // 1. Job-specific rate from jobPay[shift.job]
-      // 2. Legacy hourlyPay
-      // 3. First job's pay rate (if jobs exist)
-      // 4. 0 (and flag as missing)
       let rate = 0;
       let foundRate = false;
 
-      if (shift.job && employee?.jobPay && employee.jobPay[shift.job] !== undefined) {
-        // Primary: job-specific rate
-        rate = employee.jobPay[shift.job];
+      // Primary: use payRate from shift (set by DB trigger)
+      if (shift.payRate !== undefined && shift.payRate > 0) {
+        rate = shift.payRate;
         foundRate = true;
-      } else if (employee?.hourlyPay !== undefined && employee.hourlyPay > 0) {
-        // Fallback 1: legacy hourlyPay
-        rate = employee.hourlyPay;
-        foundRate = true;
-      } else if (employee?.jobPay && employee.jobs && employee.jobs.length > 0) {
-        // Fallback 2: first selected job's pay
-        const firstJob = employee.jobs[0];
-        if (employee.jobPay[firstJob] !== undefined) {
-          rate = employee.jobPay[firstJob];
+      } else {
+        // Fallback: look up from employee data
+        const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
+
+        if (shift.job && employee?.jobPay && employee.jobPay[shift.job] !== undefined) {
+          rate = employee.jobPay[shift.job];
           foundRate = true;
+        } else if (employee?.hourlyPay !== undefined && employee.hourlyPay > 0) {
+          rate = employee.hourlyPay;
+          foundRate = true;
+        } else if (employee?.jobPay && employee.jobs && employee.jobs.length > 0) {
+          const firstJob = employee.jobs[0];
+          if (employee.jobPay[firstJob] !== undefined) {
+            rate = employee.jobPay[firstJob];
+            foundRate = true;
+          }
         }
       }
 
       if (!foundRate && process.env.NODE_ENV === 'development') {
+        const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
         console.warn(
           `[StatsFooter] Missing pay rate for shift ${shift.id}, employee ${employee?.name ?? shift.employeeId}, job: ${shift.job ?? 'none'}`
         );

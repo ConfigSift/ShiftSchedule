@@ -57,6 +57,8 @@ export interface Shift {
   isBlocked?: boolean;
   job?: string;
   locationId?: string | null;
+  payRate?: number; // Hourly rate for this shift (set by DB trigger)
+  paySource?: string; // Source of pay rate: 'job_pay', 'hourly_pay', or 'default'
 }
 
 export type TimeOffStatus = 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED';

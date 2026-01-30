@@ -111,9 +111,11 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
         if (process.env.NODE_ENV !== 'production') {
           // eslint-disable-next-line no-console
           console.warn('Profile lookup failed', userError);
+          setError(`Profile lookup failed: ${userError.message}`);
+        } else {
+          setError('Profile lookup failed (schema mismatch). Run migrations or contact admin.');
         }
         await supabase.auth.signOut();
-        setError('Profile lookup failed (schema mismatch). Run migrations or contact admin.');
         return;
       }
 

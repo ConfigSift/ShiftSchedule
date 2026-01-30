@@ -366,14 +366,7 @@ export default function StaffPage() {
     }
   };
 
-  if (!isInitialized || !currentUser || !activeRestaurantId) {
-    return (
-      <div className="min-h-screen bg-theme-primary flex items-center justify-center">
-        <p className="text-theme-secondary">Loading...</p>
-      </div>
-    );
-  }
-
+  // Must be called before any early returns
   const filteredUsers = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!term) return users;
@@ -384,6 +377,14 @@ export default function StaffPage() {
       return parts.some((part) => part.includes(term));
     });
   }, [users, searchTerm]);
+
+  if (!isInitialized || !currentUser || !activeRestaurantId) {
+    return (
+      <div className="min-h-screen bg-theme-primary flex items-center justify-center">
+        <p className="text-theme-secondary">Loading...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-theme-primary p-6">

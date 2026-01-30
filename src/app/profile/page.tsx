@@ -33,6 +33,8 @@ export default function ProfilePage() {
   const { currentUser, init, isInitialized, activeRestaurantId, updateProfile } = useAuthStore();
 
   const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [emailError, setEmailError] = useState('');
   const [phone, setPhone] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
 
@@ -59,6 +61,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (currentUser) {
       setFullName(currentUser.fullName || '');
+      setEmail(currentUser.email || '');
       setPhone(currentUser.phone || '');
     }
   }, [currentUser]);
@@ -109,9 +112,27 @@ export default function ProfilePage() {
     r => r.employeeId === currentUser.id && r.status === 'PENDING'
   );
 
+  const validateEmail = (value: string): boolean => {
+    if (!value.trim()) {
+      setEmailError('Email is required.');
+      return false;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(value.trim())) {
+      setEmailError('Please enter a valid email address.');
+      return false;
+    }
+    setEmailError('');
+    return true;
+  };
+
   const handleSave = async () => {
+    if (!validateEmail(email)) {
+      return;
+    }
     const result = await updateProfile({
       fullName: fullName.trim() || currentUser.fullName,
+      email: email.trim(),
       phone: phone || null,
     });
     if (!result.success) {
@@ -208,10 +229,19 @@ export default function ProfilePage() {
               </label>
               <input
                 type="email"
-                value={currentUser.email || ''}
-                disabled
-                className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary opacity-70"
+                value={email}
+                onChange={(e) => {
+                  handleChange(setEmail, e.target.value);
+                  if (emailError) setEmailError('');
+                }}
+                className={`w-full px-3 py-2 bg-theme-tertiary border rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50 ${
+                  emailError ? 'border-red-500' : 'border-theme-primary'
+                }`}
+                placeholder="your@email.com"
               />
+              {emailError && (
+                <p className="text-xs text-red-400 mt-1">{emailError}</p>
+              )}
             </div>
 
             <div>

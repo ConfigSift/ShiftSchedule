@@ -41,15 +41,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
       }
     : null;
 
-  // Render standalone pages without header/footer
-  if (isStandalonePage) {
-    return (
-      <div className="min-h-[100dvh] bg-theme-primary text-theme-primary transition-theme">
-        {children}
-      </div>
-    );
-  }
-
+  // Chat page scroll lock - must be called before any early returns
   useEffect(() => {
     if (!isChatPage) return;
     const html = document.documentElement;
@@ -71,6 +63,15 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
       body.style.height = prev.bodyHeight;
     };
   }, [isChatPage]);
+
+  // Render standalone pages without header/footer
+  if (isStandalonePage) {
+    return (
+      <div className="min-h-[100dvh] bg-theme-primary text-theme-primary transition-theme">
+        {children}
+      </div>
+    );
+  }
 
   return (
     <div

@@ -234,6 +234,9 @@ export function StaffProfileModal({
         } else if (result.status === 403) {
           const message = 'You dont have permission for that action.';
           onError(message);
+        } else if (result.code === 'JOB_REMOVAL_BLOCKED') {
+          // Job removal blocked due to future shifts - show clear error and keep form state
+          onError(result.error || 'Cannot remove job with future shifts.');
         } else {
           onError(result.error || 'Unable to update profile.');
         }

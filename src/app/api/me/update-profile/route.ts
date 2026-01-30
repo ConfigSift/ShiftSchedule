@@ -41,23 +41,12 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Unauthorized.', 401), response);
   }
 
+  // Only update public.users table (NOT Supabase Auth email)
   const updatePayload = {
     full_name: payload.fullName.trim(),
     phone: payload.phone ?? '',
     ...(payload.email ? { email: payload.email.trim() } : {}),
   };
-
-  if (payload.email && payload.email.trim()) {
-    const { error: authUpdateError } = await supabase.auth.updateUser({
-      email: payload.email.trim(),
-    });
-    if (authUpdateError) {
-      return applySupabaseCookies(
-        NextResponse.json({ error: authUpdateError.message }, { status: 400 }),
-        response
-      );
-    }
-  }
 
   const result = await supabase
     .from('users')
@@ -65,7 +54,21 @@ export async function POST(request: NextRequest) {
     .eq('auth_user_id', authUserId);
 
   if (result.error) {
-    if (result.error.message?.toLowerCase().includes('full_name')) {
+    const errorMsg = result.error.message?.toLowerCase() ?? '';
+
+    // Handle unique constraint violation for email
+    if (errorMsg.includes('users_email_key') || errorMsg.includes('duplicate') && errorMsg.includes('email')) {
+      return applySupabaseCookies(
+        NextResponse.json({
+          error: 'This email address is already in use by another account.',
+          code: 'EMAIL_TAKEN',
+        }, { status: 400 }),
+        response
+      );
+    }
+
+    // Handle legacy schema without full_name column
+    if (errorMsg.includes('full_name')) {
       const { firstName, lastName } = splitFullName(payload.fullName);
       const fallbackResult = await supabase
         .from('users')
@@ -73,9 +76,20 @@ export async function POST(request: NextRequest) {
           first_name: firstName,
           last_name: lastName,
           phone: payload.phone ?? '',
+          ...(payload.email ? { email: payload.email.trim() } : {}),
         })
         .eq('auth_user_id', authUserId);
       if (fallbackResult.error) {
+        const fallbackMsg = fallbackResult.error.message?.toLowerCase() ?? '';
+        if (fallbackMsg.includes('users_email_key') || fallbackMsg.includes('duplicate') && fallbackMsg.includes('email')) {
+          return applySupabaseCookies(
+            NextResponse.json({
+              error: 'This email address is already in use by another account.',
+              code: 'EMAIL_TAKEN',
+            }, { status: 400 }),
+            response
+          );
+        }
         return applySupabaseCookies(
           NextResponse.json({ error: fallbackResult.error.message }, { status: 400 }),
           response

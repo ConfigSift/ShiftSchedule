@@ -344,7 +344,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
     let shiftQuery = supabase
       .from('shifts')
-      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,is_blocked,job,location_id')
+      .select('*')
       .eq('organization_id', restaurantId);
 
     const { data: shiftData, error: shiftError } = (await shiftQuery) as {
@@ -378,6 +378,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       isBlocked: Boolean(row.is_blocked),
       job: isValidJob(row.job) ? row.job : undefined,
       locationId: row.location_id ?? null,
+      payRate: row.pay_rate != null ? Number(row.pay_rate) : undefined,
+      paySource: row.pay_source ?? undefined,
     }));
 
     let timeOffData: Array<Record<string, any>> | null = null;
@@ -697,7 +699,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         job: safeJob,
         location_id: shift.locationId ?? null,
       })
-      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,is_blocked,job,location_id')
+      .select('*')
       .single();
 
     if (error || !data) {
@@ -715,10 +717,12 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       isBlocked: Boolean(data.is_blocked),
       job: isValidJob(data.job) ? data.job : undefined,
       locationId: data.location_id ?? null,
+      payRate: data.pay_rate != null ? Number(data.pay_rate) : undefined,
+      paySource: data.pay_source ?? undefined,
     };
 
-    const newShifts = [...state.shifts, newShift];
-    set({ shifts: newShifts });
+    // Immutable update: create new array with the new shift
+    set({ shifts: [...state.shifts, newShift] });
     return { success: true };
   },
 
@@ -817,7 +821,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       .from('shifts')
       .update(payload)
       .eq('id', id)
-      .select('id,shift_date,start_time,end_time,user_id')
+      .select('*')
       .single();
 
     if (error) {
@@ -830,30 +834,39 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         updateId,
         row: updatedRow ?? null,
       });
-      const { data: readback } = await (supabase as any)
-        .from('shifts')
-        .select('id,shift_date,start_time,end_time,user_id')
-        .eq('id', id)
-        .single();
-      console.log('SHIFT_SAVE', {
-        stage: 'readback',
-        updateId,
-        row: readback ?? null,
-      });
     }
 
-    const newShifts = state.shifts.map((s) => (s.id === id ? updatedShift : s));
+    // Build shift from DB response to get accurate pay_rate/pay_source from trigger
+    const finalShift: Shift = {
+      id: updatedRow.id,
+      employeeId: updatedRow.user_id,
+      restaurantId: updatedRow.organization_id,
+      date: updatedRow.shift_date,
+      startHour: parseTimeToDecimal(updatedRow.start_time),
+      endHour: parseTimeToDecimal(updatedRow.end_time),
+      notes: updatedRow.notes ?? undefined,
+      isBlocked: Boolean(updatedRow.is_blocked),
+      job: isValidJob(updatedRow.job) ? updatedRow.job : undefined,
+      locationId: updatedRow.location_id ?? null,
+      payRate: updatedRow.pay_rate != null ? Number(updatedRow.pay_rate) : undefined,
+      paySource: updatedRow.pay_source ?? undefined,
+    };
+
+    // Immutable update: create new array with the updated shift
+    const newShifts = state.shifts.map((s) => (s.id === id ? finalShift : s));
     set({ shifts: newShifts });
+
     if (DEBUG_SHIFT_SAVE) {
       console.log('SAVE LAYER', {
-        saved: { start: updatedShift.startHour, end: updatedShift.endHour },
+        saved: { start: finalShift.startHour, end: finalShift.endHour },
       });
-      const stored = newShifts.find((s) => s.id === id);
       console.log('SHIFT_SAVE', {
         stage: 'store',
         updateId,
-        startMin: stored ? stored.startHour * 60 : null,
-        endMin: stored ? stored.endHour * 60 : null,
+        startMin: finalShift.startHour * 60,
+        endMin: finalShift.endHour * 60,
+        payRate: finalShift.payRate,
+        paySource: finalShift.paySource,
       });
     }
     return { success: true };
