@@ -241,6 +241,7 @@ export async function POST(request: NextRequest) {
           jobs: jobsPayload,
           ...(safeHourlyPay === undefined ? {} : { hourly_pay: safeHourlyPay }),
           ...(payload.email !== undefined ? { email: payload.email } : {}),
+          ...(jobPayProvided ? { job_pay: sanitizedJobPay } : {}),
         })
         .eq('id', payload.userId);
       if (legacyResult.error) {

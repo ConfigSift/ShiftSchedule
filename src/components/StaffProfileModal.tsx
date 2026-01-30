@@ -96,6 +96,12 @@ export function StaffProfileModal({
     setModalError('');
     setBlockedJobs([]);
     setInitializedKey(userDataKey);
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('[StaffProfileModal] init user.jobPay', user.jobPay);
+      // eslint-disable-next-line no-console
+      console.log('[StaffProfileModal] init localJobPay', initialJobPay);
+    }
   }, [isOpen, user, initializedKey, userDataKey]);
 
   // Reset initializedKey when modal closes so next open re-initializes
@@ -295,6 +301,10 @@ export function StaffProfileModal({
       : 0;
 
     try {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[StaffProfileModal] save payload jobPay', jobPayNumeric);
+      }
       const result = await apiFetch('/api/admin/update-user', {
         method: 'POST',
         json: {
@@ -353,6 +363,10 @@ export function StaffProfileModal({
             jobPay: returnedUser.jobPay,
           }
         : undefined;
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[StaffProfileModal] response user.jobPay', returnedUser?.jobPay);
+      }
       await onSaved(updatedUser);
       onClose();
     } catch {
