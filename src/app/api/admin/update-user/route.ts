@@ -140,62 +140,70 @@ export async function POST(request: NextRequest) {
   const removedJobs = currentJobs.filter((job) => !normalizedJobs.includes(job));
 
   if (removedJobs.length > 0) {
-    for (const removedJob of removedJobs) {
-      const { data: futureShifts, error: shiftError } = await supabaseAdmin
+    const today = new Date().toISOString().split('T')[0];
+
+    // Query future shifts for ALL removed jobs at once
+    const { data: futureShifts, error: shiftError } = await supabaseAdmin
+      .from('shifts')
+      .select('id, shift_date, job')
+      .eq('user_id', payload.userId)
+      .gt('shift_date', today)
+      .in('job', removedJobs)
+      .order('shift_date', { ascending: true })
+      .limit(10);
+
+    if (!shiftError && futureShifts && futureShifts.length > 0) {
+      // Get total count
+      const { count } = await supabaseAdmin
         .from('shifts')
-        .select('id, shift_date, start_time')
+        .select('id', { count: 'exact', head: true })
         .eq('user_id', payload.userId)
-        .eq('job', removedJob)
-        .or(`shift_date.gt.${new Date().toISOString().split('T')[0]},and(shift_date.eq.${new Date().toISOString().split('T')[0]},start_time.gt.${new Date().toTimeString().slice(0, 8)})`)
-        .order('shift_date', { ascending: true })
-        .order('start_time', { ascending: true })
-        .limit(1);
+        .gt('shift_date', today)
+        .in('job', removedJobs);
 
-      if (!shiftError && futureShifts && futureShifts.length > 0) {
-        // Count total future shifts for this job
-        const { count } = await supabaseAdmin
-          .from('shifts')
-          .select('id', { count: 'exact', head: true })
-          .eq('user_id', payload.userId)
-          .eq('job', removedJob)
-          .or(`shift_date.gt.${new Date().toISOString().split('T')[0]},and(shift_date.eq.${new Date().toISOString().split('T')[0]},start_time.gt.${new Date().toTimeString().slice(0, 8)})`);
+      const jobsInUse = [...new Set(futureShifts.map((s) => s.job))];
+      const exampleDates = [...new Set(futureShifts.slice(0, 5).map((s) => s.shift_date))];
+      const earliestDate = futureShifts.reduce<string | null>((earliest, shift) => {
+        if (!shift.shift_date) return earliest;
+        if (!earliest || shift.shift_date < earliest) return shift.shift_date;
+        return earliest;
+      }, null);
 
-        return applySupabaseCookies(
-          NextResponse.json({
-            error: `Cannot remove "${removedJob}" - ${count ?? 1} future shift(s) use this job. Reassign or delete them first.`,
-            code: 'JOB_REMOVAL_BLOCKED',
-            job: removedJob,
-            count: count ?? 1,
-            earliest: {
-              shift_date: futureShifts[0].shift_date,
-              start_time: futureShifts[0].start_time,
-            },
-          }, { status: 400 }),
-          response
-        );
-      }
+      return applySupabaseCookies(
+        NextResponse.json({
+          error: `Cannot remove job(s): ${jobsInUse.join(', ')}. Employee is scheduled for ${count ?? futureShifts.length} future shift(s) with those job roles. Remove/reassign those shifts first.`,
+          code: 'JOB_IN_USE',
+          removedJobs: jobsInUse,
+          count: count ?? futureShifts.length,
+          exampleDates,
+          earliestDate,
+        }, { status: 400 }),
+        response
+      );
     }
   }
 
   const jobsPayload = serializeJobsForStorage(targetRow.jobs, normalizedJobs);
 
-  const hourlyPayValue = payload.hourlyPay ?? targetRow.hourly_pay ?? 0;
-
   // Sanitize jobPay: ensure it's a valid Record<string, number> with no NaN values
-  let sanitizedJobPay: Record<string, number> | undefined;
-  if (payload.jobPay && typeof payload.jobPay === 'object') {
-    sanitizedJobPay = {};
-    for (const [job, rate] of Object.entries(payload.jobPay)) {
+  let sanitizedJobPay: Record<string, number> = {};
+  const jobPayProvided = payload.jobPay !== undefined && payload.jobPay !== null && typeof payload.jobPay === 'object';
+  if (jobPayProvided) {
+    for (const [job, rate] of Object.entries(payload.jobPay as Record<string, number>)) {
       const numRate = Number(rate);
       if (Number.isFinite(numRate) && numRate >= 0) {
         sanitizedJobPay[job] = numRate;
       }
     }
-    // If all values were invalid, don't save
-    if (Object.keys(sanitizedJobPay).length === 0) {
-      sanitizedJobPay = undefined;
-    }
+  } else {
+    sanitizedJobPay = {};
   }
+  const payValues = Object.values(sanitizedJobPay);
+  const hourlyPayValue = jobPayProvided
+    ? (payValues.length > 0
+        ? Math.round((payValues.reduce((sum, v) => sum + v, 0) / payValues.length) * 100) / 100
+        : 0)
+    : payload.hourlyPay ?? targetRow.hourly_pay ?? 0;
 
   const baseUpdatePayload: Record<string, unknown> = {
     full_name: payload.fullName,
@@ -209,7 +217,7 @@ export async function POST(request: NextRequest) {
     baseUpdatePayload.email = payload.email;
   }
   // Store job_pay as JSONB (not stringified TEXT)
-  if (sanitizedJobPay !== undefined) {
+  if (jobPayProvided) {
     baseUpdatePayload.job_pay = sanitizedJobPay;
   }
 
@@ -274,5 +282,20 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return applySupabaseCookies(NextResponse.json({ success: true }), response);
+  // Fetch and return the updated user so client can update state immediately
+  const { data: updatedRow, error: fetchError } = await supabaseAdmin
+    .from('users')
+    .select('*')
+    .eq('id', payload.userId)
+    .single();
+
+  if (fetchError || !updatedRow) {
+    // Save succeeded but fetch failed - still return success
+    return applySupabaseCookies(NextResponse.json({ success: true }), response);
+  }
+
+  return applySupabaseCookies(
+    NextResponse.json({ success: true, user: normalizeUserRow(updatedRow) }),
+    response
+  );
 }

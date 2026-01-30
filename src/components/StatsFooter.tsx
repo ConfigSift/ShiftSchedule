@@ -112,9 +112,6 @@ export function StatsFooter() {
         if (shift.job && employee?.jobPay && employee.jobPay[shift.job] !== undefined) {
           rate = employee.jobPay[shift.job];
           foundRate = true;
-        } else if (employee?.hourlyPay !== undefined && employee.hourlyPay > 0) {
-          rate = employee.hourlyPay;
-          foundRate = true;
         } else if (employee?.jobPay && employee.jobs && employee.jobs.length > 0) {
           const firstJob = employee.jobs[0];
           if (employee.jobPay[firstJob] !== undefined) {

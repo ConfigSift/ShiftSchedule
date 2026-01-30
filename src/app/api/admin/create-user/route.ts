@@ -19,6 +19,7 @@ type CreatePayload = {
   passcode?: string;
   pinCode?: string;
   hourlyPay?: number;
+  jobPay?: Record<string, number>;
 };
 
 function isValidPasscode(passcode: string) {
@@ -112,7 +113,25 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(NextResponse.json({ error: 'Failed to create auth user.' }, { status: 500 }), response);
   }
 
-  const insertPayload = {
+  // Sanitize jobPay: ensure it's a valid Record<string, number> with no NaN values
+  const sanitizedJobPay: Record<string, number> = {};
+  const jobPayProvided = payload.jobPay !== undefined && payload.jobPay !== null && typeof payload.jobPay === 'object';
+  if (jobPayProvided) {
+    for (const [job, rate] of Object.entries(payload.jobPay as Record<string, number>)) {
+      const numRate = Number(rate);
+      if (Number.isFinite(numRate) && numRate >= 0) {
+        sanitizedJobPay[job] = numRate;
+      }
+    }
+  }
+  const payValues = Object.values(sanitizedJobPay);
+  const hourlyPayValue = jobPayProvided
+    ? (payValues.length > 0
+        ? Math.round((payValues.reduce((sum, v) => sum + v, 0) / payValues.length) * 100) / 100
+        : 0)
+    : payload.hourlyPay ?? 0;
+
+  const insertPayload: Record<string, unknown> = {
     auth_user_id: newAuthUserId,
     organization_id: payload.organizationId,
     full_name: payload.fullName,
@@ -121,8 +140,11 @@ export async function POST(request: NextRequest) {
     account_type: targetRole,
     jobs: normalizedJobs,
     pin_code: pinValue,
-    hourly_pay: payload.hourlyPay ?? 0,
+    hourly_pay: hourlyPayValue,
   };
+  if (jobPayProvided) {
+    insertPayload.job_pay = sanitizedJobPay;
+  }
 
   const insertResult = await supabaseAdmin.from('users').insert(insertPayload);
 
@@ -142,7 +164,7 @@ export async function POST(request: NextRequest) {
     }
     if (message.includes('full_name') || message.includes('account_type')) {
       const { firstName, lastName } = splitFullName(payload.fullName);
-      const legacyPayload = {
+      const legacyPayload: Record<string, unknown> = {
         auth_user_id: newAuthUserId,
         organization_id: payload.organizationId,
         first_name: firstName,
@@ -152,8 +174,11 @@ export async function POST(request: NextRequest) {
         role: targetRole,
         jobs: normalizedJobs,
         pin_code: pinValue,
-        hourly_pay: payload.hourlyPay ?? 0,
+        hourly_pay: hourlyPayValue,
       };
+      if (jobPayProvided) {
+        legacyPayload.job_pay = sanitizedJobPay;
+      }
       const legacyResult = await supabaseAdmin.from('users').insert(legacyPayload);
       if (legacyResult.error) {
         if (

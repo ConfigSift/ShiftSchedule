@@ -23,6 +23,7 @@ type ProfileUser = {
   accountType: string;
   jobs: string[];
   hourlyPay?: number;
+  jobPay?: Record<string, number>;
 };
 
 export default function StaffProfilePage() {
@@ -41,7 +42,7 @@ export default function StaffProfilePage() {
   const [phone, setPhone] = useState('');
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
-  const [hourlyPay, setHourlyPay] = useState('0');
+  const [jobPay, setJobPay] = useState<Record<string, string>>({});
   const [email, setEmail] = useState('');
   const [saving, setSaving] = useState(false);
   const [authBanner, setAuthBanner] = useState<string | null>(null);
@@ -113,6 +114,7 @@ export default function StaffProfilePage() {
       accountType: normalized.role,
       jobs: normalized.jobs,
       hourlyPay: normalized.hourlyPay,
+      jobPay: normalized.jobPay,
     };
 
     setUser(mapped);
@@ -120,7 +122,12 @@ export default function StaffProfilePage() {
     setPhone(mapped.phone);
     setAccountType(mapped.accountType);
     setJobs(mapped.jobs);
-    setHourlyPay(String(mapped.hourlyPay ?? 0));
+    const initialJobPay: Record<string, string> = {};
+    mapped.jobs.forEach((job) => {
+      const value = mapped.jobPay?.[job];
+      initialJobPay[job] = value !== undefined ? value.toFixed(2) : '';
+    });
+    setJobPay(initialJobPay);
     setEmail(mapped.email);
     setLoading(false);
   };
@@ -143,7 +150,18 @@ export default function StaffProfilePage() {
   const canEditProfile = isSelf || (isManager && (isAdmin || targetRole !== 'ADMIN'));
 
   const toggleJob = (job: string) => {
-    setJobs((prev) => (prev.includes(job) ? prev.filter((j) => j !== job) : [...prev, job]));
+    setJobs((prev) => {
+      if (prev.includes(job)) {
+        setJobPay((payPrev) => {
+          const updated = { ...payPrev };
+          delete updated[job];
+          return updated;
+        });
+        return prev.filter((j) => j !== job);
+      }
+      setJobPay((payPrev) => ({ ...payPrev, [job]: '' }));
+      return [...prev, job];
+    });
   };
 
   const handleSave = async () => {
@@ -180,6 +198,23 @@ export default function StaffProfilePage() {
         }
       }
 
+      const jobPayPayload: Record<string, number> = {};
+      for (const job of jobs) {
+        const rawValue = jobPay[job];
+        if (rawValue === undefined || rawValue === '') continue;
+        const parsed = parseFloat(rawValue);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          setError(`Invalid hourly pay for ${job}.`);
+          setSaving(false);
+          return;
+        }
+        jobPayPayload[job] = Math.round(parsed * 100) / 100;
+      }
+      const payValues = Object.values(jobPayPayload);
+      const avgHourlyPay = payValues.length > 0
+        ? Math.round((payValues.reduce((sum, v) => sum + v, 0) / payValues.length) * 100) / 100
+        : 0;
+
       const result = await apiFetch('/api/admin/update-user', {
         method: 'POST',
         json: {
@@ -189,7 +224,8 @@ export default function StaffProfilePage() {
           phone: phone.trim() || '',
           accountType: canEditAccountType ? accountType : undefined,
           jobs: canEditJobs ? jobs : user.jobs,
-          hourlyPay: canEditJobs ? Number(hourlyPay || 0) : user.hourlyPay,
+          hourlyPay: canEditJobs ? avgHourlyPay : user.hourlyPay,
+          jobPay: canEditJobs ? jobPayPayload : user.jobPay,
         },
       });
 
@@ -394,24 +430,6 @@ export default function StaffProfilePage() {
           {isManager && (
             <>
               <div>
-                <label className="text-sm text-theme-secondary">Hourly Pay</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={hourlyPay}
-                  onChange={(e) => setHourlyPay(e.target.value)}
-                  disabled={!canEditJobs}
-                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
-                />
-                {!canEditJobs && (
-                  <p className="text-xs text-theme-muted mt-2">
-                    Hourly pay can only be edited by managers or admins.
-                  </p>
-                )}
-              </div>
-
-              <div>
                 <label className="text-sm text-theme-secondary">Jobs</label>
                 <div className="grid grid-cols-2 gap-2 mt-2">
                   {JOB_OPTIONS.map((job) => (
@@ -438,6 +456,34 @@ export default function StaffProfilePage() {
                   <p className="text-xs text-theme-muted mt-2">Jobs can only be edited by managers or admins.</p>
                 )}
               </div>
+              {jobs.length > 0 && (
+                <div>
+                  <label className="text-sm text-theme-secondary">Hourly Pay by Job</label>
+                  <div className="mt-2 space-y-2">
+                    {jobs.map((job) => (
+                      <div key={job} className="flex items-center gap-2">
+                        <label className="text-xs text-theme-secondary w-32 shrink-0 truncate" title={job}>
+                          {job}
+                        </label>
+                        <div className="flex-1 flex items-center gap-1">
+                          <span className="text-xs text-theme-muted">$</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={jobPay[job] ?? ''}
+                            onChange={(e) => setJobPay((prev) => ({ ...prev, [job]: e.target.value }))}
+                            disabled={!canEditJobs}
+                            placeholder="0.00"
+                            className="flex-1 px-2 py-1.5 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary text-sm disabled:opacity-60"
+                          />
+                          <span className="text-xs text-theme-muted">/hr</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
 

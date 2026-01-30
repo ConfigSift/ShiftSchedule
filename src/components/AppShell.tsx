@@ -38,6 +38,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
         accountType: currentUser.role,
         jobs: currentUser.jobs || [],
         hourlyPay: currentUser.hourlyPay,
+        jobPay: currentUser.jobPay,
       }
     : null;
 

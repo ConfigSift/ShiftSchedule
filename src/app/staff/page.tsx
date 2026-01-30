@@ -33,7 +33,7 @@ const EMPTY_FORM = {
   accountType: 'EMPLOYEE',
   jobs: [] as string[],
   passcode: '',
-  hourlyPay: '0',
+  jobPay: {} as Record<string, string>,
 };
 
 export default function StaffPage() {
@@ -182,6 +182,23 @@ export default function StaffPage() {
     setProfileMode(null);
   };
 
+  // Handle profile save: update users array with returned user
+  const handleProfileSaved = async (updatedUser?: OrgUser) => {
+    if (updatedUser) {
+      // Immediately update the users array with the returned user
+      setUsers((prev) =>
+        prev.map((u) => (u.id === updatedUser.id ? updatedUser : u))
+      );
+      // Also update profileUser so if modal re-renders before close, it has fresh data
+      setProfileUser(updatedUser);
+      // Don't call loadUsers() here - we already have fresh data from API
+      // Calling loadUsers() could overwrite with stale data due to replication lag
+    } else {
+      // Only refetch if we didn't get updated user from API
+      await loadUsers();
+    }
+  };
+
   const handleAuthExpired = (message: string) => {
     setAuthBanner(message);
     showToast(message, 'error');
@@ -189,10 +206,17 @@ export default function StaffPage() {
   };
 
   const toggleJob = (job: string) => {
-    setFormState((prev) => ({
-      ...prev,
-      jobs: prev.jobs.includes(job) ? prev.jobs.filter((j) => j !== job) : [...prev.jobs, job],
-    }));
+    setFormState((prev) => {
+      const isSelected = prev.jobs.includes(job);
+      const nextJobs = isSelected ? prev.jobs.filter((j) => j !== job) : [...prev.jobs, job];
+      const nextJobPay = { ...prev.jobPay };
+      if (isSelected) {
+        delete nextJobPay[job];
+      } else {
+        nextJobPay[job] = '';
+      }
+      return { ...prev, jobs: nextJobs, jobPay: nextJobPay };
+    });
   };
 
   const handleSave = async () => {
@@ -224,6 +248,22 @@ export default function StaffPage() {
       return;
     }
 
+    const jobPayPayload: Record<string, number> = {};
+    for (const job of formState.jobs) {
+      const rawValue = formState.jobPay[job];
+      if (rawValue === undefined || rawValue === '') continue;
+      const parsed = parseFloat(rawValue);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setError(`Invalid hourly pay for ${job}.`);
+        return;
+      }
+      jobPayPayload[job] = Math.round(parsed * 100) / 100;
+    }
+    const payValues = Object.values(jobPayPayload);
+    const avgHourlyPay = payValues.length > 0
+      ? Math.round((payValues.reduce((sum, v) => sum + v, 0) / payValues.length) * 100) / 100
+      : 0;
+
     setSubmitting(true);
 
     try {
@@ -237,7 +277,8 @@ export default function StaffPage() {
           accountType: formState.accountType,
           jobs: formState.jobs,
           pinCode: formState.passcode,
-          hourlyPay: Number(formState.hourlyPay || 0),
+          hourlyPay: avgHourlyPay,
+          jobPay: jobPayPayload,
         },
       });
 
@@ -479,7 +520,6 @@ export default function StaffPage() {
                       <p className="text-xs text-theme-muted mt-1">
                         {user.accountType}
                         {user.jobs.length > 0 ? ` · ${user.jobs.join(', ')}` : ''}
-                        {typeof user.hourlyPay === 'number' ? ` · $${user.hourlyPay.toFixed(2)}/hr` : ''}
                       </p>
                     </div>
                     {isManager && (
@@ -557,17 +597,6 @@ export default function StaffPage() {
                 />
               </div>
               <div>
-                <label className="text-sm text-theme-secondary">Hourly Pay</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={formState.hourlyPay}
-                  onChange={(e) => setFormState((prev) => ({ ...prev, hourlyPay: e.target.value }))}
-                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
-                />
-              </div>
-              <div>
                 <label className="text-sm text-theme-secondary">Account type</label>
                 <select
                   value={formState.accountType}
@@ -600,6 +629,38 @@ export default function StaffPage() {
                   Managers and employees must have at least one job.
                 </p>
               </div>
+              {formState.jobs.length > 0 && (
+                <div>
+                  <label className="text-sm text-theme-secondary">Hourly Pay by Job</label>
+                  <div className="mt-2 space-y-2">
+                    {formState.jobs.map((job) => (
+                      <div key={job} className="flex items-center gap-2">
+                        <label className="text-xs text-theme-secondary w-32 shrink-0 truncate" title={job}>
+                          {job}
+                        </label>
+                        <div className="flex-1 flex items-center gap-1">
+                          <span className="text-xs text-theme-muted">$</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={formState.jobPay[job] ?? ''}
+                            onChange={(e) =>
+                              setFormState((prev) => ({
+                                ...prev,
+                                jobPay: { ...prev.jobPay, [job]: e.target.value },
+                              }))
+                            }
+                            placeholder="0.00"
+                            className="flex-1 px-2 py-1.5 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary text-sm"
+                          />
+                          <span className="text-xs text-theme-muted">/hr</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="text-sm text-theme-secondary">PIN (6 digits)</label>
                 <input
@@ -648,7 +709,7 @@ export default function StaffPage() {
         organizationId={activeRestaurantId}
         currentAuthUserId={currentUser?.authUserId ?? null}
         onClose={closeProfile}
-        onSaved={loadUsers}
+        onSaved={handleProfileSaved}
         onError={setError}
         onAuthError={handleAuthExpired}
       />

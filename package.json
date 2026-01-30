@@ -5,8 +5,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:ci": "npm run typecheck && next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "seed:admin": "tsx scripts/seed-admin.ts",
     "seed:restaurant": "tsx scripts/seed-restaurant.ts",
     "seed:initial-admin": "tsx scripts/seed-initial-admin.ts",

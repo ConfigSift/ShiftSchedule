@@ -6,6 +6,7 @@ import { JOB_OPTIONS } from '../types';
 import { normalizeJobs } from '../utils/jobs';
 import { getUserRole } from '../utils/role';
 import { apiFetch } from '../lib/apiClient';
+import { supabase } from '../lib/supabase/client';
 
 type StaffProfileUser = {
   id: string;
@@ -28,7 +29,7 @@ type StaffProfileModalProps = {
   organizationId: string;
   currentAuthUserId?: string | null;
   onClose: () => void;
-  onSaved: () => Promise<void>;
+  onSaved: (updatedUser?: StaffProfileUser) => Promise<void>;
   onError: (message: string) => void;
   onAuthError?: (message: string) => void;
 };
@@ -53,34 +54,97 @@ export function StaffProfileModal({
   const [phone, setPhone] = useState('');
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
-  const [hourlyPay, setHourlyPay] = useState('0');
   const [jobPay, setJobPay] = useState<Record<string, string>>({});
   const [jobPayErrors, setJobPayErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [modalError, setModalError] = useState('');
+  const [blockedJobs, setBlockedJobs] = useState<string[]>([]);
+  const [initializedKey, setInitializedKey] = useState<string | null>(null);
+  const [workedRoles, setWorkedRoles] = useState<Array<{ job: string; lastDate: string }>>([]);
+  const [workedRolesLoading, setWorkedRolesLoading] = useState(false);
+
+  // Create a stable key that changes when user ID or jobPay data changes
+  // This ensures re-initialization when saved data differs from local state
+  const userDataKey = user ? `${user.id}:${JSON.stringify(user.jobPay ?? {})}:${(user.jobs ?? []).join(',')}` : null;
+
+  // Initialize state only when modal opens OR user data changes
+  useEffect(() => {
+    if (!isOpen || !user) return;
+    // Skip if already initialized for this exact user data
+    if (initializedKey === userDataKey) return;
+
+    setFullName(user.fullName);
+    setEmail(user.email || '');
+    setEmailError('');
+    setPhone(user.phone || '');
+    setAccountType(getUserRole(user.accountType));
+    const normalizedJobs = normalizeJobs(user.jobs);
+    setJobs(normalizedJobs);
+
+    // Initialize per-job pay with 2 decimal formatting.
+    // Only use existing job_pay values; do not create keys for missing jobs.
+    const existingJobPay = user.jobPay ?? {};
+    const initialJobPay: Record<string, string> = {};
+    normalizedJobs.forEach((job) => {
+      const payValue = existingJobPay[job];
+      if (payValue !== undefined) {
+        initialJobPay[job] = payValue.toFixed(2);
+      }
+    });
+    setJobPay(initialJobPay);
+    setJobPayErrors({});
+    setModalError('');
+    setBlockedJobs([]);
+    setInitializedKey(userDataKey);
+  }, [isOpen, user, initializedKey, userDataKey]);
+
+  // Reset initializedKey when modal closes so next open re-initializes
+  useEffect(() => {
+    if (!isOpen) {
+      setInitializedKey(null);
+    }
+  }, [isOpen]);
 
   useEffect(() => {
-    if (isOpen && user) {
-      setFullName(user.fullName);
-      setEmail(user.email || '');
-      setEmailError('');
-      setPhone(user.phone || '');
-      setAccountType(getUserRole(user.accountType));
-      const normalizedJobs = normalizeJobs(user.jobs);
-      setJobs(normalizedJobs);
-      setHourlyPay(String(user.hourlyPay ?? 0));
-
-      // Initialize per-job pay: use existing jobPay if available, otherwise use legacy hourlyPay as default
-      const defaultPay = String(user.hourlyPay ?? 0);
-      const existingJobPay = user.jobPay ?? {};
-      const initialJobPay: Record<string, string> = {};
-      normalizedJobs.forEach((job) => {
-        initialJobPay[job] = existingJobPay[job] !== undefined
-          ? String(existingJobPay[job])
-          : defaultPay;
+    if (!isOpen || !user) return;
+    let isActive = true;
+    const fetchWorkedRoles = async () => {
+      setWorkedRolesLoading(true);
+      const cutoff = new Date();
+      cutoff.setMonth(cutoff.getMonth() - 12);
+      const cutoffDate = cutoff.toISOString().split('T')[0];
+      const { data, error } = await supabase
+        .from('shifts')
+        .select('job, shift_date')
+        .eq('user_id', user.id)
+        .not('job', 'is', null)
+        .gte('shift_date', cutoffDate)
+        .order('shift_date', { ascending: false })
+        .limit(500);
+      if (!isActive) return;
+      if (error || !data) {
+        setWorkedRoles([]);
+        setWorkedRolesLoading(false);
+        return;
+      }
+      const lastByJob = new Map<string, string>();
+      (data as Array<{ job: string | null; shift_date: string }>).forEach((row) => {
+        if (!row.job) return;
+        const current = lastByJob.get(row.job);
+        if (!current || row.shift_date > current) {
+          lastByJob.set(row.job, row.shift_date);
+        }
       });
-      setJobPay(initialJobPay);
-      setJobPayErrors({});
-    }
+      const roles = Array.from(lastByJob.entries())
+        .map(([job, lastDate]) => ({ job, lastDate }))
+        .sort((a, b) => (a.lastDate < b.lastDate ? 1 : -1));
+      setWorkedRoles(roles);
+      setWorkedRolesLoading(false);
+    };
+    fetchWorkedRoles();
+    return () => {
+      isActive = false;
+    };
   }, [isOpen, user]);
 
   if (!isOpen || !user) return null;
@@ -122,9 +186,11 @@ export function StaffProfileModal({
   };
 
   const toggleJob = (job: string) => {
+    setModalError(''); // Clear error on job change
+    setBlockedJobs([]); // Clear blocked jobs indicator
     setJobs((prev) => {
       if (prev.includes(job)) {
-        // Remove job
+        // Remove job and drop its local pay entry
         setJobPay((payPrev) => {
           const updated = { ...payPrev };
           delete updated[job];
@@ -137,10 +203,10 @@ export function StaffProfileModal({
         });
         return prev.filter((j) => j !== job);
       } else {
-        // Add job - use legacy hourlyPay as default or 0
+        // Add job - default to blank (not hourlyPay)
         setJobPay((payPrev) => ({
           ...payPrev,
-          [job]: hourlyPay || '0',
+          ...(payPrev[job] === undefined ? { [job]: '' } : {}),
         }));
         return [...prev, job];
       }
@@ -149,7 +215,8 @@ export function StaffProfileModal({
 
   const updateJobPay = (job: string, value: string) => {
     setJobPay((prev) => ({ ...prev, [job]: value }));
-    // Clear error when user types
+    setModalError(''); // Clear modal error on edit
+    // Clear field error when user types
     if (jobPayErrors[job]) {
       setJobPayErrors((prev) => {
         const updated = { ...prev };
@@ -159,15 +226,23 @@ export function StaffProfileModal({
     }
   };
 
+  // Normalize pay to 2 decimals on blur
+  const handleJobPayBlur = (job: string) => {
+    const value = jobPay[job];
+    if (value === undefined || value === '') return;
+    const num = parseFloat(value);
+    if (!isNaN(num) && num >= 0) {
+      setJobPay((prev) => ({ ...prev, [job]: num.toFixed(2) }));
+    }
+  };
+
   const validateJobPay = (): boolean => {
     const errors: Record<string, string> = {};
     let isValid = true;
     jobs.forEach((job) => {
       const value = jobPay[job];
-      if (value === undefined || value === '') {
-        errors[job] = 'Required';
-        isValid = false;
-      } else {
+      // Blank is allowed (omitted on save); only validate if user entered something
+      if (value !== undefined && value !== '') {
         const num = parseFloat(value);
         if (isNaN(num) || num < 0) {
           errors[job] = 'Invalid';
@@ -200,16 +275,24 @@ export function StaffProfileModal({
     }
     setSubmitting(true);
 
-    // Convert jobPay strings to numbers
+    // Convert jobPay strings to numbers, rounded to 2 decimals (omit blanks)
     const jobPayNumeric: Record<string, number> = {};
     jobs.forEach((job) => {
-      jobPayNumeric[job] = parseFloat(jobPay[job] || '0') || 0;
+      const rawValue = jobPay[job];
+      if (rawValue === undefined) return;
+      const trimmed = rawValue.trim();
+      if (trimmed === '') return;
+      const parsed = parseFloat(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 0) return;
+      const value = Math.round(parsed * 100) / 100;
+      jobPayNumeric[job] = value;
     });
 
-    // Calculate average for legacy hourlyPay field (backwards compatibility)
-    const avgHourlyPay = jobs.length > 0
-      ? Object.values(jobPayNumeric).reduce((sum, v) => sum + v, 0) / jobs.length
-      : Number(hourlyPay || 0);
+    // Calculate average for legacy hourlyPay field (backwards compatibility), rounded to 2 decimals
+    const payValues = Object.values(jobPayNumeric);
+    const avgHourlyPay = payValues.length > 0
+      ? Math.round((payValues.reduce((sum, v) => sum + v, 0) / payValues.length) * 100) / 100
+      : 0;
 
     try {
       const result = await apiFetch('/api/admin/update-user', {
@@ -234,16 +317,43 @@ export function StaffProfileModal({
         } else if (result.status === 403) {
           const message = 'You dont have permission for that action.';
           onError(message);
-        } else if (result.code === 'JOB_REMOVAL_BLOCKED') {
-          // Job removal blocked due to future shifts - show clear error and keep form state
-          onError(result.error || 'Cannot remove job with future shifts.');
+        } else if (result.code === 'JOB_IN_USE' || result.code === 'JOB_REMOVAL_BLOCKED') {
+          // Show job removal error inside modal and highlight blocked jobs
+          const payload = (result.data as any) ?? {};
+          const details: string[] = [];
+          if (payload.count) details.push(`${payload.count} future shift(s)`);
+          if (payload.earliestDate) details.push(`earliest ${payload.earliestDate}`);
+          if (Array.isArray(payload.exampleDates) && payload.exampleDates.length > 0) {
+            details.push(`e.g. ${payload.exampleDates.join(', ')}`);
+          }
+          const detailText = details.length > 0 ? ` (${details.join(' - ')})` : '';
+          setModalError((result.error || 'Cannot remove job with future shifts.') + detailText);
+          const blocked = payload.removedJobs ?? [];
+          setBlockedJobs(Array.isArray(blocked) ? blocked : []);
+        } else if (result.code === 'EMAIL_TAKEN') {
+          // Show email error inside modal
+          setModalError(result.error || 'This email is already in use.');
         } else {
           onError(result.error || 'Unable to update profile.');
         }
         setSubmitting(false);
         return;
       }
-      await onSaved();
+      // Extract updated user from API response if available
+      const returnedUser = (result.data as any)?.user;
+      const updatedUser: StaffProfileUser | undefined = returnedUser
+        ? {
+            id: returnedUser.id,
+            authUserId: returnedUser.authUserId ?? null,
+            fullName: returnedUser.fullName || '',
+            email: returnedUser.email || '',
+            phone: returnedUser.phone || '',
+            accountType: returnedUser.role,
+            jobs: returnedUser.jobs || [],
+            jobPay: returnedUser.jobPay,
+          }
+        : undefined;
+      await onSaved(updatedUser);
       onClose();
     } catch {
       onError('Request failed. Please try again.');
@@ -252,9 +362,27 @@ export function StaffProfileModal({
     }
   };
 
+  // Compute average hourly pay from jobPay state (ignores blank/undefined values)
+  const computedAvgPay = (() => {
+    const values = Object.values(jobPay)
+      .map((v) => parseFloat(v))
+      .filter((n) => Number.isFinite(n) && n >= 0);
+    if (values.length === 0) return null;
+    const avg = values.reduce((sum, v) => sum + v, 0) / values.length;
+    return Math.round(avg * 100) / 100;
+  })();
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Staff Profile" size="lg">
       <div className="space-y-4">
+        {/* Average pay summary (read-only) */}
+        {showAdminFields && computedAvgPay !== null && (
+          <div className="flex items-center justify-between p-3 bg-theme-tertiary rounded-lg">
+            <span className="text-sm text-theme-secondary">Avg hourly pay</span>
+            <span className="text-sm font-semibold text-theme-primary">${computedAvgPay.toFixed(2)}/hr</span>
+          </div>
+        )}
+
         <div>
           <label className="text-sm text-theme-secondary">Full name</label>
           <input
@@ -316,18 +444,45 @@ export function StaffProfileModal({
           <div>
             <label className="text-sm text-theme-secondary">Jobs</label>
             <div className="grid grid-cols-2 gap-2 mt-2">
-              {JOB_OPTIONS.map((job) => (
-                <label key={job} className="flex items-center gap-2 text-xs text-theme-secondary">
-                  <input
-                    type="checkbox"
-                    checked={jobs.includes(job)}
-                    onChange={() => toggleJob(job)}
-                    disabled={!canEdit}
-                    className="accent-amber-500"
-                  />
-                  {job}
-                </label>
-              ))}
+              {JOB_OPTIONS.map((job) => {
+                const isBlocked = blockedJobs.includes(job);
+                const isSelected = jobs.includes(job);
+                return (
+                  <div
+                    key={job}
+                    className={`flex items-center gap-2 text-xs ${isBlocked ? 'text-red-400' : 'text-theme-secondary'}`}
+                  >
+                    <label className="flex items-center gap-2 flex-1 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleJob(job)}
+                        disabled={!canEdit}
+                        className="accent-amber-500"
+                      />
+                      <span className="truncate">{job}</span>
+                      {isBlocked && <span className="text-[10px] text-red-400">(in use)</span>}
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-theme-muted">$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={isSelected ? (jobPay[job] ?? '') : ''}
+                        onChange={(e) => updateJobPay(job, e.target.value)}
+                        onBlur={() => handleJobPayBlur(job)}
+                        disabled={!canEdit || !isSelected}
+                        placeholder="0.00"
+                        className={`w-20 px-2 py-1 bg-theme-tertiary border rounded-md text-theme-primary text-[11px] disabled:opacity-50 disabled:cursor-not-allowed ${
+                          jobPayErrors[job] ? 'border-red-500' : 'border-theme-primary'
+                        }`}
+                      />
+                      <span className="text-[10px] text-theme-muted">/hr</span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
             {requiresJobs && jobs.length === 0 && (
               <p className="text-xs text-red-400 mt-1">Assign at least one job.</p>
@@ -335,55 +490,32 @@ export function StaffProfileModal({
           </div>
         )}
 
-        {/* Per-Job Hourly Pay */}
-        {showAdminFields && jobs.length > 0 && (
+        {showAdminFields && (
           <div>
-            <label className="text-sm text-theme-secondary">Hourly Pay by Job</label>
-            <div className="mt-2 space-y-2">
-              {jobs.map((job) => (
-                <div key={job} className="flex items-center gap-2">
-                  <label className="text-xs text-theme-secondary w-32 shrink-0 truncate" title={job}>
-                    {job}
-                  </label>
-                  <div className="flex-1 flex items-center gap-1">
-                    <span className="text-xs text-theme-muted">$</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={jobPay[job] ?? ''}
-                      onChange={(e) => updateJobPay(job, e.target.value)}
-                      disabled={!canEdit}
-                      placeholder="0.00"
-                      className={`flex-1 px-2 py-1.5 bg-theme-tertiary border rounded-lg text-theme-primary text-sm disabled:opacity-60 ${
-                        jobPayErrors[job] ? 'border-red-500' : 'border-theme-primary'
-                      }`}
-                    />
-                    <span className="text-xs text-theme-muted">/hr</span>
-                  </div>
-                  {jobPayErrors[job] && (
-                    <span className="text-xs text-red-400">{jobPayErrors[job]}</span>
-                  )}
-                </div>
-              ))}
+            <label className="text-sm text-theme-secondary">Previously worked roles (last 12 months)</label>
+            <div className="mt-2 rounded-lg border border-theme-primary bg-theme-tertiary/40 px-3 py-2">
+              {workedRolesLoading ? (
+                <p className="text-xs text-theme-muted">Loading roles...</p>
+              ) : workedRoles.length === 0 ? (
+                <p className="text-xs text-theme-muted">No historical roles found.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {workedRoles.map((role) => (
+                    <li key={role.job} className="flex items-center justify-between text-xs text-theme-secondary">
+                      <span className="truncate">{role.job}</span>
+                      <span className="text-theme-muted">{role.lastDate}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         )}
 
-        {/* Legacy Hourly Pay field - shown only when no jobs selected */}
-        {showAdminFields && jobs.length === 0 && (
-          <div>
-            <label className="text-sm text-theme-secondary">Default Hourly Pay</label>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={hourlyPay}
-              onChange={(e) => setHourlyPay(e.target.value)}
-              disabled={!canEdit}
-              className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
-            />
-            <p className="text-xs text-theme-muted mt-1">This will be used as the default when jobs are selected.</p>
+        {/* Modal-local error banner */}
+        {modalError && (
+          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <p className="text-sm text-red-400">{modalError}</p>
           </div>
         )}
 

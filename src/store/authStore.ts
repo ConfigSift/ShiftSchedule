@@ -69,6 +69,7 @@ async function fetchUserProfiles(authUserId: string) {
       role: normalized.role,
       jobs: normalized.jobs,
       hourlyPay: normalized.hourlyPay,
+      jobPay: normalized.jobPay,
     };
   });
 
