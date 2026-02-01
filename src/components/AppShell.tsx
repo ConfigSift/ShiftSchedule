@@ -21,6 +21,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
   const pathname = usePathname();
   const isStandalonePage = pathname === '/login' || pathname === '/setup';
   const isChatPage = pathname === '/chat';
+  const isDashboardPage = pathname === '/dashboard';
 
   const { currentUser, activeRestaurantId, refreshProfile } = useAuthStore();
   const { showToast } = useScheduleStore();
@@ -77,20 +78,22 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
   return (
     <div
       className={`min-h-[100dvh] bg-theme-primary text-theme-primary transition-theme flex flex-col ${
-        isChatPage ? 'h-[100dvh] overflow-hidden' : ''
+        isChatPage || isDashboardPage ? 'h-[100dvh] overflow-hidden' : ''
       }`}
       data-chat-shell={isChatPage ? 'true' : undefined}
     >
       <Header />
       {/* Main content area - accounts for fixed header and footer */}
       <div
-        className={`flex-1 min-h-0 pt-14 sm:pt-16 ${showFooter ? 'pb-12 sm:pb-14' : ''} bg-theme-timeline ${
-          isChatPage ? 'overflow-hidden' : ''
+        className={`flex-1 min-h-0 pt-14 sm:pt-16 ${showFooter ? 'pb-12 sm:pb-14' : ''} bg-theme-timeline flex flex-col ${
+          isChatPage || isDashboardPage ? 'overflow-hidden' : ''
         }`}
         data-chat-content={isChatPage ? 'true' : undefined}
       >
         <div
-          className={`h-full bg-theme-timeline ${isChatPage ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
+          className={`flex-1 min-h-0 bg-theme-timeline ${
+            isChatPage || isDashboardPage ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
+          }`}
         >
           {children}
         </div>

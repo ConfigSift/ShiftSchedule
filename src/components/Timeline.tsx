@@ -102,12 +102,14 @@ export function Timeline() {
     getEffectiveHourRange,
     viewMode,
     setViewMode,
+    workingTodayOnly,
   } = useScheduleStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const timelineRef = useRef<HTMLDivElement>(null);
   const gridScrollRef = useRef<HTMLDivElement>(null);
-  const namesScrollRef = useRef<HTMLDivElement>(null);
+  const headerScrollRef = useRef<HTMLDivElement>(null);
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const isSyncingScrollRef = useRef(false);
   const [isSliding, setIsSliding] = useState(false);
   const [slideDirection, setSlideDirection] = useState<'prev' | 'next' | null>(null);
   const [tooltip, setTooltip] = useState<{
@@ -588,19 +590,28 @@ export function Timeline() {
   // Shift interaction helpers
   // ─────────────────────────────────────────────────────────────────
   const getSingleDayXInGridPx = useCallback((clientX: number) => {
-    if (!timelineRef.current) return null;
-    const rect = timelineRef.current.getBoundingClientRect();
-    const xInGrid = clientX - rect.left;
-    return { rect, xInGrid };
+    if (!gridScrollRef.current) return null;
+    const el = gridScrollRef.current;
+    const rect = el.getBoundingClientRect();
+    const xInGrid = clientX - rect.left + el.scrollLeft;
+    return { rect, xInGrid, scrollWidth: el.scrollWidth };
   }, []);
 
   const getHourFromClientX = useCallback((clientX: number): number => {
     const metrics = getSingleDayXInGridPx(clientX);
     if (!metrics) return HOURS_START;
-    const percentage = metrics.xInGrid / metrics.rect.width;
+    const percentage = metrics.xInGrid / (metrics.scrollWidth || metrics.rect.width);
     const hour = HOURS_START + percentage * TOTAL_HOURS;
     return Math.max(HOURS_START, Math.min(HOURS_END, Math.round(hour * 4) / 4));
   }, [HOURS_START, HOURS_END, TOTAL_HOURS, getSingleDayXInGridPx]);
+
+  const getSnappedStartHourFromClientX = useCallback((clientX: number): number | null => {
+    const metrics = getSingleDayXInGridPx(clientX);
+    if (!metrics) return null;
+    const hourIndex = Math.floor(metrics.xInGrid / PX_PER_HOUR);
+    const clampedIndex = Math.max(0, Math.min(TOTAL_HOURS - 1, hourIndex));
+    return HOURS_START + clampedIndex;
+  }, [HOURS_START, TOTAL_HOURS, getSingleDayXInGridPx]);
 
   // Absolute grid mapping for move/resize - use full scroll width, not view hours.
   const getDayMinutesFromClientX = useCallback((clientX: number): number => {
@@ -784,8 +795,11 @@ export function Timeline() {
       setHoveredAddSlot(null);
       return;
     }
-    const hoveredHour = getHourFromClientX(clientX);
-    const startHour = getCenteredStartHour(hoveredHour, businessHoursForDay.openHour, businessHoursForDay.closeHour);
+    const startHour = getSnappedStartHourFromClientX(clientX);
+    if (startHour === null) {
+      setHoveredAddSlot(null);
+      return;
+    }
     const inside = startHour >= businessHoursForDay.openHour && startHour + 1 <= businessHoursForDay.closeHour;
     if (!inside) {
       setHoveredAddSlot(null);
@@ -802,8 +816,8 @@ export function Timeline() {
     continuousDays,
     getContinuousHourInfoFromClientX,
     getBusinessHoursForDate,
-    getCenteredStartHour,
     getHourFromClientX,
+    getSnappedStartHourFromClientX,
     businessHoursForDay,
     dateString,
     windowStartDate,
@@ -1379,17 +1393,29 @@ export function Timeline() {
 
   // Scroll handler
   const handleGridScroll = useCallback(() => {
-    if (namesScrollRef.current && gridScrollRef.current) {
-      namesScrollRef.current.scrollTop = gridScrollRef.current.scrollTop;
+    if (headerScrollRef.current && gridScrollRef.current) {
+      if (!isSyncingScrollRef.current) {
+        isSyncingScrollRef.current = true;
+        headerScrollRef.current.scrollLeft = gridScrollRef.current.scrollLeft;
+        requestAnimationFrame(() => {
+          isSyncingScrollRef.current = false;
+        });
+      }
     }
     if (continuousDays) {
       updateDisplayedDateFromScroll();
     }
   }, [continuousDays, updateDisplayedDateFromScroll]);
 
-  const handleNamesScroll = useCallback(() => {
-    if (namesScrollRef.current && gridScrollRef.current) {
-      gridScrollRef.current.scrollTop = namesScrollRef.current.scrollTop;
+  const handleHeaderScroll = useCallback(() => {
+    if (headerScrollRef.current && gridScrollRef.current) {
+      if (!isSyncingScrollRef.current) {
+        isSyncingScrollRef.current = true;
+        gridScrollRef.current.scrollLeft = headerScrollRef.current.scrollLeft;
+        requestAnimationFrame(() => {
+          isSyncingScrollRef.current = false;
+        });
+      }
     }
   }, []);
 
@@ -1546,11 +1572,14 @@ export function Timeline() {
   const showEveryOtherLabel = PX_PER_HOUR < 40;
 
   // ─────────────────────────────────────────────────────────────────
+  // DEBUG: DOM Probe for scroll container identification
+  // ─────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────
   // Render: Single-day mode
   // ─────────────────────────────────────────────────────────────────
-  const renderSingleDayGrid = () => (
+  const renderSingleDayHeader = () => (
     <div
-      className={`flex flex-col h-max min-h-full transition-transform transition-opacity duration-200 ${
+      className={`flex h-8 border-b border-theme-primary ${
         isSliding
           ? slideDirection === 'next'
             ? '-translate-x-2 opacity-90'
@@ -1559,32 +1588,47 @@ export function Timeline() {
       }`}
       style={{ width: `${singleDayGridWidth}px`, minWidth: `${singleDayGridWidth}px` }}
     >
-      {/* Hour Headers */}
-      <div className="h-8 border-b border-theme-primary flex shrink-0 sticky top-0 bg-theme-timeline z-10">
-        {singleDayHours.map((hour, idx) => (
-          <div
-            key={hour}
-            className="border-r border-theme-primary/50 flex items-center justify-center"
-            style={{ width: `${PX_PER_HOUR}px`, minWidth: `${PX_PER_HOUR}px` }}
-          >
-            {(!showEveryOtherLabel || idx % 2 === 0) && (
-              <span className={`text-[10px] font-medium ${
-                hour % 2 === 0 ? 'text-theme-tertiary' : 'text-theme-muted'
-              }`}>
-                {formatHourShort(hour)}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
+      {singleDayHours.map((hour, idx) => (
+        <div
+          key={hour}
+          className="border-r border-theme-primary/50 flex items-center justify-center"
+          style={{ width: `${PX_PER_HOUR}px`, minWidth: `${PX_PER_HOUR}px` }}
+        >
+          {(!showEveryOtherLabel || idx % 2 === 0) && (
+            <span className={`text-[10px] font-medium ${
+              hour % 2 === 0 ? 'text-theme-tertiary' : 'text-theme-muted'
+            }`}>
+              {formatHourShort(hour)}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 
-      {/* Timeline Grid Rows */}
-      <div className="flex-1">
+  const renderSingleDayRows = () => (
+    <div
+      className={`transition-transform transition-opacity duration-200 ${
+        isSliding
+          ? slideDirection === 'next'
+            ? '-translate-x-2 opacity-90'
+            : 'translate-x-2 opacity-90'
+          : 'translate-x-0 opacity-100'
+      }`}
+      style={{ width: `${singleDayGridWidth}px`, minWidth: `${singleDayGridWidth}px` }}
+    >
+      <div>
         {filteredEmployees.length === 0 ? (
           <div className="flex items-center justify-center h-full text-theme-muted">
             <div className="text-center">
-              <p className="text-sm font-medium mb-1">No staff selected</p>
-              <p className="text-xs">Use the sidebar to select employees</p>
+              <p className="text-sm font-medium mb-1">
+                {workingTodayOnly ? 'No staff working today' : 'No staff selected'}
+              </p>
+              <p className="text-xs">
+                {workingTodayOnly
+                  ? 'No shifts scheduled for this day, or try disabling the "Working today" filter'
+                  : 'Use the sidebar to select employees'}
+              </p>
             </div>
           </div>
         ) : (
@@ -1607,6 +1651,7 @@ export function Timeline() {
             return (
               <div
                 key={employee.id}
+                data-row={employee.id}
                 className={`h-11 border-b border-theme-primary/50 transition-colors group ${
                   rowBackground
                 } ${allowHover ? 'hover:bg-theme-hover/50' : ''}`}
@@ -1663,7 +1708,7 @@ export function Timeline() {
                   </div>
 
                   {/* INTERACTIVE LAYER */}
-                  <div ref={timelineRef} data-row-interactive className="relative z-20 pointer-events-auto h-full">
+                  <div data-row-interactive className="relative z-20 pointer-events-auto h-full">
                     <div
                       data-grid-background="true"
                       data-employee-id={employee.id}
@@ -1672,7 +1717,7 @@ export function Timeline() {
 
                     {/* Hover add ghost */}
                     {isManager && !hasTimeOff && !hasBlocked && hoveredAddSlot?.employeeId === employee.id && hoveredAddSlot.date === dateString && (() => {
-                      const metrics = timelineRef.current ? timelineRef.current.getBoundingClientRect() : null;
+                      const metrics = gridScrollRef.current ? gridScrollRef.current.getBoundingClientRect() : null;
                       if (!metrics) {
                         return (
                           <div
@@ -1683,11 +1728,11 @@ export function Timeline() {
                           </div>
                         );
                       }
-                      const leftPx = ((hoveredAddSlot.startHour - HOURS_START) / TOTAL_HOURS) * metrics.width;
-                      const widthPx = (1 / TOTAL_HOURS) * metrics.width;
+                      const leftPx = (hoveredAddSlot.startHour - HOURS_START) * PX_PER_HOUR;
+                      const widthPx = PX_PER_HOUR;
                       return (
                         <div
-                          className="absolute top-1 bottom-1 rounded border border-amber-400/50 bg-amber-400/10 flex items-center justify-center text-amber-500/80 text-sm font-semibold pointer-events-none"
+                          className="absolute top-1 bottom-1 rounded border border-amber-400/50 bg-amber-400/10 flex items-center justify-center text-amber-500/80 text-sm font-semibold pointer-events-none box-border"
                           style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
                         >
                           +
@@ -1818,57 +1863,69 @@ export function Timeline() {
   // ─────────────────────────────────────────────────────────────────
   // Render: Continuous mode (3-day window)
   // ─────────────────────────────────────────────────────────────────
-  const renderContinuousGrid = () => (
+  const renderContinuousHeader = () => (
     <div
-      className="flex flex-col h-max min-h-full"
+      className="flex h-8 border-b border-theme-primary"
       style={{
         width: `${continuousGridWidth}px`,
         minWidth: `${continuousGridWidth}px`,
         maxWidth: `${continuousGridWidth}px`,
       }}
     >
-      {/* Day Labels + Hour Headers */}
-      <div className="h-8 border-b border-theme-primary flex shrink-0 sticky top-0 bg-theme-timeline z-10">
-        {continuousDaysData.map((dayData) => (
-          <div key={dayData.dateString} className="flex" style={{ width: `${24 * PX_PER_HOUR}px` }}>
-            {dayData.hours.map((hour) => {
-              const isFirstHour = hour === 0;
-              return (
-                <div
-                  key={`${dayData.dateString}-${hour}`}
-                  className={`flex items-center justify-center relative ${
-                    isFirstHour ? 'border-l-2 border-theme-primary' : 'border-r border-theme-primary/50'
-                  }`}
-                  style={{ width: `${PX_PER_HOUR}px`, minWidth: `${PX_PER_HOUR}px` }}
-                >
-                  {/* Day label at midnight */}
-                  {isFirstHour && (
-                    <span className="absolute left-1 top-0.5 text-[9px] font-semibold text-amber-500 whitespace-nowrap">
-                      {formatDayLabel(dayData.date)}
-                    </span>
-                  )}
-                  {/* Hour label (skip 0 since we show day label there) */}
-                  {hour > 0 && (!showEveryOtherLabel || hour % 2 === 0) && (
-                    <span className={`text-[10px] font-medium ${
-                      hour % 2 === 0 ? 'text-theme-tertiary' : 'text-theme-muted'
-                    }`}>
-                      {formatHourShort(hour)}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
+      {continuousDaysData.map((dayData) => (
+        <div key={dayData.dateString} className="flex" style={{ width: `${24 * PX_PER_HOUR}px` }}>
+          {dayData.hours.map((hour) => {
+            const isFirstHour = hour === 0;
+            return (
+              <div
+                key={`${dayData.dateString}-${hour}`}
+                className={`flex items-center justify-center relative ${
+                  isFirstHour ? 'border-l-2 border-theme-primary' : 'border-r border-theme-primary/50'
+                }`}
+                style={{ width: `${PX_PER_HOUR}px`, minWidth: `${PX_PER_HOUR}px` }}
+              >
+                {/* Day label at midnight */}
+                {isFirstHour && (
+                  <span className="absolute left-1 top-0.5 text-[9px] font-semibold text-amber-500 whitespace-nowrap">
+                    {formatDayLabel(dayData.date)}
+                  </span>
+                )}
+                {/* Hour label (skip 0 since we show day label there) */}
+                {hour > 0 && (!showEveryOtherLabel || hour % 2 === 0) && (
+                  <span className={`text-[10px] font-medium ${
+                    hour % 2 === 0 ? 'text-theme-tertiary' : 'text-theme-muted'
+                  }`}>
+                    {formatHourShort(hour)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
 
-      {/* Timeline Grid Rows */}
-      <div className="flex-1">
+  const renderContinuousRows = () => (
+    <div
+      style={{
+        width: `${continuousGridWidth}px`,
+        minWidth: `${continuousGridWidth}px`,
+        maxWidth: `${continuousGridWidth}px`,
+      }}
+    >
+      <div>
         {filteredEmployees.length === 0 ? (
           <div className="flex items-center justify-center h-full text-theme-muted">
             <div className="text-center">
-              <p className="text-sm font-medium mb-1">No staff selected</p>
-              <p className="text-xs">Use the sidebar to select employees</p>
+              <p className="text-sm font-medium mb-1">
+                {workingTodayOnly ? 'No staff working today' : 'No staff selected'}
+              </p>
+              <p className="text-xs">
+                {workingTodayOnly
+                  ? 'No shifts scheduled for this day, or try disabling the "Working today" filter'
+                  : 'Use the sidebar to select employees'}
+              </p>
             </div>
           </div>
         ) : (
@@ -2141,7 +2198,7 @@ export function Timeline() {
   return (
     <div
       ref={containerRef}
-      className="flex-1 flex flex-col bg-theme-timeline overflow-hidden relative transition-theme"
+      className="h-full flex flex-col min-h-0 bg-theme-timeline overflow-hidden relative transition-theme"
     >
       {/* Unified toolbar - responsive: 2 rows on mobile, 1 row on desktop */}
       <div className="border-b border-theme-primary bg-theme-timeline shrink-0">
@@ -2410,57 +2467,72 @@ export function Timeline() {
         </div>
       </div>
 
-      <div className="flex-1 flex overflow-hidden relative">
-        {/* Fixed Employee Names Column */}
-        <div className="w-36 shrink-0 flex flex-col bg-theme-timeline z-20 border-r border-theme-primary">
-          {/* Header spacer */}
-          <div className="h-8 border-b border-theme-primary shrink-0" />
-
-          {/* Employee names list - synced scroll */}
-          <div
-            ref={namesScrollRef}
-            className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide"
-            onScroll={handleNamesScroll}
-          >
-            {filteredEmployees.length === 0 ? (
-              <div className="h-full" />
-            ) : (
-              filteredEmployees.map((employee) => {
-                const sectionConfig = SECTIONS[employee.section];
-                // For names column, just show neutral background
-                return (
-                  <div
-                    key={employee.id}
-                    className="h-11 border-b border-theme-primary/50 flex items-center gap-2 px-2"
-                    style={{ boxShadow: '4px 0 8px rgba(0,0,0,0.08)' }}
-                  >
-                    <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0"
-                      style={{
-                        backgroundColor: sectionConfig.bgColor,
-                        color: sectionConfig.color,
-                      }}
-                    >
-                      {employee.name.split(' ').map(n => n[0]).join('')}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium text-theme-primary truncate">
-                        {employee.name}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })
-            )}
+      {/* Single vertical scroll container for names + grid */}
+      <div
+        ref={timelineScrollRef}
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden relative"
+      >
+        {/* Sticky header row: names header + hour header */}
+        <div className="sticky top-0 z-50 bg-theme-timeline border-b border-theme-primary flex">
+          <div className="w-36 shrink-0 bg-theme-timeline border-r border-theme-primary h-8" />
+          <div className="flex-1 min-w-0">
+            <div
+              ref={headerScrollRef}
+              className="overflow-x-auto overflow-y-hidden"
+              onScroll={handleHeaderScroll}
+            >
+              <div style={{ width: continuousDays ? continuousGridWidth : singleDayGridWidth }}>
+                {continuousDays ? renderContinuousHeader() : renderSingleDayHeader()}
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Scrollable Timeline Grid Container */}
-        <div className="flex-1 relative overflow-hidden">
-          {/* Scrollable Timeline Grid */}
+        {/* Flex row: names column + grid area - both scroll vertically together */}
+        <div className="flex">
+          {/* Names Column - scrolls with parent, no separate overflow */}
+          <div className="w-36 shrink-0 bg-theme-timeline z-20 border-r border-theme-primary">
+            {/* Employee names - natural height, scrolls with parent */}
+            <div>
+              {filteredEmployees.length === 0 ? (
+                <div className="h-32 flex items-center justify-center text-theme-muted text-xs">
+                  No staff
+                </div>
+              ) : (
+                filteredEmployees.map((employee) => {
+                  const sectionConfig = SECTIONS[employee.section];
+                  return (
+                    <div
+                      key={employee.id}
+                      data-name-row={employee.id}
+                      className="h-11 border-b border-theme-primary/50 flex items-center gap-2 px-2"
+                      style={{ boxShadow: '4px 0 8px rgba(0,0,0,0.08)' }}
+                    >
+                      <div
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0"
+                        style={{
+                          backgroundColor: sectionConfig.bgColor,
+                          color: sectionConfig.color,
+                        }}
+                      >
+                        {employee.name.split(' ').map(n => n[0]).join('')}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-theme-primary truncate">
+                          {employee.name}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Grid Area - horizontal scroll wrapper */}
           <div
             ref={gridScrollRef}
-            className={`h-full relative pointer-events-auto overflow-x-auto overflow-y-auto ${isDragScrolling ? 'cursor-grabbing' : 'cursor-grab'}`}
+            className={`flex-1 overflow-x-auto overflow-y-hidden ${isDragScrolling ? 'cursor-grabbing' : 'cursor-grab'}`}
             style={{ scrollBehavior: isDragScrolling ? 'auto' : 'smooth', touchAction: 'pan-y' }}
             onPointerDown={handleGridPointerDown}
             onPointerMove={handleGridPointerMove}
@@ -2469,7 +2541,11 @@ export function Timeline() {
             onPointerLeave={clearHoverAddSlot}
             onScroll={handleGridScroll}
           >
-            {continuousDays ? renderContinuousGrid() : renderSingleDayGrid()}
+            {/* Fixed width content for horizontal scroll */}
+            <div style={{ width: continuousDays ? continuousGridWidth : singleDayGridWidth }}>
+              {/* Grid rows - natural height */}
+              {continuousDays ? renderContinuousRows() : renderSingleDayRows()}
+            </div>
           </div>
         </div>
       </div>
@@ -2491,4 +2567,3 @@ export function Timeline() {
     </div>
   );
 }
-

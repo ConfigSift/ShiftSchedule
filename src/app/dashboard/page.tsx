@@ -54,13 +54,15 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-theme-primary">
+    <div className="h-full flex flex-col bg-theme-primary overflow-hidden">
       {notice === 'forbidden' && (
-        <div className="bg-red-500/10 border-b border-red-500/30 text-red-400 text-sm text-center py-2">
+        <div className="bg-red-500/10 border-b border-red-500/30 text-red-400 text-sm text-center py-2 shrink-0">
           You do not have access to that page.
         </div>
       )}
-      <Dashboard />
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <Dashboard />
+      </div>
     </div>
   );
 }

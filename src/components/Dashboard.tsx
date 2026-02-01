@@ -56,15 +56,15 @@ export function Dashboard() {
 
   return (
     <div className="h-full flex flex-col bg-theme-primary text-theme-primary overflow-hidden transition-theme">
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Sidebar - handled internally with mobile drawer */}
-        <div className="h-full shrink-0 min-h-0">
+        <div className="shrink-0 min-h-0 h-full">
           <StaffSidebar />
         </div>
         
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
           {/* Controls bar */}
-            <div className={`shrink-0 border-b border-theme-primary bg-theme-secondary/70 px-2 sm:px-4 py-2 sm:py-3 ${viewMode === 'day' ? 'hidden' : ''}`}>
+          <div className={`shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur sticky top-0 z-40 px-2 sm:px-4 py-2 sm:py-3 ${viewMode === 'day' ? 'hidden' : ''}`}>
             <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
               {/* Date navigation row */}
               <div className="flex items-center gap-1 sm:gap-2">
@@ -169,7 +169,7 @@ export function Dashboard() {
           </div>
           
           {/* Schedule views */}
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 h-full min-h-0 overflow-hidden flex flex-col">
             {viewMode === 'day' && <Timeline />}
             {viewMode === 'week' && <WeekView />}
             {viewMode === 'month' && <MonthView />}

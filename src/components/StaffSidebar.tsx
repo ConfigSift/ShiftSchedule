@@ -3,7 +3,7 @@
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { useUIStore } from '../store/uiStore';
-import { Users, ChevronDown, Check, Eye, EyeOff, User, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Users, ChevronDown, Check, Eye, EyeOff, User, X, ChevronLeft, ChevronRight, CalendarCheck } from 'lucide-react';
 import Link from 'next/link';
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
@@ -17,10 +17,13 @@ export function StaffSidebar() {
     selectedEmployeeIds,
     setSectionSelectedForRestaurant,
     toggleEmployee,
+    setSelectedEmployeeIds,
     selectAllEmployeesForRestaurant,
     deselectAllEmployees,
     getShiftsForRestaurant,
     selectedDate,
+    workingTodayOnly,
+    toggleWorkingTodayOnly,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
@@ -88,11 +91,15 @@ export function StaffSidebar() {
     );
   }, []);
 
-  const dateString = selectedDate.toISOString().split('T')[0];
+  // Use local timezone for date string to match shift_date values
+  const dateString = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`;
 
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
 
+  // Search filter: only affects visible employees in the sidebar
+  // Group toggles operate on VISIBLE employees only (what you see is what you toggle)
+  // "Show All" / "Hide All" operates on ALL employees regardless of search filter
   const filteredEmployees = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return scopedEmployees;
@@ -103,6 +110,9 @@ export function StaffSidebar() {
     );
   }, [scopedEmployees, searchQuery]);
 
+  // Group employees by job title for sidebar display
+  // Uses filteredEmployees so groups only contain visible (search-matched) employees
+  // This ensures group checkboxes only toggle visible employees
   const employeesByJob = useMemo(() => {
     const map: Record<string, typeof filteredEmployees> = {};
     filteredEmployees.forEach((emp) => {
@@ -155,10 +165,26 @@ export function StaffSidebar() {
     return selectedCount > 0 && selectedCount < sectionEmps.length;
   }, [employeesByJob, selectedEmployeeIds]);
 
+  // Toggle selection for all VISIBLE employees in a job group
+  // When search filter is active, only visible employees are toggled
+  // This follows "what you see is what you get" UX principle
   const handleSectionToggle = useCallback((group: string) => {
-    const isFullySelected = isSectionFullySelected(group);
-    setSectionSelectedForRestaurant(group, !isFullySelected, activeRestaurantId);
-  }, [isSectionFullySelected, setSectionSelectedForRestaurant, activeRestaurantId]);
+    const sectionEmps = employeesByJob[group] || [];
+    if (sectionEmps.length === 0) return;
+
+    const employeeIdsInGroup = sectionEmps.map(e => e.id);
+    const allSelected = sectionEmps.every(e => selectedEmployeeIds.includes(e.id));
+
+    let newSelectedIds: string[];
+    if (allSelected) {
+      // Deselect all visible employees in this group
+      newSelectedIds = selectedEmployeeIds.filter(id => !employeeIdsInGroup.includes(id));
+    } else {
+      // Select all visible employees in this group
+      newSelectedIds = [...new Set([...selectedEmployeeIds, ...employeeIdsInGroup])];
+    }
+    setSelectedEmployeeIds(newSelectedIds);
+  }, [employeesByJob, selectedEmployeeIds, setSelectedEmployeeIds]);
 
   const handleSelectAll = useCallback(() => {
     if (allSelected) {
@@ -211,6 +237,34 @@ export function StaffSidebar() {
             {allSelected ? 'Hide All' : 'Show All'}
           </button>
         </div>
+
+        {/* Working Today filter toggle */}
+        <button
+          onClick={toggleWorkingTodayOnly}
+          className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 mt-2 rounded-lg transition-colors text-[11px] font-medium ${
+            workingTodayOnly
+              ? 'bg-amber-500/15 text-amber-500 hover:bg-amber-500/25'
+              : 'bg-theme-tertiary text-theme-muted hover:text-theme-secondary hover:bg-theme-hover'
+          }`}
+          title="Hide staff with no shifts on the selected day"
+          aria-pressed={workingTodayOnly}
+        >
+          <span className="flex items-center gap-1.5">
+            <CalendarCheck className="w-3.5 h-3.5" />
+            <span>Working today</span>
+          </span>
+          <span
+            className={`w-7 h-4 rounded-full transition-colors relative ${
+              workingTodayOnly ? 'bg-amber-500' : 'bg-theme-secondary'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${
+                workingTodayOnly ? 'translate-x-3' : 'translate-x-0'
+              }`}
+            />
+          </span>
+        </button>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-1.5">
@@ -232,7 +286,8 @@ export function StaffSidebar() {
             const isExpanded = expandedSections.includes(job);
             const isFullySelected = isSectionFullySelected(job);
             const isPartiallySelected = isSectionPartiallySelected(job);
-            const selectedCount = jobEmployees.filter((e) => selectedEmployeeIds.includes(e.id)).length;
+            // Count employees scheduled (have shift) on the selected date
+            const scheduledCount = jobEmployees.filter((e) => shiftsForDateMap.has(e.id)).length;
             const jobColor = getJobColorClasses(job);
 
             return (
@@ -266,7 +321,7 @@ export function StaffSidebar() {
                     <div className="flex items-center gap-1.5">
                       <span className={`text-xs font-semibold leading-tight ${jobColor.textClass}`}>{job}</span>
                       <span className="text-[11px] text-theme-muted">
-                        {selectedCount}/{jobEmployees.length}
+                        {scheduledCount}/{jobEmployees.length}
                       </span>
                     </div>
                     <ChevronDown
@@ -275,6 +330,15 @@ export function StaffSidebar() {
                       }`}
                     />
                   </button>
+                  {!isFullySelected && (
+                    <button
+                      onClick={() => handleSectionToggle(job)}
+                      className="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors hover:bg-theme-hover shrink-0"
+                      aria-label={`Select all ${job} employees`}
+                    >
+                      <span className="text-theme-muted hover:text-theme-secondary">All</span>
+                    </button>
+                  )}
                 </div>
                 {isExpanded && (
                   <div className="ml-1.5 space-y-0.5 mt-0.5">

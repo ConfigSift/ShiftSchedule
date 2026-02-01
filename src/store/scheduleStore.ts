@@ -73,6 +73,15 @@ function isValidJob(value: unknown): value is string {
   return JOB_OPTIONS.includes(String(value) as (typeof JOB_OPTIONS)[number]);
 }
 
+// Convert Date to YYYY-MM-DD string using LOCAL timezone (not UTC)
+// This ensures consistent date comparison with shift_date values
+function toLocalDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 type ViewMode = 'day' | 'week' | 'month';
 type ModalType =
   | 'addShift'
@@ -102,6 +111,7 @@ interface ScheduleState {
   viewMode: ViewMode;
   selectedSections: string[];
   selectedEmployeeIds: string[];
+  workingTodayOnly: boolean;
   hoveredShiftId: string | null;
 
   modalType: ModalType;
@@ -120,8 +130,11 @@ interface ScheduleState {
   toggleSection: (section: string) => void;
   setSectionSelectedForRestaurant: (section: string, selected: boolean, restaurantId: string | null) => void;
   toggleEmployee: (employeeId: string) => void;
+  setSelectedEmployeeIds: (ids: string[]) => void;
   selectAllEmployeesForRestaurant: (restaurantId: string | null) => void;
   deselectAllEmployees: () => void;
+  toggleWorkingTodayOnly: () => void;
+  getWorkingEmployeeIdsForDate: (date: Date) => string[];
   setHoveredShift: (shiftId: string | null) => void;
   applyRestaurantScope: (restaurantId: string | null) => void;
 
@@ -230,6 +243,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   viewMode: 'day',
   selectedSections: ['kitchen', 'front', 'bar', 'management'],
   selectedEmployeeIds: [],
+  workingTodayOnly: false,
   hoveredShiftId: null,
 
   modalType: null,
@@ -587,8 +601,9 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       };
     }
 
+    // Filter by jobs array (job titles like 'Server', 'Bartender') not legacy section field
     const sectionEmployees = state.employees.filter(
-      (e) => e.section === section && e.restaurantId === restaurantId
+      (e) => e.jobs?.includes(section) && e.restaurantId === restaurantId && e.isActive
     );
     const sectionEmployeeIds = sectionEmployees.map((e) => e.id);
 
@@ -617,16 +632,35 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       : [...state.selectedEmployeeIds, employeeId],
   })),
 
+  setSelectedEmployeeIds: (ids) => set({ selectedEmployeeIds: ids }),
+
   selectAllEmployeesForRestaurant: (restaurantId) => set((state) => {
     if (!restaurantId) return { selectedEmployeeIds: [] };
+    // Select all active employees in the restaurant (not filtered by legacy sections)
     return {
       selectedEmployeeIds: state.employees
-        .filter((e) => e.restaurantId === restaurantId && state.selectedSections.includes(e.section))
+        .filter((e) => e.restaurantId === restaurantId && e.isActive)
         .map((e) => e.id),
     };
   }),
 
   deselectAllEmployees: () => set({ selectedEmployeeIds: [] }),
+
+  toggleWorkingTodayOnly: () => set((state) => ({ workingTodayOnly: !state.workingTodayOnly })),
+
+  getWorkingEmployeeIdsForDate: (date) => {
+    const state = get();
+    const dateString = toLocalDateString(date);
+    // Build a Set of employee IDs who have at least one non-blocked shift on this date
+    const workingIds = new Set<string>();
+    for (const shift of state.shifts) {
+      if (shift.date === dateString && !shift.isBlocked) {
+        workingIds.add(shift.employeeId);
+      }
+    }
+    return Array.from(workingIds);
+  },
+
   setHoveredShift: (shiftId) => set({ hoveredShiftId: shiftId }),
 
   applyRestaurantScope: (restaurantId) => set((state) => {
@@ -1405,11 +1439,26 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   getFilteredEmployeesForRestaurant: (restaurantId) => {
     const state = get();
     if (!restaurantId) return [];
+
+    // When workingTodayOnly is enabled, compute working employee IDs for the selected date
+    let effectiveSelectedIds = state.selectedEmployeeIds;
+    if (state.workingTodayOnly) {
+      const dateString = toLocalDateString(state.selectedDate);
+      const workingIds = new Set<string>();
+      for (const shift of state.shifts) {
+        if (shift.date === dateString && !shift.isBlocked) {
+          workingIds.add(shift.employeeId);
+        }
+      }
+      // Intersection of selectedEmployeeIds and workingIds
+      effectiveSelectedIds = state.selectedEmployeeIds.filter((id) => workingIds.has(id));
+    }
+
     return state.employees.filter(
       (e) =>
         e.restaurantId === restaurantId &&
         state.selectedSections.includes(e.section) &&
-        state.selectedEmployeeIds.includes(e.id)
+        effectiveSelectedIds.includes(e.id)
     );
   },
 
