@@ -4,6 +4,7 @@ type ApiResult<T> = {
   data?: T;
   error?: string;
   code?: string;
+  rawText?: string;
 };
 
 type ApiFetchOptions = RequestInit & {
@@ -12,10 +13,14 @@ type ApiFetchOptions = RequestInit & {
 };
 
 async function parseJsonSafe(response: Response) {
+  const text = await response.text();
+  if (!text) {
+    return { data: null, rawText: '' };
+  }
   try {
-    return await response.json();
+    return { data: JSON.parse(text), rawText: text };
   } catch {
-    return null;
+    return { data: null, rawText: text };
   }
 }
 
@@ -39,19 +44,20 @@ export async function apiFetch<T = any>(url: string, options: ApiFetchOptions = 
     cache: 'no-store',
   });
 
-  const data = await parseJsonSafe(response);
+  const { data, rawText } = await parseJsonSafe(response);
   const result: ApiResult<T> = {
     ok: response.ok,
     status: response.status,
     data: data ?? undefined,
     error: response.ok ? undefined : data?.error || response.statusText,
     code: data?.code,
+    rawText,
   };
 
   if (!response.ok && response.status === 401 && process.env.NODE_ENV !== 'production' && !skipAuthDebug) {
     try {
       const whoResponse = await fetch('/api/me', { credentials: 'include', cache: 'no-store' });
-      const whoData = await parseJsonSafe(whoResponse);
+      const { data: whoData } = await parseJsonSafe(whoResponse);
       if (whoData?.hasSession) {
         const origin = typeof window !== 'undefined' ? window.location.origin : 'unknown';
         // eslint-disable-next-line no-console

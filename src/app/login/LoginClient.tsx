@@ -1,12 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Calendar, Lock, Mail, Store } from 'lucide-react';
+import { Calendar, Lock, Mail } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase/client';
-import { getUserRole, isManagerRole } from '../../utils/role';
-import { normalizeUserRow } from '../../utils/userMapper';
+import { deriveAuthPasswordFromPin, isValidPin } from '../../utils/pin';
 
 type LoginClientProps = {
   notice?: string | null;
@@ -15,9 +14,8 @@ type LoginClientProps = {
 
 export default function LoginClient({ notice, setupDisabled }: LoginClientProps) {
   const router = useRouter();
-  const { currentUser, activeRestaurantId, init, setActiveOrganization } = useAuthStore();
+  const { currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, init } = useAuthStore();
 
-  const [restaurantId, setRestaurantId] = useState('');
   const [email, setEmail] = useState('');
   const [passcode, setPasscode] = useState('');
   const [error, setError] = useState('');
@@ -41,23 +39,37 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
   }, []);
 
   useEffect(() => {
-    if (currentUser) {
-      if (isManagerRole(currentUser.role) && !activeRestaurantId) {
-        router.push('/manager');
-      } else {
-        router.push('/dashboard');
-      }
-    }
-  }, [currentUser, activeRestaurantId, router]);
+    if (!currentUser) return;
 
-  const normalizedRestaurantId = useMemo(
-    () => restaurantId.trim().toUpperCase(),
-    [restaurantId]
-  );
-  const isRestaurantIdValid = /^RST-[0-9A-HJKMNP-TV-Z]{8}$/.test(normalizedRestaurantId);
-  const isPasscodeValid = /^\d{6}$/.test(passcode);
-  const isEmailValid = Boolean(email.trim());
-  const canSubmit = isRestaurantIdValid && isPasscodeValid && isEmailValid && !loading;
+    // Rule 1: Pending invitations AND no selection -> /restaurants
+    if (pendingInvitations.length > 0 && !activeRestaurantId) {
+      router.push('/restaurants');
+      return;
+    }
+
+    // Rule 2: No memberships -> /restaurants
+    if (accessibleRestaurants.length === 0) {
+      router.push('/restaurants');
+      return;
+    }
+
+    // Rule 3: Single membership -> /dashboard (init auto-selects)
+    if (accessibleRestaurants.length === 1) {
+      router.push('/dashboard');
+      return;
+    }
+
+    // Rule 4: Multiple memberships
+    if (activeRestaurantId) {
+      router.push('/dashboard');
+    } else {
+      router.push('/restaurants');
+    }
+  }, [currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
+
+  const isPasscodeValid = isValidPin(passcode) || passcode.length >= 6;
+  const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const canSubmit = isPasscodeValid && isEmailValid && !loading;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,79 +79,72 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
     try {
       const loginEmail = email.trim().toLowerCase();
 
-      const { data: orgData, error: orgError } = (await supabase
-        .from('organizations')
-        .select('id,restaurant_code')
-        .eq('restaurant_code', normalizedRestaurantId)
-        .maybeSingle()) as {
-        data: { id: string; restaurant_code: string } | null;
-        error: { message: string } | null;
-      };
-
-      if (orgError || !orgData) {
-        setError('Restaurant ID not found.');
-        return;
+      const authPassword = isValidPin(passcode) ? deriveAuthPasswordFromPin(passcode) : passcode;
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug(
+          '[login] email=',
+          loginEmail,
+          'pwLen=',
+          authPassword.length,
+          'pwPrefix=',
+          authPassword.slice(0, 4)
+        );
       }
-
       const { error: authError } = await supabase.auth.signInWithPassword({
         email: loginEmail,
-        password: passcode,
+        password: authPassword,
       });
 
       if (authError) {
-        setError('Invalid email or PIN.');
+        setError(authError.message || 'Invalid email or PIN.');
         setPasscode('');
         return;
       }
 
-      const { data: sessionData } = await supabase.auth.getSession();
-      const authUserId = sessionData.session?.user?.id;
-      if (!authUserId) {
-        setError('Invalid email or PIN.');
-        return;
-      }
+      await useAuthStore.getState().refreshProfile();
+      const {
+        accessibleRestaurants: refreshedRestaurants,
+        pendingInvitations: refreshedInvitations,
+      } = useAuthStore.getState();
 
-      const { data: userData, error: userError } = (await supabase
-        .from('users')
-        .select('*')
-        .eq('auth_user_id', authUserId)) as {
-        data: Array<Record<string, any>> | null;
-        error: { message: string } | null;
-      };
-
-      if (userError) {
+      // Rule 1: Pending invitations -> /restaurants (to manage invites)
+      if (refreshedInvitations.length > 0) {
         if (process.env.NODE_ENV !== 'production') {
           // eslint-disable-next-line no-console
-          console.warn('Profile lookup failed', userError);
-          setError(`Profile lookup failed: ${userError.message}`);
-        } else {
-          setError('Profile lookup failed (schema mismatch). Run migrations or contact admin.');
+          console.debug('[login] has pending invitations, redirecting to /restaurants');
         }
-        await supabase.auth.signOut();
+        router.push('/restaurants');
         return;
       }
 
-      if (!userData || userData.length === 0) {
+      // Rule 2: No memberships and no invitations -> show error
+      if (refreshedRestaurants.length === 0) {
         await supabase.auth.signOut();
-        setError('No user profile found. Contact your manager.');
+        setError('No restaurant access for this account.');
         return;
       }
 
-      const matchingUser = userData.find((user) => user.organization_id === orgData.id);
-      if (!matchingUser) {
-        await supabase.auth.signOut();
-        setError("Restaurant ID doesn't match this account.");
-        return;
-      }
-
-      await init();
-      setActiveOrganization(orgData.id, orgData.restaurant_code);
-
-      const accountType = normalizeUserRow(matchingUser).role;
-      if (isManagerRole(accountType)) {
-        router.push('/manager');
-      } else {
+      // Rule 3: Single membership -> auto-select and go to dashboard
+      if (refreshedRestaurants.length === 1) {
+        const only = refreshedRestaurants[0];
+        useAuthStore.getState().setActiveOrganization(only.id, only.restaurantCode);
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.debug('[login] single membership, auto-selecting:', only.id);
+        }
         router.push('/dashboard');
+        return;
+      }
+
+      // Rule 4: Multiple memberships -> /restaurants (do NOT auto-select)
+      if (refreshedRestaurants.length > 1) {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.debug('[login] multiple memberships, redirecting to /restaurants');
+        }
+        router.push('/restaurants');
+        return;
       }
     } catch {
       setError('Login failed.');
@@ -194,27 +199,6 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                Restaurant ID
-              </label>
-              <div className="relative">
-                <Store className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
-                <input
-                  type="text"
-                  value={restaurantId}
-                  onChange={(e) => setRestaurantId(e.target.value.toUpperCase())}
-                  className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder="RST-K7M2Q9PJ"
-                  autoFocus
-                  required
-                />
-              </div>
-              {!isRestaurantIdValid && restaurantId.length > 0 && (
-                <p className="text-xs text-red-400 mt-1">Use format RST-XXXXXXXX.</p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-theme-secondary mb-1.5">
                 Email
               </label>
               <div className="relative">
@@ -225,30 +209,33 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                   placeholder="you@restaurant.com"
+                  autoFocus
                   required
                 />
               </div>
+              {!isEmailValid && email.length > 0 && (
+                <p className="text-xs text-red-400 mt-1">Enter a valid email.</p>
+              )}
             </div>
 
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                PIN
+                PIN or Password
               </label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
                 <input
                   type="password"
-                  inputMode="numeric"
-                  maxLength={6}
+                  maxLength={64}
                   value={passcode}
-                  onChange={(e) => setPasscode(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => setPasscode(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                   placeholder="******"
                   required
                 />
               </div>
               {!isPasscodeValid && passcode.length > 0 && (
-                <p className="text-xs text-red-400 mt-1">PIN must be 6 digits.</p>
+                <p className="text-xs text-red-400 mt-1">Enter a 4-digit PIN or a 6+ character password.</p>
               )}
             </div>
 

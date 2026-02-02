@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Plus, Trash2, Edit3 } from 'lucide-react';
+import { Plus, Trash2, Edit3, XCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabase/client';
 import { useAuthStore } from '../../store/authStore';
 import { useScheduleStore } from '../../store/scheduleStore';
@@ -24,11 +24,28 @@ interface OrgUser {
   jobs: string[];
   hourlyPay?: number;
   jobPay?: Record<string, number>;
+  employeeNumber?: number | null;
 }
+
+interface PendingInvite {
+  id: string;
+  email: string;
+  role: string;
+  status: string;
+  createdAt?: string | null;
+  expiresAt?: string | null;
+  isInvite: true;
+}
+
+type StaffRow = OrgUser | PendingInvite;
+
+const isInviteRow = (row: StaffRow): row is PendingInvite =>
+  (row as PendingInvite).isInvite === true;
 
 const EMPTY_FORM = {
   fullName: '',
   email: '',
+  employeeNumber: '',
   phone: '',
   accountType: 'EMPLOYEE',
   jobs: [] as string[],
@@ -42,16 +59,22 @@ export default function StaffPage() {
   const { showToast } = useScheduleStore();
 
   const [users, setUsers] = useState<OrgUser[]>([]);
+  const [invites, setInvites] = useState<PendingInvite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [formState, setFormState] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
+  const [invitationMode, setInvitationMode] = useState(false);
+  const [invitationModalOpen, setInvitationModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [resetTarget, setResetTarget] = useState<OrgUser | null>(null);
   const [resetPasscode, setResetPasscode] = useState('');
   const [resetConfirm, setResetConfirm] = useState('');
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<OrgUser | null>(null);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [profileUser, setProfileUser] = useState<OrgUser | null>(null);
   const [profileMode, setProfileMode] = useState<'view' | 'edit' | null>(null);
@@ -94,12 +117,13 @@ export default function StaffPage() {
 
   useEffect(() => {
     if (isInitialized && currentUser && isManager && !activeRestaurantId) {
-      router.push('/manager');
+      // Redirect to /restaurants to select a restaurant, not /manager (which just redirects to /restaurants anyway)
+      router.push('/restaurants');
     }
   }, [isInitialized, currentUser, isManager, activeRestaurantId, router]);
 
   const loadUsers = async () => {
-    if (!activeRestaurantId) return;
+    if (!activeRestaurantId) return null;
     setLoading(true);
     setError('');
 
@@ -115,17 +139,19 @@ export default function StaffPage() {
     if (loadError) {
       setError(loadError.message);
       setLoading(false);
-      return;
+      return null;
     }
 
     const mapped = (data || []).map((row) => {
       const normalized = normalizeUserRow(row);
+      const displayEmail = normalized.email ?? normalized.realEmail ?? '';
       return {
         id: normalized.id,
         authUserId: normalized.authUserId ?? null,
         fullName: normalized.fullName,
-        email: normalized.email ?? '',
+        email: displayEmail,
         phone: normalized.phone ?? '',
+        employeeNumber: normalized.employeeNumber ?? null,
         accountType: normalized.role,
         jobs: normalized.jobs,
         hourlyPay: normalized.hourlyPay,
@@ -134,7 +160,31 @@ export default function StaffPage() {
     });
 
     setUsers(mapped);
+    const inviteResult = await apiFetch(
+      `/api/admin/invitations?organization_id=${encodeURIComponent(activeRestaurantId)}`
+    );
+    if (!inviteResult.ok) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[invitations] status', inviteResult.status, 'error', inviteResult.error);
+      }
+      setInvites([]);
+      setLoading(false);
+      return { users: mapped, invites: [] };
+    }
+    const inviteRows = Array.isArray(inviteResult.data?.invites) ? inviteResult.data.invites : [];
+    const mappedInvites = inviteRows.map((invite: Record<string, any>) => ({
+      id: String(invite.id),
+      email: String(invite.email ?? ''),
+      role: String(invite.role ?? 'employee'),
+      status: String(invite.status ?? 'pending'),
+      createdAt: invite.created_at ?? null,
+      expiresAt: invite.expires_at ?? null,
+      isInvite: true as const,
+    }));
+    setInvites(mappedInvites);
     setLoading(false);
+    return { users: mapped, invites: mappedInvites };
   };
 
   useEffect(() => {
@@ -145,6 +195,7 @@ export default function StaffPage() {
 
   const openAddModal = () => {
     setFormState(EMPTY_FORM);
+    setInvitationMode(false);
     setModalOpen(true);
   };
 
@@ -152,6 +203,7 @@ export default function StaffPage() {
     setModalOpen(false);
     setFormState(EMPTY_FORM);
     setError('');
+    setInvitationMode(false);
   };
 
   const openResetModal = (user: OrgUser) => {
@@ -170,6 +222,19 @@ export default function StaffPage() {
     setResetConfirm('');
   };
 
+  const openDeleteModal = (user: OrgUser) => {
+    setError('');
+    setSuccessMessage('');
+    setDeleteTarget(user);
+    setDeleteModalOpen(true);
+  };
+
+  const closeDeleteModal = () => {
+    setDeleteModalOpen(false);
+    setDeleteTarget(null);
+    setDeleteSubmitting(false);
+  };
+
   const openProfile = (user: OrgUser, mode: 'view' | 'edit') => {
     setError('');
     setSuccessMessage('');
@@ -180,6 +245,32 @@ export default function StaffPage() {
   const closeProfile = () => {
     setProfileUser(null);
     setProfileMode(null);
+  };
+
+  const handleEmailBlur = async () => {
+    if (!activeRestaurantId) return;
+    const normalizedEmail = formState.email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      setInvitationMode(false);
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalizedEmail)) {
+      setInvitationMode(false);
+      return;
+    }
+    const result = await apiFetch(
+      `/api/admin/check-email?organization_id=${encodeURIComponent(activeRestaurantId)}&email=${encodeURIComponent(normalizedEmail)}`
+    );
+    if (!result.ok) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[check-email] status', result.status, 'error', result.error);
+      }
+      setInvitationMode(false);
+      return;
+    }
+    setInvitationMode(Boolean(result.data?.exists));
   };
 
   // Handle profile save: update users array with returned user
@@ -227,14 +318,24 @@ export default function StaffPage() {
     const missingFields: string[] = [];
     if (!formState.fullName.trim()) missingFields.push('Full name');
     if (!formState.email.trim()) missingFields.push('Email');
-    if (!formState.passcode.trim()) missingFields.push('PIN');
+    if (!formState.employeeNumber.trim()) missingFields.push('Employee number');
+    if (!invitationMode && !formState.passcode.trim()) missingFields.push('PIN');
     if (missingFields.length > 0) {
       setError(`Missing required fields: ${missingFields.join(', ')}.`);
       return;
     }
 
-    if (!/^\d{6}$/.test(formState.passcode)) {
-      setError('PIN must be exactly 6 digits.');
+    if (!invitationMode && !/^\d{4}$/.test(formState.passcode)) {
+      setError('PIN must be exactly 4 digits.');
+      return;
+    }
+
+    if (!/^\d{4}$/.test(formState.employeeNumber.trim())) {
+      setError('Employee number must be 4 digits.');
+      return;
+    }
+    if (formState.employeeNumber.trim() === '0000') {
+      setError('Employee number 0000 is not allowed.');
       return;
     }
 
@@ -267,42 +368,94 @@ export default function StaffPage() {
     setSubmitting(true);
 
     try {
+      const pinToSend = invitationMode ? '1111' : formState.passcode;
+      const normalizedEmail = formState.email.trim().toLowerCase();
       const result = await apiFetch('/api/admin/create-user', {
         method: 'POST',
         json: {
           organizationId: activeRestaurantId,
           fullName: formState.fullName.trim(),
           phone: formState.phone.trim() || '',
-          email: formState.email.trim().toLowerCase(),
+          email: normalizedEmail,
+          employeeNumber: Number(formState.employeeNumber),
           accountType: formState.accountType,
           jobs: formState.jobs,
-          pinCode: formState.passcode,
+          pinCode: pinToSend,
           hourlyPay: avgHourlyPay,
           jobPay: jobPayPayload,
         },
       });
 
-      if (!result.ok) {
-        const isDev = process.env.NODE_ENV !== 'production';
+      const responseData = result.data;
+      const responseObject =
+        responseData && typeof responseData === 'object'
+          ? (responseData as Record<string, unknown>)
+          : null;
+      const created = Boolean(responseObject?.created);
+      const invited = Boolean(responseObject?.invited);
+      const alreadyMember = Boolean(
+        (responseObject as Record<string, unknown> | null)?.already_member
+        ?? (responseObject as Record<string, unknown> | null)?.alreadyMember
+      );
+      const isSuccess = created || invited || alreadyMember;
+
+      if (!result.ok || !isSuccess) {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.log('[create-user] status', result.status, 'error', result.error, 'data', result.data);
+        }
+        const errorFromJson =
+          responseObject && typeof responseObject.error === 'string' ? responseObject.error : '';
+        const rawText = (result.rawText ?? '').trim();
+        const baseMessage =
+          errorFromJson
+          || rawText
+          || result.error
+          || 'Unexpected response from server.';
+        const trimmed = baseMessage.length > 300 ? `${baseMessage.slice(0, 300)}...` : baseMessage;
+        const prefix = result.ok ? 'Unexpected response from server' : 'Request failed';
+        const message = `${prefix} (status ${result.status}). ${trimmed}`;
+
         if (result.status === 401) {
-          const message = 'Session expired. Please sign out and sign in again.';
-          handleAuthExpired(isDev ? result.error || message : message);
-        } else if (result.status === 403) {
-          const message = 'You dont have permission for that action.';
-          setError(isDev ? result.error || message : message);
-          showToast(message, 'error');
-        } else if (result.status === 400 && result.error) {
-          setError(isDev ? result.error : 'Unable to create user. Please verify the fields.');
+          handleAuthExpired(message);
         } else {
-          setError(isDev ? result.error || 'Unable to create user.' : 'Unable to create user.');
+          setError(message);
+          if (result.status === 403) {
+            showToast(message, 'error');
+          }
         }
         setSubmitting(false);
         return;
       }
 
-      await loadUsers();
-      setSuccessMessage('User created successfully.');
-      closeModal();
+      let refreshedUsers: OrgUser[] = [];
+      if (isSuccess) {
+        const refreshResult = await loadUsers();
+        refreshedUsers = refreshResult?.users ?? [];
+      }
+
+      if (created) {
+        setSuccessMessage('Employee created.');
+        closeModal();
+      } else if (invited) {
+        setSuccessMessage('Invitation sent.');
+        setInvitationModalOpen(true);
+        closeModal();
+      } else if (alreadyMember) {
+        const hasUser = refreshedUsers.some(
+          (user) => user.email?.toLowerCase() === normalizedEmail
+        );
+        if (!hasUser) {
+          const extra =
+            responseObject && typeof responseObject.error === 'string'
+              ? ` ${responseObject.error}`
+              : '';
+          setError(`Membership exists but profile missing for this restaurant.${extra}`);
+          return;
+        }
+        setSuccessMessage('Employee already in this restaurant.');
+        closeModal();
+      }
     } catch {
       setError('Request failed. Please try again.');
     } finally {
@@ -316,9 +469,6 @@ export default function StaffPage() {
       setError("You can't delete your own account.");
       return;
     }
-
-    const confirmed = window.confirm(`Delete ${user.fullName || user.email}? This cannot be undone.`);
-    if (!confirmed) return;
 
     const result = await apiFetch('/api/admin/delete-user', {
       method: 'POST',
@@ -345,6 +495,42 @@ export default function StaffPage() {
     await loadUsers();
   };
 
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleteSubmitting(true);
+    await handleDelete(deleteTarget);
+    closeDeleteModal();
+  };
+
+  const handleRevokeInvite = async (invite: PendingInvite) => {
+    const confirmed = window.confirm(`Cancel invitation for ${invite.email}?`);
+    if (!confirmed) return;
+
+    setError('');
+    const result = await apiFetch('/api/admin/invitations/revoke', {
+      method: 'POST',
+      json: { invitationId: invite.id },
+    });
+
+    if (!result.ok) {
+      if (result.status === 401) {
+        const message = 'Session expired. Please sign out and sign in again.';
+        handleAuthExpired(message);
+      } else if (result.status === 403) {
+        const message = 'You dont have permission for that action.';
+        setError(message);
+        showToast(message, 'error');
+      } else {
+        setError(result.error || 'Unable to cancel invitation.');
+        showToast(result.error || 'Unable to cancel invitation.', 'error');
+      }
+      return;
+    }
+
+    showToast('Invitation canceled', 'success');
+    await loadUsers();
+  };
+
   const canResetSelf = () => {
     if (!resetTarget || !currentUser) return false;
     return resetTarget.authUserId === currentUser.authUserId;
@@ -356,12 +542,27 @@ export default function StaffPage() {
     setSuccessMessage('');
     setAuthBanner(null);
 
-    if (!/^\d{6}$/.test(resetPasscode)) {
-      setError('PIN must be exactly 6 digits.');
+    const normalizedPin = resetPasscode.replace(/\D/g, '').slice(0, 4);
+    const normalizedConfirm = resetConfirm.replace(/\D/g, '').slice(0, 4);
+
+    if (normalizedPin !== resetPasscode) {
+      setResetPasscode(normalizedPin);
+    }
+    if (normalizedConfirm !== resetConfirm) {
+      setResetConfirm(normalizedConfirm);
+    }
+
+    if (!/^\d{4}$/.test(normalizedPin)) {
+      setError('PIN must be exactly 4 digits.');
       return;
     }
 
-    if (resetPasscode !== resetConfirm) {
+    if (normalizedPin === '0000') {
+      setError('PIN cannot be 0000.');
+      return;
+    }
+
+    if (normalizedPin !== normalizedConfirm) {
       setError('PINs do not match.');
       return;
     }
@@ -373,22 +574,39 @@ export default function StaffPage() {
 
     setSubmitting(true);
     try {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[reset-pin] pin', normalizedPin, normalizedPin.length, 'confirm', normalizedConfirm, normalizedConfirm.length);
+      }
+      const payload = {
+        userId: resetTarget.id,
+        pinCode: normalizedPin,
+      };
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[reset-pin]', {
+          userId: resetTarget.id,
+          email: resetTarget.email,
+          pinLen: normalizedPin.length,
+        });
+        // eslint-disable-next-line no-console
+        console.debug('[reset-pin] payload', payload);
+      }
       const result = await apiFetch('/api/admin/set-passcode', {
         method: 'POST',
-        json: {
-          organizationId: activeRestaurantId,
-          email: resetTarget.email || undefined,
-          authUserId: resetTarget.email ? undefined : resetTarget.authUserId,
-          pinCode: resetPasscode,
-        },
+        json: payload,
       });
 
       if (!result.ok) {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.log('[set-passcode] status', result.status, 'error', result.error, 'data', result.data);
+        }
         if (result.status === 401) {
-          const message = 'Session expired. Please sign out and sign in again.';
+          const message = result.error || 'Session expired. Please sign out and sign in again.';
           handleAuthExpired(message);
         } else if (result.status === 403) {
-          const message = 'You dont have permission for that action.';
+          const message = result.error || 'You dont have permission for that action.';
           setError(message);
           showToast(message, 'error');
         } else {
@@ -410,14 +628,18 @@ export default function StaffPage() {
   // Must be called before any early returns
   const filteredUsers = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return users;
-    return users.filter((user) => {
-      if (user.fullName.toLowerCase().includes(term)) return true;
-      if (user.email.toLowerCase().includes(term)) return true;
-      const parts = user.fullName.toLowerCase().split(/\s+/);
+    const combined: StaffRow[] = [...users, ...invites];
+    if (!term) return combined;
+    return combined.filter((row) => {
+      if (isInviteRow(row)) {
+        return row.email.toLowerCase().includes(term);
+      }
+      if (row.fullName.toLowerCase().includes(term)) return true;
+      if (row.email.toLowerCase().includes(term)) return true;
+      const parts = row.fullName.toLowerCase().split(/\s+/);
       return parts.some((part) => part.includes(term));
     });
-  }, [users, searchTerm]);
+  }, [users, invites, searchTerm]);
 
   if (!isInitialized || !currentUser || !activeRestaurantId) {
     return (
@@ -485,8 +707,28 @@ export default function StaffPage() {
         <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-4 space-y-3">
           {loading ? (
             <p className="text-theme-secondary">Loading team...</p>
-          ) : users.length === 0 ? (
-            <p className="text-theme-muted">No users found.</p>
+          ) : filteredUsers.length === 0 ? (
+            <>
+              <div className="flex items-center gap-3 text-sm">
+                <input
+                  type="text"
+                  placeholder="Search staff..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="flex-1 bg-theme-primary/40 border border-theme-primary rounded-lg px-3 py-2 text-sm text-theme-primary placeholder:text-theme-muted focus:outline-none focus:ring-2 focus:ring-amber-500/60"
+                />
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm('')}
+                    className="text-xs text-theme-muted hover:text-theme-primary"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p className="text-theme-muted">No users found.</p>
+            </>
           ) : (
             <>
               <div className="flex items-center gap-3 text-sm">
@@ -508,53 +750,93 @@ export default function StaffPage() {
                 )}
               </div>
               <div className="space-y-2 divide-y divide-theme-primary/30">
-                {filteredUsers.map((user) => (
-                  <div
-                    key={user.id}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3"
-                  >
-                    <div>
-                      <p className="text-theme-primary font-medium text-base leading-tight">{user.fullName}</p>
-                      <p className="text-xs text-theme-muted">{user.email}</p>
-                      <p className="text-xs text-theme-muted">{user.phone}</p>
-                      <p className="text-xs text-theme-muted mt-1">
-                        {user.accountType}
-                        {user.jobs.length > 0 ? ` · ${user.jobs.join(', ')}` : ''}
-                      </p>
-                    </div>
-                    {isManager && (
-                      <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <button
-                          type="button"
-                          onClick={() => openProfile(user, 'edit')}
-                          disabled={!canManageUser(user)}
-                          className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
-                        >
-                          <Edit3 className="w-3 h-3" />
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(user)}
-                          disabled={!canManageUser(user) || user.authUserId === currentUser?.authUserId}
-                          className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          Delete
-                        </button>
-                        {canResetPin(user) && (
-                          <button
-                            type="button"
-                            onClick={() => openResetModal(user)}
-                            className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
-                          >
-                            Reset PIN
-                          </button>
+                {filteredUsers.map((row) => {
+                  if (isInviteRow(row)) {
+                    return (
+                      <div
+                        key={row.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3"
+                      >
+                        <div>
+                          <p className="text-theme-primary font-medium text-base leading-tight">Pending Employee</p>
+                          <p className="text-xs text-theme-muted">{row.email}</p>
+                          <div className="mt-2">
+                            <span className="inline-flex items-center rounded-full bg-amber-500/10 text-amber-400 px-2 py-0.5 text-xs font-semibold">
+                              Invitation Sent
+                            </span>
+                          </div>
+                        </div>
+                        {isManager && (
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeInvite(row)}
+                              className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                            >
+                              <XCircle className="w-3 h-3" />
+                              Cancel Invite
+                            </button>
+                          </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                ))}
+                    );
+                  }
+
+                  const user = row;
+
+                  return (
+                    <div
+                      key={user.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3"
+                    >
+                      <div>
+                        <p className="text-theme-primary font-medium text-base leading-tight">{user.fullName}</p>
+                        <p className="text-xs text-theme-muted">{user.email}</p>
+                        {user.employeeNumber !== null && user.employeeNumber !== undefined && (
+                          <p className="text-xs text-theme-muted">
+                            Employee #: {String(user.employeeNumber).padStart(4, '0')}
+                          </p>
+                        )}
+                        <p className="text-xs text-theme-muted">{user.phone}</p>
+                        <p className="text-xs text-theme-muted mt-1">
+                          {user.accountType}
+                          {user.jobs.length > 0 ? ` · ${user.jobs.join(', ')}` : ''}
+                        </p>
+                      </div>
+                      {isManager && (
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => openProfile(user, 'edit')}
+                            disabled={!canManageUser(user)}
+                            className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openDeleteModal(user)}
+                            disabled={!canManageUser(user) || user.authUserId === currentUser?.authUserId}
+                            className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            Delete
+                          </button>
+                          {canResetPin(user) && (
+                            <button
+                              type="button"
+                              onClick={() => openResetModal(user)}
+                              className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
+                            >
+                              Reset PIN
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}
@@ -583,8 +865,28 @@ export default function StaffPage() {
                 <input
                   type="email"
                   value={formState.email}
-                  onChange={(e) => setFormState((prev) => ({ ...prev, email: e.target.value }))}
+                  onChange={(e) => {
+                    setFormState((prev) => ({ ...prev, email: e.target.value }));
+                    setInvitationMode(false);
+                  }}
+                  onBlur={handleEmailBlur}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-theme-secondary">Employee # (4 digits)</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={formState.employeeNumber}
+                  onChange={(e) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      employeeNumber: e.target.value.replace(/\D/g, ''),
+                    }))
+                  }
+                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 />
               </div>
               <div>
@@ -662,11 +964,11 @@ export default function StaffPage() {
                 </div>
               )}
               <div>
-                <label className="text-sm text-theme-secondary">PIN (6 digits)</label>
+                <label className="text-sm text-theme-secondary">PIN (4 digits)</label>
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={6}
+                  maxLength={4}
                   value={formState.passcode}
                   onChange={(e) =>
                     setFormState((prev) => ({
@@ -674,8 +976,14 @@ export default function StaffPage() {
                       passcode: e.target.value.replace(/\D/g, ''),
                     }))
                   }
-                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+                  disabled={invitationMode}
+                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
                 />
+                {invitationMode && (
+                  <p className="text-xs text-theme-muted mt-2">
+                    This employee already has an account. PIN cannot be set here.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -693,7 +1001,7 @@ export default function StaffPage() {
                 disabled={submitting}
                 className="px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors disabled:opacity-50"
               >
-                {submitting ? 'Saving...' : 'Save'}
+                {submitting ? 'Saving...' : invitationMode ? 'Send Invitation' : 'Create User'}
               </button>
             </div>
           </div>
@@ -714,6 +1022,30 @@ export default function StaffPage() {
         onAuthError={handleAuthExpired}
       />
 
+      {invitationModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setInvitationModalOpen(false)}
+          />
+          <div className="relative w-full max-w-md bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-theme-primary">Employee already exists</h2>
+            <p className="text-sm text-theme-tertiary">
+              This email already has an account. An invitation has been sent to join this restaurant. Their existing PIN will be used.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setInvitationModalOpen(false)}
+                className="px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {resetModalOpen && resetTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={closeResetModal} />
@@ -728,9 +1060,9 @@ export default function StaffPage() {
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={6}
+                  maxLength={4}
                   value={resetPasscode}
-                  onChange={(e) => setResetPasscode(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => setResetPasscode(e.target.value.replace(/\D/g, '').slice(0, 4))}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 />
               </div>
@@ -739,9 +1071,9 @@ export default function StaffPage() {
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={6}
+                  maxLength={4}
                   value={resetConfirm}
-                  onChange={(e) => setResetConfirm(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => setResetConfirm(e.target.value.replace(/\D/g, '').slice(0, 4))}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 />
               </div>
@@ -758,10 +1090,39 @@ export default function StaffPage() {
               <button
                 type="button"
                 onClick={handleResetPasscode}
-                disabled={!/^\d{6}$/.test(resetPasscode) || resetPasscode !== resetConfirm || submitting}
+                disabled={!/^\d{4}$/.test(resetPasscode) || resetPasscode === '0000' || resetPasscode !== resetConfirm || submitting}
                 className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
               >
                 {submitting ? 'Updating...' : 'Update PIN'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteModalOpen && deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={closeDeleteModal} />
+          <div className="relative w-full max-w-md bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-theme-primary">
+              Delete {deleteTarget.fullName || deleteTarget.email}?
+            </h2>
+            <p className="text-sm text-theme-tertiary">This cannot be undone.</p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeDeleteModal}
+                className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteConfirm}
+                disabled={deleteSubmitting}
+                className="px-4 py-2 rounded-lg bg-red-500 text-white font-semibold hover:bg-red-400 transition-colors disabled:opacity-50"
+              >
+                {deleteSubmitting ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>

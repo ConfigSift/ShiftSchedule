@@ -3,37 +3,78 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '../store/authStore';
-import { getUserRole, isManagerRole } from '../utils/role';
 
 export default function Home() {
   const router = useRouter();
-  const { currentUser, isInitialized, activeRestaurantId, init, userProfiles } = useAuthStore();
+  const {
+    currentUser,
+    isInitialized,
+    activeRestaurantId,
+    accessibleRestaurants,
+    pendingInvitations,
+    init,
+  } = useAuthStore();
 
   useEffect(() => {
     init();
   }, [init]);
 
   useEffect(() => {
-    if (isInitialized) {
-      if (!currentUser) {
-        router.push('/login');
-        return;
-      }
+    if (!isInitialized) return;
 
-      const role = getUserRole(currentUser.role);
-      if (isManagerRole(role) && !activeRestaurantId) {
-        router.push('/manager');
-        return;
-      }
-
-      if (!activeRestaurantId) {
-        router.push(role === 'EMPLOYEE' ? '/login' : '/manager');
-        return;
-      }
-
-      router.push('/dashboard');
+    // No user -> login
+    if (!currentUser) {
+      router.push('/login');
+      return;
     }
-  }, [isInitialized, currentUser, activeRestaurantId, userProfiles, router]);
+
+    // Rule 1: Pending invitations AND no valid selection -> /restaurants
+    if (pendingInvitations.length > 0 && !activeRestaurantId) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[home] pending invitations without selection, redirecting to /restaurants');
+      }
+      router.push('/restaurants');
+      return;
+    }
+
+    // Rule 2: No memberships -> /restaurants
+    if (accessibleRestaurants.length === 0) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[home] no memberships, redirecting to /restaurants');
+      }
+      router.push('/restaurants');
+      return;
+    }
+
+    // Rule 3: Single membership (activeRestaurantId should be set by init) -> /dashboard
+    if (accessibleRestaurants.length === 1) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[home] single membership, redirecting to /dashboard');
+      }
+      router.push('/dashboard');
+      return;
+    }
+
+    // Rule 4: Multiple memberships
+    if (activeRestaurantId) {
+      // Valid selection exists -> /dashboard
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[home] multiple memberships with valid selection, redirecting to /dashboard');
+      }
+      router.push('/dashboard');
+    } else {
+      // No valid selection -> /restaurants (do NOT auto-select)
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[home] multiple memberships without selection, redirecting to /restaurants');
+      }
+      router.push('/restaurants');
+    }
+  }, [isInitialized, currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
 
   return (
     <div className="min-h-screen bg-theme-primary flex items-center justify-center">

@@ -22,6 +22,9 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
   const isStandalonePage = pathname === '/login' || pathname === '/setup';
   const isChatPage = pathname === '/chat';
   const isDashboardPage = pathname === '/dashboard';
+  const isRestaurantsPage = pathname === '/restaurants';
+  // Hide footer on /restaurants - it's not relevant for restaurant selection
+  const shouldShowFooter = showFooter && !isRestaurantsPage;
 
   const { currentUser, activeRestaurantId, refreshProfile } = useAuthStore();
   const { showToast } = useScheduleStore();
@@ -40,6 +43,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
         jobs: currentUser.jobs || [],
         hourlyPay: currentUser.hourlyPay,
         jobPay: currentUser.jobPay,
+        employeeNumber: currentUser.employeeNumber ?? null,
       }
     : null;
 
@@ -82,10 +86,10 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
       }`}
       data-chat-shell={isChatPage ? 'true' : undefined}
     >
-      <Header />
+      <Header minimal={isRestaurantsPage} />
       {/* Main content area - accounts for fixed header and footer */}
       <div
-        className={`flex-1 min-h-0 pt-14 sm:pt-16 ${showFooter ? 'pb-12 sm:pb-14' : ''} bg-theme-timeline flex flex-col ${
+        className={`flex-1 min-h-0 pt-14 sm:pt-16 ${shouldShowFooter ? 'pb-12 sm:pb-14' : ''} bg-theme-timeline flex flex-col ${
           isChatPage || isDashboardPage ? 'overflow-hidden' : ''
         }`}
         data-chat-content={isChatPage ? 'true' : undefined}
@@ -98,7 +102,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
           {children}
         </div>
       </div>
-      {showFooter && <StatsFooter />}
+      {shouldShowFooter && <StatsFooter />}
       <StaffProfileModal
         isOpen={isProfileModalOpen}
         mode="edit"

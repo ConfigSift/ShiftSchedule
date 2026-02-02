@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
-import { jsonError } from '@/lib/apiResponses';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole, isManagerRole } from '@/utils/role';
 import { normalizeJobs, serializeJobsForStorage } from '@/utils/jobs';
 import { normalizeUserRow, splitFullName } from '@/utils/userMapper';
+import { isFourDigitPin, pinToAuthPassword } from '@/utils/pinAuth';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -15,6 +15,7 @@ type UpdatePayload = {
   fullName: string;
   email?: string;
   phone?: string;
+  employeeNumber?: number;
   accountType?: string;
   jobs?: string[];
   passcode?: string;
@@ -39,53 +40,110 @@ export async function POST(request: NextRequest) {
       process.env.NODE_ENV === 'production'
         ? 'Not signed in. Please sign out/in again.'
         : authError?.message || 'Unauthorized.';
-    return applySupabaseCookies(jsonError(message, 401), response);
+    return applySupabaseCookies(NextResponse.json({ error: message }, { status: 401 }), response);
   }
 
-  const { data: requesterRow, error: requesterError } = await supabase
-    .from('users')
-    .select('*')
+  const { data: requesterMembership, error: requesterMembershipError } = await supabase
+    .from('organization_memberships')
+    .select('role')
     .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
     .maybeSingle();
 
-  if (requesterError || !requesterRow) {
-    return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
+  if (requesterMembershipError || !requesterMembership) {
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+      response
+    );
   }
 
-  const requester = normalizeUserRow(requesterRow);
-  const requesterRole = requester.role;
-  const isSelfUpdate = requester.id === payload.userId;
+  const requesterRole = String(requesterMembership.role ?? '').trim().toUpperCase();
 
-  // Allow self-updates or manager/admin updates
-  if (!isManagerRole(requesterRole) && !isSelfUpdate) {
-    return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
-  }
-
-  if (requester.organizationId !== payload.organizationId) {
-    return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
+  if (payload.employeeNumber !== undefined) {
+    const num = Number(payload.employeeNumber);
+    if (!Number.isInteger(num) || num < 1 || num > 9999) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Employee number must be between 0001 and 9999.' }, { status: 400 }),
+        response
+      );
+    }
   }
 
   const { data: targetRow, error: targetError } = await supabaseAdmin
     .from('users')
     .select('*')
     .eq('id', payload.userId)
+    .eq('organization_id', payload.organizationId)
     .maybeSingle();
 
-  if (targetError || !targetRow) {
+  if (targetError) {
     return applySupabaseCookies(
-      NextResponse.json({ error: 'Target user not found.' }, { status: 404 }),
+      NextResponse.json({ error: targetError.message }, { status: 400 }),
       response
     );
   }
 
-  const target = normalizeUserRow(targetRow);
+  let targetProfileRow = targetRow;
+  let targetAuthUserId = targetRow?.auth_user_id ?? null;
 
-  if (target.organizationId !== payload.organizationId) {
-    return applySupabaseCookies(jsonError('Target not in this organization.', 403), response);
+  if (!targetAuthUserId) {
+    const { data: anyTargetRow, error: anyTargetError } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('id', payload.userId)
+      .maybeSingle();
+    if (anyTargetError) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: anyTargetError.message }, { status: 400 }),
+        response
+      );
+    }
+    targetAuthUserId = anyTargetRow?.auth_user_id ?? null;
+    if (!targetAuthUserId) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Target user not found.' }, { status: 404 }),
+        response
+      );
+    }
+    targetProfileRow = anyTargetRow ?? null;
   }
 
-  const rawRole = payload.accountType ?? target.role ?? '';
-  const targetCurrentRole = target.role;
+  const { data: targetMembership, error: targetMembershipError } = await supabaseAdmin
+    .from('organization_memberships')
+    .select('role')
+    .eq('organization_id', payload.organizationId)
+    .eq('auth_user_id', targetAuthUserId)
+    .maybeSingle();
+
+  if (targetMembershipError) {
+    return applySupabaseCookies(
+      NextResponse.json({ error: targetMembershipError.message }, { status: 400 }),
+      response
+    );
+  }
+
+  if (!targetMembership) {
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+      response
+    );
+  }
+
+  const isSelfUpdate = targetAuthUserId === authUserId;
+
+  if (!isManagerRole(requesterRole) && !isSelfUpdate) {
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+      response
+    );
+  }
+
+  const membershipRole = getUserRole(targetMembership.role ?? 'EMPLOYEE');
+  const existingRole = targetProfileRow
+    ? getUserRole(targetProfileRow.account_type ?? targetProfileRow.role ?? membershipRole)
+    : membershipRole;
+  const rawRole = payload.accountType ?? existingRole;
+  const targetCurrentRole = existingRole;
   const targetRole = getUserRole(rawRole);
   if (payload.accountType && !['ADMIN', 'MANAGER', 'EMPLOYEE', 'STAFF'].includes(String(payload.accountType).toUpperCase())) {
     return applySupabaseCookies(
@@ -95,39 +153,123 @@ export async function POST(request: NextRequest) {
   }
 
   if (requesterRole === 'MANAGER' && targetCurrentRole === 'ADMIN') {
-    return applySupabaseCookies(jsonError('Managers cannot edit admins.', 403), response);
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+      response
+    );
   }
 
   if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
-    return applySupabaseCookies(jsonError('Managers cannot assign ADMIN.', 403), response);
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+      response
+    );
   }
 
   if (requesterRole === 'MANAGER' && targetRole !== 'MANAGER' && targetRole !== 'EMPLOYEE') {
     return applySupabaseCookies(
-      jsonError('Managers can only assign MANAGER or EMPLOYEE.', 403),
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
     );
   }
 
   if (payload.accountType && targetRole === 'ADMIN' && !allowAdminCreation) {
-    return applySupabaseCookies(jsonError('Admin updates are disabled.', 403), response);
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+      response
+    );
   }
 
-  if (requesterRole === 'ADMIN' && target.authUserId === authUserId && targetRole !== 'ADMIN') {
-    return applySupabaseCookies(jsonError('Admins cannot demote themselves.', 403), response);
+  if (requesterRole === 'ADMIN' && targetAuthUserId === authUserId && targetRole !== 'ADMIN') {
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+      response
+    );
   }
-  if (target.authUserId === authUserId && payload.accountType && targetRole !== targetCurrentRole) {
-    return applySupabaseCookies(jsonError('You cannot change your own account type.', 403), response);
+  if (targetAuthUserId === authUserId && payload.accountType && targetRole !== targetCurrentRole) {
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+      response
+    );
   }
 
   // Employees doing self-updates can only change name, email, phone
   if (isSelfUpdate && !isManagerRole(requesterRole)) {
     if (payload.accountType || payload.jobs || payload.hourlyPay !== undefined || payload.jobPay || payload.passcode) {
-      return applySupabaseCookies(jsonError('You can only update your name, email, and phone.', 403), response);
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
+        response
+      );
     }
   }
 
-  const normalizedJobs = payload.jobs ? normalizeJobs(payload.jobs) : normalizeJobs(targetRow.jobs);
+  if (!targetRow) {
+    const fullName = payload.fullName?.trim() || String(payload.email ?? '').trim() || 'Team Member';
+    const normalizedEmail = String(payload.email ?? targetProfileRow?.email ?? '').trim().toLowerCase();
+    const phone = String(payload.phone ?? targetProfileRow?.phone ?? '').trim();
+    const profileRole = String(targetMembership.role ?? targetRole).trim() || targetRole;
+
+    const insertPayload: Record<string, unknown> = {
+      auth_user_id: targetAuthUserId,
+      organization_id: payload.organizationId,
+      full_name: fullName,
+      email: normalizedEmail || null,
+      real_email: normalizedEmail || null,
+      role: profileRole,
+    };
+    if (phone) {
+      insertPayload.phone = phone;
+    }
+
+    const insertResult = await supabaseAdmin.from('users').insert(insertPayload);
+    if (insertResult.error) {
+      const message = insertResult.error.message?.toLowerCase() ?? '';
+      if (message.includes('full_name') || message.includes('first_name') || message.includes('last_name')) {
+        const { firstName, lastName } = splitFullName(fullName);
+        const legacyPayload: Record<string, unknown> = {
+          auth_user_id: targetAuthUserId,
+          organization_id: payload.organizationId,
+          first_name: firstName,
+          last_name: lastName,
+          email: normalizedEmail || null,
+          real_email: normalizedEmail || null,
+          role: profileRole,
+        };
+        if (phone) {
+          legacyPayload.phone = phone;
+        }
+        const legacyResult = await supabaseAdmin.from('users').insert(legacyPayload);
+        if (legacyResult.error) {
+          return applySupabaseCookies(
+            NextResponse.json({ error: legacyResult.error.message }, { status: 400 }),
+            response
+          );
+        }
+      } else {
+        return applySupabaseCookies(
+          NextResponse.json({ error: insertResult.error.message }, { status: 400 }),
+          response
+        );
+      }
+    }
+
+    const { data: refreshedRow, error: refreshError } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('organization_id', payload.organizationId)
+      .eq('auth_user_id', targetAuthUserId)
+      .maybeSingle();
+    if (refreshError || !refreshedRow) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Target user not found.' }, { status: 404 }),
+        response
+      );
+    }
+    targetProfileRow = refreshedRow;
+  }
+
+  const target = normalizeUserRow(targetProfileRow);
+  const normalizedJobs = payload.jobs ? normalizeJobs(payload.jobs) : normalizeJobs(targetProfileRow.jobs);
   if ((targetRole === 'EMPLOYEE' || targetRole === 'MANAGER') && normalizedJobs.length === 0) {
     return applySupabaseCookies(
       NextResponse.json({ error: 'Managers and employees must have at least one job.' }, { status: 400 }),
@@ -136,7 +278,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Detect removed jobs and check for future shifts
-  const currentJobs = normalizeJobs(targetRow.jobs);
+  const currentJobs = normalizeJobs(targetProfileRow.jobs);
   const removedJobs = currentJobs.filter((job) => !normalizedJobs.includes(job));
 
   if (removedJobs.length > 0) {
@@ -146,7 +288,7 @@ export async function POST(request: NextRequest) {
     const { data: futureShifts, error: shiftError } = await supabaseAdmin
       .from('shifts')
       .select('id, shift_date, job')
-      .eq('user_id', payload.userId)
+      .eq('user_id', targetProfileRow.id)
       .gt('shift_date', today)
       .in('job', removedJobs)
       .order('shift_date', { ascending: true })
@@ -157,7 +299,7 @@ export async function POST(request: NextRequest) {
       const { count } = await supabaseAdmin
         .from('shifts')
         .select('id', { count: 'exact', head: true })
-        .eq('user_id', payload.userId)
+        .eq('user_id', targetProfileRow.id)
         .gt('shift_date', today)
         .in('job', removedJobs);
 
@@ -183,7 +325,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const jobsPayload = serializeJobsForStorage(targetRow.jobs, normalizedJobs);
+  const jobsPayload = serializeJobsForStorage(targetProfileRow.jobs, normalizedJobs);
 
   // Sanitize jobPay: ensure it's a valid Record<string, number> with no NaN values
   let sanitizedJobPay: Record<string, number> = {};
@@ -203,18 +345,21 @@ export async function POST(request: NextRequest) {
     ? (payValues.length > 0
         ? Math.round((payValues.reduce((sum, v) => sum + v, 0) / payValues.length) * 100) / 100
         : 0)
-    : payload.hourlyPay ?? targetRow.hourly_pay ?? 0;
+    : payload.hourlyPay ?? targetProfileRow.hourly_pay ?? 0;
 
   const baseUpdatePayload: Record<string, unknown> = {
     full_name: payload.fullName,
     phone: payload.phone ?? '',
-    account_type: targetRole,
+    role: targetRole,
     jobs: jobsPayload,
     hourly_pay: hourlyPayValue,
   };
   // Only include email if provided
   if (payload.email !== undefined) {
     baseUpdatePayload.email = payload.email;
+  }
+  if (payload.employeeNumber !== undefined) {
+    baseUpdatePayload.employee_number = payload.employeeNumber;
   }
   // Store job_pay as JSONB (not stringified TEXT)
   if (jobPayProvided) {
@@ -224,11 +369,12 @@ export async function POST(request: NextRequest) {
   const updateResult = await supabaseAdmin
     .from('users')
     .update(baseUpdatePayload)
-    .eq('id', payload.userId);
+    .eq('organization_id', payload.organizationId)
+    .eq('auth_user_id', targetAuthUserId);
 
   if (updateResult.error) {
     const message = updateResult.error.message?.toLowerCase() ?? '';
-    if (message.includes('full_name') || message.includes('account_type') || message.includes('hourly_pay')) {
+    if (message.includes('full_name') || message.includes('hourly_pay')) {
       const safeHourlyPay = message.includes('hourly_pay') ? undefined : hourlyPayValue;
       const { firstName, lastName } = splitFullName(payload.fullName);
       const legacyResult = await supabaseAdmin
@@ -241,9 +387,11 @@ export async function POST(request: NextRequest) {
           jobs: jobsPayload,
           ...(safeHourlyPay === undefined ? {} : { hourly_pay: safeHourlyPay }),
           ...(payload.email !== undefined ? { email: payload.email } : {}),
+          ...(payload.employeeNumber !== undefined ? { employee_number: payload.employeeNumber } : {}),
           ...(jobPayProvided ? { job_pay: sanitizedJobPay } : {}),
         })
-        .eq('id', payload.userId);
+        .eq('organization_id', payload.organizationId)
+        .eq('auth_user_id', targetAuthUserId);
       if (legacyResult.error) {
         return applySupabaseCookies(
           NextResponse.json({ error: legacyResult.error.message }, { status: 400 }),
@@ -259,25 +407,29 @@ export async function POST(request: NextRequest) {
   }
 
   if (payload.passcode) {
-    if (!/^\d{6}$/.test(payload.passcode)) {
+    if (!isFourDigitPin(payload.passcode)) {
       return applySupabaseCookies(
-        NextResponse.json({ error: 'PIN must be exactly 6 digits.' }, { status: 400 }),
+        NextResponse.json({ error: 'PIN must be exactly 4 digits.' }, { status: 400 }),
         response
       );
     }
-    if (!target.authUserId) {
+    if (!targetAuthUserId) {
       return applySupabaseCookies(
         NextResponse.json({ error: 'Target auth user missing.' }, { status: 400 }),
         response
       );
     }
     const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(
-      target.authUserId,
-      { password: payload.passcode }
+      targetAuthUserId,
+      { password: pinToAuthPassword(payload.passcode) }
     );
     if (authUpdateError) {
+      const cleanMessage =
+        authUpdateError.message?.toLowerCase().includes('password')
+          ? 'PIN must be exactly 4 digits.'
+          : authUpdateError.message;
       return applySupabaseCookies(
-        NextResponse.json({ error: authUpdateError.message }, { status: 400 }),
+        NextResponse.json({ error: cleanMessage }, { status: 400 }),
         response
       );
     }
@@ -287,7 +439,8 @@ export async function POST(request: NextRequest) {
   const { data: updatedRow, error: fetchError } = await supabaseAdmin
     .from('users')
     .select('*')
-    .eq('id', payload.userId)
+    .eq('organization_id', payload.organizationId)
+    .eq('auth_user_id', targetAuthUserId)
     .single();
 
   if (fetchError || !updatedRow) {

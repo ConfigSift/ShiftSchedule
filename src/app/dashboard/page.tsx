@@ -5,13 +5,19 @@ import { useRouter } from 'next/navigation';
 import { Dashboard } from '../../components/Dashboard';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
-import { getUserRole, isManagerRole } from '../../utils/role';
 
 export default function DashboardPage() {
   const router = useRouter();
   const [notice, setNotice] = useState<string | null>(null);
   const { hydrate, isHydrated } = useScheduleStore();
-  const { currentUser, isInitialized, activeRestaurantId, init, userProfiles } = useAuthStore();
+  const {
+    currentUser,
+    isInitialized,
+    activeRestaurantId,
+    accessibleRestaurants,
+    pendingInvitations,
+    init,
+  } = useAuthStore();
 
   useEffect(() => {
     hydrate();
@@ -31,19 +37,55 @@ export default function DashboardPage() {
   }, [isHydrated, init]);
 
   useEffect(() => {
-    if (isHydrated && isInitialized) {
-      if (!currentUser) {
-        router.push('/login');
-        return;
+    if (!isHydrated || !isInitialized) return;
+
+    // Rule: No user -> login
+    if (!currentUser) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[dashboard] no user, redirecting to /login');
       }
-      const role = getUserRole(currentUser.role);
-      if (isManagerRole(role) && !activeRestaurantId) {
-        router.push('/manager');
-      } else if (!activeRestaurantId) {
-        router.push(role === 'EMPLOYEE' ? '/login' : '/manager');
-      }
+      router.push('/login');
+      return;
     }
-  }, [isHydrated, isInitialized, currentUser, activeRestaurantId, userProfiles, router]);
+
+    // Rule 1: Pending invitations AND no valid selection -> /restaurants
+    if (pendingInvitations.length > 0 && !activeRestaurantId) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[dashboard] pending invitations without selection, redirecting to /restaurants');
+      }
+      router.push('/restaurants');
+      return;
+    }
+
+    // Rule 2: No memberships -> /restaurants (shows no-access message)
+    if (accessibleRestaurants.length === 0) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[dashboard] no memberships, redirecting to /restaurants');
+      }
+      router.push('/restaurants');
+      return;
+    }
+
+    // Rule 3: Single membership - activeRestaurantId should already be set by init()
+    // Rule 4: Multiple memberships without valid selection -> /restaurants
+    if (!activeRestaurantId) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[dashboard] no active restaurant, redirecting to /restaurants');
+      }
+      router.push('/restaurants');
+      return;
+    }
+
+    // activeRestaurantId is set and valid -> allow dashboard access
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.debug('[dashboard] valid selection, allowing access:', activeRestaurantId);
+    }
+  }, [isHydrated, isInitialized, currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
 
   if (!isHydrated || !isInitialized || !currentUser) {
     return (

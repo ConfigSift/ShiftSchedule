@@ -9,6 +9,7 @@ import { useAuthStore } from '../../store/authStore';
 import { getUserRole, isManagerRole } from '../../utils/role';
 import { supabase } from '../../lib/supabase/client';
 import { splitFullName } from '../../utils/userMapper';
+import { isFourDigitPin, pinToAuthPassword } from '../../utils/pinAuth';
 
 export default function SetupClient() {
   const router = useRouter();
@@ -89,8 +90,8 @@ export default function SetupClient() {
       return;
     }
 
-    if (!/^\d{6}$/.test(password)) {
-      setError('PIN must be exactly 6 digits');
+    if (!isFourDigitPin(password)) {
+      setError('PIN must be exactly 4 digits');
       return;
     }
 
@@ -104,7 +105,7 @@ export default function SetupClient() {
     try {
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: email.trim().toLowerCase(),
-        password,
+        password: pinToAuthPassword(password),
       });
 
       if (authError) {
@@ -346,7 +347,7 @@ export default function SetupClient() {
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={6}
+                  maxLength={4}
                   value={password}
                   onChange={(e) => setPassword(e.target.value.replace(/\D/g, ''))}
                   className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
@@ -365,7 +366,7 @@ export default function SetupClient() {
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={6}
+                  maxLength={4}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value.replace(/\D/g, ''))}
                   className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"

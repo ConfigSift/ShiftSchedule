@@ -20,6 +20,7 @@ type ProfileUser = {
   fullName: string;
   email: string;
   phone: string;
+  employeeNumber?: number | null;
   accountType: string;
   jobs: string[];
   hourlyPay?: number;
@@ -31,7 +32,7 @@ export default function StaffProfilePage() {
   const router = useRouter();
   const userId = String(params?.userId ?? '');
 
-  const { currentUser, init, isInitialized, activeRestaurantId, updateProfile, signOut } = useAuthStore();
+  const { currentUser, init, isInitialized, activeRestaurantId, updateProfile, signOut, accessibleRestaurants } = useAuthStore();
   const { loadRestaurantData, getBlockedRequestsForEmployee, deleteBlockedPeriod, openModal, showToast } =
     useScheduleStore();
 
@@ -44,6 +45,7 @@ export default function StaffProfilePage() {
   const [jobs, setJobs] = useState<string[]>([]);
   const [jobPay, setJobPay] = useState<Record<string, string>>({});
   const [email, setEmail] = useState('');
+  const [employeeNumber, setEmployeeNumber] = useState('');
   const [saving, setSaving] = useState(false);
   const [authBanner, setAuthBanner] = useState<string | null>(null);
 
@@ -53,6 +55,10 @@ export default function StaffProfilePage() {
   const allowAdminCreation = process.env.NEXT_PUBLIC_ENABLE_ADMIN_CREATION === 'true';
   const isSelf = Boolean(currentUser?.id && currentUser.id === user?.id);
   const targetRole = getUserRole(user?.accountType);
+  const hasManagerMembership = accessibleRestaurants.some((restaurant) => {
+    const value = String(restaurant.role ?? '').trim().toLowerCase();
+    return value === 'admin' || value === 'manager';
+  });
 
   useEffect(() => {
     init();
@@ -111,6 +117,7 @@ export default function StaffProfilePage() {
       fullName: normalized.fullName,
       email: normalized.email ?? '',
       phone: normalized.phone ?? '',
+      employeeNumber: normalized.employeeNumber ?? null,
       accountType: normalized.role,
       jobs: normalized.jobs,
       hourlyPay: normalized.hourlyPay,
@@ -129,6 +136,7 @@ export default function StaffProfilePage() {
     });
     setJobPay(initialJobPay);
     setEmail(mapped.email);
+    setEmployeeNumber(mapped.employeeNumber ? String(mapped.employeeNumber).padStart(4, '0') : '');
     setLoading(false);
   };
 
@@ -170,6 +178,14 @@ export default function StaffProfilePage() {
     setAuthBanner(null);
     if (!fullName.trim()) {
       setError('Full name is required.');
+      return;
+    }
+    if (employeeNumber.trim() && !/^\d{4}$/.test(employeeNumber.trim())) {
+      setError('Employee number must be 4 digits.');
+      return;
+    }
+    if (employeeNumber.trim() === '0000') {
+      setError('Employee number 0000 is not allowed.');
       return;
     }
     if ((targetRole === 'EMPLOYEE' || targetRole === 'MANAGER') && jobs.length === 0 && canEditJobs) {
@@ -222,6 +238,7 @@ export default function StaffProfilePage() {
           organizationId: activeRestaurantId,
           fullName: fullName.trim(),
           phone: phone.trim() || '',
+          employeeNumber: employeeNumber.trim() ? Number(employeeNumber) : undefined,
           accountType: canEditAccountType ? accountType : undefined,
           jobs: canEditJobs ? jobs : user.jobs,
           hourlyPay: canEditJobs ? avgHourlyPay : user.hourlyPay,
@@ -299,10 +316,14 @@ export default function StaffProfilePage() {
                 <Link href="/dashboard" className="hover:text-theme-primary">
                   Dashboard
                 </Link>
-                <span>/</span>
-                <Link href="/manager" className="hover:text-theme-primary">
-                  Site Manager
-                </Link>
+                {hasManagerMembership && (
+                  <>
+                    <span>/</span>
+                    <Link href="/manager" className="hover:text-theme-primary">
+                      Site Manager
+                    </Link>
+                  </>
+                )}
               </div>
             ) : (
               <div className="flex items-center gap-2 text-xs text-theme-tertiary">
@@ -395,6 +416,23 @@ export default function StaffProfilePage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={!isSelf}
+                className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-theme-secondary">Employee # (4 digits)</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={4}
+                value={employeeNumber}
+                onChange={(e) => setEmployeeNumber(e.target.value.replace(/\D/g, ''))}
+                onBlur={() => {
+                  if (employeeNumber.trim() && /^\d{1,4}$/.test(employeeNumber.trim())) {
+                    setEmployeeNumber(employeeNumber.trim().padStart(4, '0'));
+                  }
+                }}
+                disabled={!canEditProfile}
                 className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
               />
             </div>

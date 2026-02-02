@@ -23,6 +23,8 @@ export interface Employee {
   jobPay?: Record<string, number>; // Per-job hourly pay rates
   email?: string | null;
   phone?: string | null;
+  employeeNumber?: number | null;
+  realEmail?: string | null;
 }
 
 export interface Restaurant {
@@ -44,6 +46,8 @@ export interface UserProfile {
   jobs: string[];
   hourlyPay?: number;
   jobPay?: Record<string, number>; // Per-job hourly pay rates
+  employeeNumber?: number | null;
+  realEmail?: string | null;
 }
 
 export interface Shift {

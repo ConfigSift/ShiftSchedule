@@ -8,6 +8,8 @@ export type NormalizedUser = {
   authUserId: string | null;
   organizationId: string;
   email: string | null;
+  realEmail?: string | null;
+  employeeNumber?: number | null;
   fullName: string;
   phone: string | null;
   role: 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
@@ -46,6 +48,8 @@ export function normalizeUserRow(row: RawUserRow): NormalizedUser {
     authUserId: row.auth_user_id ?? null,
     organizationId: row.organization_id,
     email: row.email ?? null,
+    realEmail: row.real_email ?? null,
+    employeeNumber: row.employee_number ?? null,
     fullName: fullName || row.email || 'Team Member',
     phone: row.phone ?? null,
     role: getUserRole(row.account_type ?? row.role),

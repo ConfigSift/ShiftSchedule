@@ -243,7 +243,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   viewMode: 'day',
   selectedSections: ['kitchen', 'front', 'bar', 'management'],
   selectedEmployeeIds: [],
-  workingTodayOnly: false,
+  workingTodayOnly: true,
   hoveredShiftId: null,
 
   modalType: null,

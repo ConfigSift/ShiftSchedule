@@ -14,6 +14,7 @@ type StaffProfileUser = {
   fullName: string;
   email: string;
   phone: string;
+  employeeNumber?: number | null;
   accountType: string;
   jobs: string[];
   hourlyPay?: number;
@@ -51,6 +52,7 @@ export function StaffProfileModal({
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [emailError, setEmailError] = useState('');
+  const [employeeNumber, setEmployeeNumber] = useState('');
   const [phone, setPhone] = useState('');
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
@@ -65,7 +67,9 @@ export function StaffProfileModal({
 
   // Create a stable key that changes when user ID or jobPay data changes
   // This ensures re-initialization when saved data differs from local state
-  const userDataKey = user ? `${user.id}:${JSON.stringify(user.jobPay ?? {})}:${(user.jobs ?? []).join(',')}` : null;
+  const userDataKey = user
+    ? `${user.id}:${JSON.stringify(user.jobPay ?? {})}:${(user.jobs ?? []).join(',')}:${user.employeeNumber ?? ''}`
+    : null;
 
   // Initialize state only when modal opens OR user data changes
   useEffect(() => {
@@ -77,6 +81,9 @@ export function StaffProfileModal({
     setEmail(user.email || '');
     setEmailError('');
     setPhone(user.phone || '');
+    setEmployeeNumber(
+      user.employeeNumber ? String(user.employeeNumber).padStart(4, '0') : ''
+    );
     setAccountType(getUserRole(user.accountType));
     const normalizedJobs = normalizeJobs(user.jobs);
     setJobs(normalizedJobs);
@@ -266,6 +273,14 @@ export function StaffProfileModal({
       onError('Full name is required.');
       return;
     }
+    if (employeeNumber.trim() && !/^\d{4}$/.test(employeeNumber.trim())) {
+      onError('Employee number must be 4 digits.');
+      return;
+    }
+    if (employeeNumber.trim() === '0000') {
+      onError('Employee number 0000 is not allowed.');
+      return;
+    }
     // Validate email if it can be edited
     if (canEditEmail && !validateEmail(email)) {
       return;
@@ -313,6 +328,7 @@ export function StaffProfileModal({
           fullName: fullName.trim(),
           email: canEditEmail ? email.trim() : undefined,
           phone: phone.trim() || '',
+          employeeNumber: employeeNumber.trim() ? Number(employeeNumber) : undefined,
           accountType: canEditAccountType ? accountType : undefined,
           jobs,
           hourlyPay: avgHourlyPay,
@@ -358,6 +374,7 @@ export function StaffProfileModal({
             fullName: returnedUser.fullName || '',
             email: returnedUser.email || '',
             phone: returnedUser.phone || '',
+            employeeNumber: returnedUser.employeeNumber ?? null,
             accountType: returnedUser.role,
             jobs: returnedUser.jobs || [],
             jobPay: returnedUser.jobPay,
@@ -422,6 +439,25 @@ export function StaffProfileModal({
           {emailError && (
             <p className="text-xs text-red-400 mt-1">{emailError}</p>
           )}
+        </div>
+
+        <div>
+          <label className="text-sm text-theme-secondary">Employee # (4 digits)</label>
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={4}
+            value={employeeNumber}
+            onChange={(e) => setEmployeeNumber(e.target.value.replace(/\D/g, ''))}
+            onBlur={() => {
+              if (employeeNumber.trim() && /^\d{1,4}$/.test(employeeNumber.trim())) {
+                const padded = employeeNumber.trim().padStart(4, '0');
+                setEmployeeNumber(padded);
+              }
+            }}
+            disabled={!canEdit}
+            className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+          />
         </div>
 
         <div>
