@@ -31,10 +31,22 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError(message, 401), response);
   }
 
+  const { data: membershipRow, error: membershipError } = await supabase
+    .from('organization_memberships')
+    .select('auth_user_id, organization_id')
+    .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
+    .maybeSingle();
+
+  if (membershipError || !membershipRow) {
+    return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
+  }
+
   const { data: requesterRow, error: requesterError } = await supabase
     .from('users')
     .select('*')
     .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
@@ -42,9 +54,7 @@ export async function POST(request: NextRequest) {
   }
 
   const requester = normalizeUserRow(requesterRow);
-  if (requester.organizationId !== payload.organizationId) {
-    return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
-  }
+  // NOTE: auth_user_id (auth.users) != users.id (profile); we store requester_user_id as users.id.
 
   const blackout = await supabaseAdmin
     .from('blocked_day_requests')

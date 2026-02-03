@@ -2,41 +2,41 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
-import { normalizeUserRow } from '@/utils/userMapper';
-import { shiftsOverlap } from '@/utils/timeUtils';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 type PickupPayload = {
-  requestId: string;
+  shiftId: string;
+  organizationId: string;
 };
 
-function isPastDate(dateStr: string) {
-  const today = new Date();
-  const date = new Date(`${dateStr}T00:00:00`);
-  today.setHours(0, 0, 0, 0);
-  return date < today;
-}
-
-function parseTimeToDecimal(value: string | null | undefined) {
-  if (!value) return 0;
-  const [hours, minutes = '0'] = value.split(':');
-  const hour = Number(hours);
-  const minute = Number(minutes);
-  if (Number.isNaN(hour) || Number.isNaN(minute)) return 0;
-  return hour + minute / 60;
+function parseTimeToMinutes(value: string | null | undefined) {
+  if (!value) return null;
+  const [hoursText, minutesText = '0'] = value.split(':');
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
 }
 
 export async function POST(request: NextRequest) {
   const payload = (await request.json()) as PickupPayload;
-  if (!payload.requestId) {
-    return NextResponse.json({ error: 'requestId is required.' }, { status: 400 });
+  const missingFields = [
+    !payload.shiftId ? 'shiftId' : null,
+    !payload.organizationId ? 'organizationId' : null,
+  ].filter(Boolean);
+  if (missingFields.length > 0) {
+    return NextResponse.json(
+      { error: `Missing required field(s): ${missingFields.join(', ')}.` },
+      { status: 400 }
+    );
   }
 
   const { supabase, response } = createSupabaseRouteClient(request);
   const { data: authData, error: authError } = await supabase.auth.getUser();
   const authUserId = authData.user?.id;
+  const conflictMessage = 'This shift conflicts with an existing shift on your schedule.';
 
   if (!authUserId) {
     const message =
@@ -46,133 +46,266 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError(message, 401), response);
   }
 
+  const respondConflict = (
+    conflicts: Array<{ id: string; shift_date: string | null; start_time: string | null; end_time: string | null }>
+  ) =>
+    applySupabaseCookies(
+      NextResponse.json({ error: conflictMessage, conflicts }, { status: 409 }),
+      response
+    );
+
+  const { data: membershipRow, error: membershipError } = await supabaseAdmin
+    .from('organization_memberships')
+    .select('organization_id')
+    .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
+    .maybeSingle();
+
+  if (membershipError || !membershipRow) {
+    return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
+  }
+
   const { data: requesterRow, error: requesterError } = await supabase
     .from('users')
-    .select('*')
+    .select('id')
     .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
     return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
   }
 
-  const requester = normalizeUserRow(requesterRow);
-  if (!requester.organizationId) {
-    return applySupabaseCookies(jsonError('Organization missing.', 400), response);
-  }
+  let shiftRow: Record<string, any> | null = null;
+  let hasMarketplaceColumn = true;
 
-  const { data: requestRow, error: requestError } = await supabaseAdmin
-    .from('shift_exchange_requests')
-    .select('*')
-    .eq('id', payload.requestId)
-    .maybeSingle();
-
-  if (requestError || !requestRow) {
-    return applySupabaseCookies(jsonError('Request not found.', 404), response);
-  }
-
-  if (requestRow.organization_id !== requester.organizationId) {
-    return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
-  }
-
-  if (requestRow.status !== 'OPEN') {
-    return applySupabaseCookies(jsonError('Request is no longer open.', 400), response);
-  }
-
-  const { data: shiftRow, error: shiftError } = await supabaseAdmin
+  const shiftWithMarketplace = await supabaseAdmin
     .from('shifts')
-    .select('id,organization_id,user_id,shift_date,start_time,end_time')
-    .eq('id', requestRow.shift_id)
+    .select('id,organization_id,user_id,shift_date,start_time,end_time,is_marketplace')
+    .eq('id', payload.shiftId)
     .maybeSingle();
 
-  if (shiftError || !shiftRow) {
+  if (shiftWithMarketplace.error) {
+    const message = String(shiftWithMarketplace.error.message ?? '');
+    const missingMarketplace =
+      message.toLowerCase().includes('is_marketplace') && message.toLowerCase().includes('does not exist');
+    if (!missingMarketplace) {
+      return applySupabaseCookies(jsonError(shiftWithMarketplace.error.message, 400), response);
+    }
+    hasMarketplaceColumn = false;
+  } else {
+    shiftRow = shiftWithMarketplace.data as Record<string, any> | null;
+  }
+
+  if (!shiftRow) {
+    const fallback = await supabaseAdmin
+      .from('shifts')
+      .select('id,organization_id,user_id,shift_date,start_time,end_time')
+      .eq('id', payload.shiftId)
+      .maybeSingle();
+    if (fallback.error) {
+      return applySupabaseCookies(jsonError(fallback.error.message, 400), response);
+    }
+    shiftRow = fallback.data as Record<string, any> | null;
+  }
+
+  if (!shiftRow) {
     return applySupabaseCookies(jsonError('Shift not found.', 404), response);
   }
 
-  if (shiftRow.organization_id !== requester.organizationId) {
+  if (shiftRow.organization_id !== payload.organizationId) {
     return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
   }
 
-  if (isPastDate(shiftRow.shift_date)) {
-    return applySupabaseCookies(jsonError('Cannot pick up past shifts.', 400), response);
+  if (hasMarketplaceColumn && shiftRow.is_marketplace !== true) {
+    return applySupabaseCookies(jsonError('Shift is not currently available to pick up.', 400), response);
   }
 
-  const { data: blockedRows, error: blockedError } = await supabaseAdmin
-    .from('blocked_day_requests')
-    .select('user_id,scope,start_date,end_date,status')
-    .eq('organization_id', requester.organizationId)
-    .eq('status', 'APPROVED')
-    .lte('start_date', shiftRow.shift_date)
-    .gte('end_date', shiftRow.shift_date);
-
-  if (blockedError) {
-    return applySupabaseCookies(jsonError(blockedError.message, 400), response);
+  if (shiftRow.user_id && shiftRow.user_id === requesterRow.id) {
+    return applySupabaseCookies(jsonError('You cannot pick up your own shift.', 403), response);
   }
 
-  const blocked = (blockedRows ?? []).some((row) => {
-    const scope = String(row.scope ?? '').toUpperCase();
-    if (scope === 'ORG_BLACKOUT') return true;
-    if (scope === 'EMPLOYEE' && row.user_id === requester.id) return true;
-    return false;
-  });
+  const ignoredStatuses = new Set(['CANCELLED', 'CANCELED', 'DENIED', 'DROPPED', 'MARKETPLACE', 'OPEN', 'AVAILABLE']);
 
-  if (blocked) {
-    return applySupabaseCookies(jsonError('Shift falls on a blocked day.', 400), response);
+  const targetStart = parseTimeToMinutes(shiftRow.start_time);
+  const targetEnd = parseTimeToMinutes(shiftRow.end_time);
+  if (targetStart == null || targetEnd == null || targetEnd <= targetStart) {
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.debug('[shift-exchange:pickup] conflict', {
+        authUserId,
+        shiftId: payload.shiftId,
+        organizationId: payload.organizationId,
+        reason: 'invalid_target_time',
+      });
+    }
+    return respondConflict([]);
   }
 
-  const { data: existingShifts, error: existingError } = await supabaseAdmin
+  const buildConflicts = (rows: any[]) => {
+    const conflicts: Array<{
+      id: string;
+      shift_date: string | null;
+      start_time: string | null;
+      end_time: string | null;
+    }> = [];
+    for (const row of rows ?? []) {
+      if (row.is_blocked) continue;
+      const statusValue = row.status ? String(row.status).toUpperCase() : '';
+      if (statusValue && ignoredStatuses.has(statusValue)) continue;
+      if (hasMarketplaceColumn && row.is_marketplace === true) continue;
+      const existingStart = parseTimeToMinutes(row.start_time);
+      const existingEnd = parseTimeToMinutes(row.end_time);
+      if (existingStart == null || existingEnd == null || existingEnd <= existingStart) {
+        conflicts.push({
+          id: String(row.id),
+          shift_date: row.shift_date ?? shiftRow.shift_date ?? null,
+          start_time: row.start_time ?? null,
+          end_time: row.end_time ?? null,
+        });
+      } else if (existingStart < targetEnd && existingEnd > targetStart) {
+        conflicts.push({
+          id: String(row.id),
+          shift_date: row.shift_date ?? shiftRow.shift_date ?? null,
+          start_time: row.start_time ?? null,
+          end_time: row.end_time ?? null,
+        });
+      }
+      if (conflicts.length >= 5) break;
+    }
+    return conflicts;
+  };
+
+  const existingSelect = [
+    'id',
+    'start_time',
+    'end_time',
+    'shift_date',
+    hasMarketplaceColumn ? 'is_marketplace' : null,
+    'is_blocked',
+    'status',
+  ]
+    .filter(Boolean)
+    .join(',');
+
+  const existingResult = await supabaseAdmin
     .from('shifts')
-    .select('id,start_time,end_time')
-    .eq('organization_id', requester.organizationId)
-    .eq('user_id', requester.id)
+    .select(existingSelect)
+    .eq('organization_id', payload.organizationId)
+    .eq('user_id', requesterRow.id)
     .eq('shift_date', shiftRow.shift_date)
-    .neq('id', shiftRow.id);
+    .neq('id', payload.shiftId);
 
-  if (existingError) {
-    return applySupabaseCookies(jsonError(existingError.message, 400), response);
+  if (existingResult.error) {
+    const message = String(existingResult.error.message ?? '');
+    const missingBlocked = message.toLowerCase().includes('is_blocked') && message.toLowerCase().includes('does not exist');
+    const missingStatus = message.toLowerCase().includes('status') && message.toLowerCase().includes('does not exist');
+    if (missingBlocked || missingStatus) {
+      const fallbackSelect = [
+        'id',
+        'start_time',
+        'end_time',
+        'shift_date',
+        hasMarketplaceColumn ? 'is_marketplace' : null,
+      ]
+        .filter(Boolean)
+        .join(',');
+      const fallbackExisting = await supabaseAdmin
+        .from('shifts')
+        .select(fallbackSelect)
+        .eq('organization_id', payload.organizationId)
+        .eq('user_id', requesterRow.id)
+        .eq('shift_date', shiftRow.shift_date)
+        .neq('id', payload.shiftId);
+      if (fallbackExisting.error) {
+        return applySupabaseCookies(jsonError(fallbackExisting.error.message, 400), response);
+      }
+      const conflicts = buildConflicts(fallbackExisting.data ?? []);
+      if (conflicts.length > 0) {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.debug('[shift-exchange:pickup] conflict', {
+            authUserId,
+            shiftId: payload.shiftId,
+            organizationId: payload.organizationId,
+            reason: 'overlap',
+            conflicts: conflicts.slice(0, 3),
+          });
+        }
+        return respondConflict(conflicts);
+      }
+    } else {
+      return applySupabaseCookies(jsonError(existingResult.error.message, 400), response);
+    }
+  } else {
+    const conflicts = buildConflicts(existingResult.data ?? []);
+    if (conflicts.length > 0) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.debug('[shift-exchange:pickup] conflict', {
+          authUserId,
+          shiftId: payload.shiftId,
+          organizationId: payload.organizationId,
+          reason: 'overlap',
+          conflicts: conflicts.slice(0, 3),
+        });
+      }
+      return respondConflict(conflicts);
+    }
   }
 
-  const targetStart = parseTimeToDecimal(shiftRow.start_time);
-  const targetEnd = parseTimeToDecimal(shiftRow.end_time);
-  const hasOverlap = (existingShifts ?? []).some((shift) => {
-    const start = parseTimeToDecimal(shift.start_time);
-    const end = parseTimeToDecimal(shift.end_time);
-    return shiftsOverlap(targetStart, targetEnd, start, end);
-  });
-
-  if (hasOverlap) {
-    return applySupabaseCookies(jsonError('Shift overlaps with your existing shifts.', 400), response);
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.debug('[shift-exchange:pickup]', {
+      authUserId,
+      shiftId: payload.shiftId,
+      organizationId: payload.organizationId,
+      hasMarketplaceColumn,
+      isMarketplace: hasMarketplaceColumn ? shiftRow.is_marketplace === true : undefined,
+      ownerUserId: shiftRow.user_id,
+      requesterUserId: requesterRow.id,
+    });
   }
 
-  const originalUserId = shiftRow.user_id;
-  const { error: shiftUpdateError } = await supabaseAdmin
+  const updatePayload: Record<string, any> = { user_id: requesterRow.id };
+  if (hasMarketplaceColumn) {
+    updatePayload.is_marketplace = false;
+  }
+
+  let updateQuery = supabaseAdmin
     .from('shifts')
-    .update({ user_id: requester.id })
-    .eq('id', shiftRow.id);
+    .update(updatePayload)
+    .eq('id', payload.shiftId)
+    .eq('organization_id', payload.organizationId);
 
-  if (shiftUpdateError) {
-    return applySupabaseCookies(jsonError(shiftUpdateError.message, 400), response);
+  if (hasMarketplaceColumn) {
+    updateQuery = updateQuery.eq('is_marketplace', true);
   }
 
-  const { data: updatedRequest, error: updateError } = await supabaseAdmin
+  const { error: updateError } = await updateQuery;
+  if (updateError) {
+    return applySupabaseCookies(jsonError(updateError.message, 400), response);
+  }
+
+  const claimResult = await supabaseAdmin
     .from('shift_exchange_requests')
     .update({
       status: 'CLAIMED',
       claimed_by_auth_user_id: authUserId,
       claimed_at: new Date().toISOString(),
     })
-    .eq('id', payload.requestId)
-    .eq('status', 'OPEN')
-    .select('*')
-    .single();
+    .eq('shift_id', payload.shiftId)
+    .eq('organization_id', payload.organizationId)
+    .eq('status', 'OPEN');
 
-  if (updateError || !updatedRequest) {
-    await supabaseAdmin.from('shifts').update({ user_id: originalUserId }).eq('id', shiftRow.id);
-    return applySupabaseCookies(
-      NextResponse.json({ error: updateError?.message ?? 'Unable to claim request.' }, { status: 400 }),
-      response
-    );
+  if (claimResult.error) {
+    const message = String(claimResult.error.message ?? '');
+    const missingTable =
+      message.toLowerCase().includes('relation') && message.toLowerCase().includes('shift_exchange_requests');
+    if (!missingTable) {
+      return applySupabaseCookies(jsonError(claimResult.error.message, 400), response);
+    }
   }
 
-  return applySupabaseCookies(NextResponse.json({ request: updatedRequest }), response);
+  return applySupabaseCookies(NextResponse.json({ ok: true, shiftId: payload.shiftId }), response);
 }

@@ -19,15 +19,24 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
     showToast,
     loadRestaurantData,
   } = useScheduleStore();
-  const { currentUser, isInitialized, activeRestaurantId, init } = useAuthStore();
+  const { currentUser, isInitialized, activeRestaurantId, activeRestaurantCode, accessibleRestaurants, init } = useAuthStore();
 
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [statusFilter, setStatusFilter] = useState<'PENDING' | 'APPROVED' | 'DENIED'>('PENDING');
   const [reviewingIds, setReviewingIds] = useState<Set<string>>(new Set());
+  const [optimisticRemovedIds, setOptimisticRemovedIds] = useState<Set<string>>(new Set());
+  const [optimisticStatusById, setOptimisticStatusById] = useState<Record<string, 'APPROVED' | 'DENIED'>>({});
+  const [submittingById, setSubmittingById] = useState<Record<string, 'APPROVED' | 'DENIED'>>({});
 
-  const currentRole = getUserRole(currentUser?.role);
-  const isManager = isManagerRole(currentRole);
+  const matchedRestaurant = activeRestaurantId
+    ? accessibleRestaurants.find((restaurant) => restaurant.id === activeRestaurantId)
+    : undefined;
+  const effectiveRole = getUserRole(matchedRestaurant?.role ?? currentUser?.role);
+  const isManager = isManagerRole(effectiveRole);
   const canView = isManager || allowEmployee;
+  const restaurantLabel = matchedRestaurant
+    ? `${matchedRestaurant.name} (${matchedRestaurant.restaurantCode || activeRestaurantCode || ''})`
+    : '(none selected)';
 
   useEffect(() => {
     init();
@@ -39,6 +48,18 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
     }
   }, [isInitialized, activeRestaurantId, loadRestaurantData]);
 
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    const pendingCount = timeOffRequests.filter((request) => request.status === 'PENDING').length;
+    // eslint-disable-next-line no-console
+    console.debug('[TimeOffRequestsPanel]', {
+      activeRestaurantId,
+      effectiveRole,
+      totalRequests: timeOffRequests.length,
+      pendingRequests: pendingCount,
+    });
+  }, [activeRestaurantId, effectiveRole, timeOffRequests]);
+
   const splitReason = (value?: string) => {
     const text = String(value ?? '').trim();
     if (!text) return { reason: '-', note: '' };
@@ -49,18 +70,25 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
   };
 
   const filteredRequests = useMemo(() => {
-    let scoped = timeOffRequests;
+    let scoped = timeOffRequests.map((request) => ({
+      ...request,
+      status: optimisticStatusById[request.id] ?? request.status,
+    }));
     if (!isManager && currentUser) {
       scoped = scoped.filter((request) => request.employeeId === currentUser.id);
     }
-    const filtered = scoped.filter((request) => request.status === statusFilter);
+    const filtered = scoped.filter((request) => {
+      if (statusFilter === 'PENDING' && optimisticRemovedIds.has(request.id)) return false;
+      return request.status === statusFilter;
+    });
     return filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [timeOffRequests, statusFilter, currentUser, isManager]);
+  }, [timeOffRequests, statusFilter, currentUser, isManager, optimisticRemovedIds, optimisticStatusById]);
 
   const handleDecision = async (id: string, status: 'APPROVED' | 'DENIED') => {
     if (!currentUser) return;
-    if (reviewingIds.has(id)) return;
+    if (reviewingIds.has(id) || submittingById[id]) return;
     setReviewingIds((prev) => new Set(prev).add(id));
+    setSubmittingById((prev) => ({ ...prev, [id]: status }));
     const result = await reviewTimeOffRequest(id, status, currentUser.id, notesById[id]);
     if (!result.success) {
       showToast(result.error || 'Unable to update request', 'error');
@@ -69,15 +97,33 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
         next.delete(id);
         return next;
       });
+      setSubmittingById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       return;
     }
-    showToast(status === 'APPROVED' ? 'Request approved' : 'Request denied', 'success');
+    showToast(status === 'APPROVED' ? 'Approved request' : 'Denied request', 'success');
     setNotesById((prev) => ({ ...prev, [id]: '' }));
     setReviewingIds((prev) => {
       const next = new Set(prev);
       next.delete(id);
       return next;
     });
+    setSubmittingById((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (statusFilter === 'PENDING') {
+      setOptimisticRemovedIds((prev) => new Set(prev).add(id));
+    } else {
+      setOptimisticStatusById((prev) => ({ ...prev, [id]: status }));
+    }
+    if (activeRestaurantId) {
+      loadRestaurantData(activeRestaurantId);
+    }
   };
 
   if (!isInitialized || !currentUser || !canView) {
@@ -98,6 +144,11 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
           </p>
         </header>
       )}
+
+      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-theme-tertiary text-[11px] text-theme-secondary border border-theme-primary">
+        <span className="text-theme-muted">Restaurant:</span>
+        <span className="text-theme-primary">{restaurantLabel}</span>
+      </div>
 
       <div className="flex flex-wrap gap-2">
         {(['PENDING', 'APPROVED', 'DENIED'] as const).map((status) => (
@@ -192,17 +243,17 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
                         <div className="flex justify-end gap-2">
                           <button
                             onClick={() => handleDecision(request.id, 'DENIED')}
-                            disabled={reviewingIds.has(request.id)}
+                            disabled={reviewingIds.has(request.id) || Boolean(submittingById[request.id])}
                             className="px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                           >
-                            Deny
+                            {submittingById[request.id] === 'DENIED' ? 'Denying...' : 'Deny'}
                           </button>
                           <button
                             onClick={() => handleDecision(request.id, 'APPROVED')}
-                            disabled={reviewingIds.has(request.id)}
+                            disabled={reviewingIds.has(request.id) || Boolean(submittingById[request.id])}
                             className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                           >
-                            Approve
+                            {submittingById[request.id] === 'APPROVED' ? 'Approving...' : 'Approve'}
                           </button>
                         </div>
                       ) : (

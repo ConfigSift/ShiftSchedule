@@ -91,8 +91,8 @@ export function Timeline() {
     locations,
     hoveredShiftId,
     setHoveredShift,
-    updateShift,
     openModal,
+    modalType,
     showToast,
     hasApprovedTimeOff,
     hasBlockedShiftOnDate,
@@ -126,6 +126,12 @@ export function Timeline() {
   const [dragPreview, setDragPreview] = useState<Record<string, { startHour: number; endHour: number; date?: string }>>({});
   const [commitOverridesVersion, setCommitOverridesVersion] = useState(0);
   const commitOverridesRef = useRef<Record<string, { startDate: string; startHour: number; endDate: string; endHour: number }>>({});
+  const pendingShiftChangeRef = useRef<{
+    shiftId: string;
+    original: { date: string; startHour: number; endHour: number };
+    proposed: { date: string; startHour: number; endHour: number };
+  } | null>(null);
+  const lastModalTypeRef = useRef(modalType);
   const [hoveredAddSlot, setHoveredAddSlot] = useState<{
     employeeId: string;
     date: string;
@@ -1075,6 +1081,25 @@ export function Timeline() {
     }
   }, [scopedShifts, commitOverridesVersion]);
 
+  useEffect(() => {
+    const wasEdit = lastModalTypeRef.current === 'editShift';
+    if (wasEdit && modalType !== 'editShift') {
+      const pending = pendingShiftChangeRef.current;
+      if (pending) {
+        delete commitOverridesRef.current[pending.shiftId];
+        setCommitOverridesVersion((v) => v + 1);
+        setDragPreview((prev) => {
+          if (!prev[pending.shiftId]) return prev;
+          const next = { ...prev };
+          delete next[pending.shiftId];
+          return next;
+        });
+        pendingShiftChangeRef.current = null;
+      }
+    }
+    lastModalTypeRef.current = modalType;
+  }, [modalType]);
+
   const handleGridPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     lastPointerTypeRef.current = e.pointerType as 'mouse' | 'pen' | 'touch';
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -1282,56 +1307,70 @@ export function Timeline() {
       const duration = Date.now() - drag.startedAt;
       if (drag.activated) {
         lastDragAtRef.current = Date.now();
-        if (continuousDays) {
-          const startInfo = resolveAbsoluteMinutes(drag.lastStartMin);
-          const endInfo = resolveAbsoluteMinutes(drag.lastEndMin);
-          commitOverridesRef.current[drag.shiftId] = {
-            startDate: startInfo.date,
-            startHour: startInfo.hour,
-            endDate: endInfo.date,
-            endHour: endInfo.hour,
-          };
-        } else {
-          const selectedDateString = toDateString(selectedDate);
-          commitOverridesRef.current[drag.shiftId] = {
-            startDate: selectedDateString,
-            startHour: drag.lastStartMin / 60,
-            endDate: selectedDateString,
-            endHour: drag.lastEndMin / 60,
-          };
-        }
-        setCommitOverridesVersion((v) => v + 1);
-        if (continuousDays) {
-          const startInfo = resolveAbsoluteMinutes(drag.lastStartMin);
-          const endInfo = resolveAbsoluteMinutes(drag.lastEndMin);
-          const result = updateShift(String(drag.shiftId), {
-            startHour: startInfo.hour,
-            endHour: endInfo.hour,
-            date: startInfo.date,
-          });
-          Promise.resolve(result).then((res) => {
-            if (res && !res.success) {
-              delete commitOverridesRef.current[drag.shiftId];
+        const shift = scopedShifts.find((s) => String(s.id) === String(drag.shiftId));
+        if (shift) {
+          if (continuousDays) {
+            const startInfo = resolveAbsoluteMinutes(drag.lastStartMin);
+            const endInfo = resolveAbsoluteMinutes(drag.lastEndMin);
+            const sameDate = shift.date === startInfo.date;
+            const sameStart = Math.abs(shift.startHour - startInfo.hour) < 0.001;
+            const sameEnd = Math.abs(shift.endHour - endInfo.hour) < 0.001;
+            if (!sameDate || !sameStart || !sameEnd) {
+              commitOverridesRef.current[drag.shiftId] = {
+                startDate: startInfo.date,
+                startHour: startInfo.hour,
+                endDate: endInfo.date,
+                endHour: endInfo.hour,
+              };
+              pendingShiftChangeRef.current = {
+                shiftId: String(shift.id),
+                original: { date: shift.date, startHour: shift.startHour, endHour: shift.endHour },
+                proposed: { date: startInfo.date, startHour: startInfo.hour, endHour: endInfo.hour },
+              };
+              openModal('editShift', {
+                ...shift,
+                date: startInfo.date,
+                startHour: startInfo.hour,
+                endHour: endInfo.hour,
+                draftDate: startInfo.date,
+                draftStartHour: startInfo.hour,
+                draftEndHour: endInfo.hour,
+                modalKey: `${shift.id}:${startInfo.date}:${startInfo.hour.toFixed(2)}:${endInfo.hour.toFixed(2)}`,
+              });
               setCommitOverridesVersion((v) => v + 1);
             }
-          }).catch(() => {
-            delete commitOverridesRef.current[drag.shiftId];
-            setCommitOverridesVersion((v) => v + 1);
-          });
-        } else {
-          const result = updateShift(String(drag.shiftId), {
-            startHour: drag.lastStartMin / 60,
-            endHour: drag.lastEndMin / 60,
-          });
-          Promise.resolve(result).then((res) => {
-            if (res && !res.success) {
-              delete commitOverridesRef.current[drag.shiftId];
+          } else {
+            const selectedDateString = toDateString(selectedDate);
+            const nextStart = drag.lastStartMin / 60;
+            const nextEnd = drag.lastEndMin / 60;
+            const sameDate = shift.date === selectedDateString;
+            const sameStart = Math.abs(shift.startHour - nextStart) < 0.001;
+            const sameEnd = Math.abs(shift.endHour - nextEnd) < 0.001;
+            if (!sameDate || !sameStart || !sameEnd) {
+              commitOverridesRef.current[drag.shiftId] = {
+                startDate: selectedDateString,
+                startHour: nextStart,
+                endDate: selectedDateString,
+                endHour: nextEnd,
+              };
+              pendingShiftChangeRef.current = {
+                shiftId: String(shift.id),
+                original: { date: shift.date, startHour: shift.startHour, endHour: shift.endHour },
+                proposed: { date: selectedDateString, startHour: nextStart, endHour: nextEnd },
+              };
+              openModal('editShift', {
+                ...shift,
+                date: selectedDateString,
+                startHour: nextStart,
+                endHour: nextEnd,
+                draftDate: selectedDateString,
+                draftStartHour: nextStart,
+                draftEndHour: nextEnd,
+                modalKey: `${shift.id}:${selectedDateString}:${nextStart.toFixed(2)}:${nextEnd.toFixed(2)}`,
+              });
               setCommitOverridesVersion((v) => v + 1);
             }
-          }).catch(() => {
-            delete commitOverridesRef.current[drag.shiftId];
-            setCommitOverridesVersion((v) => v + 1);
-          });
+          }
         }
       } else if (dist < CLICK_DISTANCE && duration < CLICK_DURATION_MS) {
         const shift = scopedShifts.find((s) => String(s.id) === String(drag.shiftId));
@@ -1369,11 +1408,11 @@ export function Timeline() {
     getHourAndDateFromClientX,
     handleGridDragEnd,
     handleLaneMouseUp,
+    openModal,
     openShiftEditor,
     resolveAbsoluteMinutes,
     scopedShifts,
     selectedDate,
-    updateShift,
   ]);
 
   const handleGridPointerCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -1756,6 +1795,7 @@ export function Timeline() {
                       const shiftWidth = shiftDuration * PX_PER_HOUR;
                       const showTimeText = shiftWidth > 60;
                       const showJobText = shiftWidth > 80;
+                      const shiftNotes = typeof shift.notes === 'string' ? shift.notes.trim() : '';
 
                       return (
                         <div
@@ -1788,10 +1828,10 @@ export function Timeline() {
                             data-shift-body="true"
                             className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none overflow-hidden pointer-events-auto"
                           >
-                            <div className="h-full flex items-center px-0.5 overflow-hidden">
+                            <div className="h-full flex items-center px-0.5 overflow-hidden min-w-0">
                               {showTimeText ? (
                                 <span
-                                  className={`text-[10px] font-medium truncate ${
+                                  className={`text-[10px] font-medium truncate shrink-0 ${
                                     isHovered || isDraggingShift ? 'text-white' : ''
                                   }`}
                                   style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
@@ -1800,12 +1840,23 @@ export function Timeline() {
                                 </span>
                             ) : (
                                 <span
-                                  className={`text-[9px] font-medium truncate ${
+                                  className={`text-[9px] font-medium truncate shrink-0 ${
                                     isHovered || isDraggingShift ? 'text-white' : ''
                                   }`}
                                   style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
                                 >
                                   {Math.round(shiftDuration)}h
+                                </span>
+                              )}
+                              {shiftNotes && (
+                                <span
+                                  className={`ml-2 text-[9px] truncate text-right flex-1 min-w-0 ${
+                                    isHovered || isDraggingShift ? 'text-white/80' : ''
+                                  }`}
+                                  style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
+                                  title={shiftNotes}
+                                >
+                                  {shiftNotes}
                                 </span>
                               )}
                             </div>
@@ -2088,6 +2139,7 @@ export function Timeline() {
                     const shiftDuration = endHour - startHour;
                     const showTimeText = pos.widthPx > 60;
                     const showJobText = pos.widthPx > 80;
+                    const shiftNotes = typeof shift.notes === 'string' ? shift.notes.trim() : '';
 
                     return (
                       <div
@@ -2120,10 +2172,10 @@ export function Timeline() {
                           data-shift-body="true"
                           className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none overflow-hidden pointer-events-auto"
                         >
-                          <div className="h-full flex items-center px-0.5 overflow-hidden">
+                          <div className="h-full flex items-center px-0.5 overflow-hidden min-w-0">
                             {showTimeText ? (
                               <span
-                                className={`text-[10px] font-medium truncate ${
+                                className={`text-[10px] font-medium truncate shrink-0 ${
                                   isHovered || isDraggingShift ? 'text-white' : ''
                                 }`}
                                 style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
@@ -2132,12 +2184,23 @@ export function Timeline() {
                               </span>
                           ) : (
                               <span
-                                className={`text-[9px] font-medium truncate ${
+                                className={`text-[9px] font-medium truncate shrink-0 ${
                                   isHovered || isDraggingShift ? 'text-white' : ''
                                 }`}
                                 style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
                               >
                                 {Math.round(shiftDuration)}h
+                              </span>
+                            )}
+                            {shiftNotes && (
+                              <span
+                                className={`ml-2 text-[9px] truncate text-right flex-1 min-w-0 ${
+                                  isHovered || isDraggingShift ? 'text-white/80' : ''
+                                }`}
+                                style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
+                                title={shiftNotes}
+                              >
+                                {shiftNotes}
                               </span>
                             )}
                           </div>

@@ -27,15 +27,21 @@ export function BlockedDayRequestsPanel({
     getEmployeesForRestaurant,
     showToast,
   } = useScheduleStore();
-  const { currentUser, isInitialized, activeRestaurantId, init } = useAuthStore();
+  const { currentUser, isInitialized, activeRestaurantId, activeRestaurantCode, accessibleRestaurants, init } = useAuthStore();
 
   const [statusFilter, setStatusFilter] = useState<'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED'>('PENDING');
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [reviewingIds, setReviewingIds] = useState<Set<string>>(new Set());
 
-  const currentRole = getUserRole(currentUser?.role);
+  const matchedRestaurant = activeRestaurantId
+    ? accessibleRestaurants.find((restaurant) => restaurant.id === activeRestaurantId)
+    : undefined;
+  const currentRole = getUserRole(matchedRestaurant?.role ?? currentUser?.role);
   const isManager = isManagerRole(currentRole);
   const canView = isManager || allowEmployee;
+  const restaurantLabel = matchedRestaurant
+    ? `${matchedRestaurant.name} (${matchedRestaurant.restaurantCode || activeRestaurantCode || ''})`
+    : '(none selected)';
 
   useEffect(() => {
     init();
@@ -101,6 +107,11 @@ export function BlockedDayRequestsPanel({
           </p>
         </header>
       )}
+
+      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-theme-tertiary text-[11px] text-theme-secondary border border-theme-primary">
+        <span className="text-theme-muted">Restaurant:</span>
+        <span className="text-theme-primary">{restaurantLabel}</span>
+      </div>
 
       <div className="flex flex-wrap gap-2">
         {(['PENDING', 'APPROVED', 'DENIED', 'CANCELLED'] as const).map((status) => (

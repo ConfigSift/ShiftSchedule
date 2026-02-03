@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 interface ModalProps {
@@ -37,7 +38,7 @@ export function Modal({
     };
   }, [isOpen, handleEscape]);
 
-  if (!isOpen) return null;
+  if (!isOpen || typeof document === 'undefined') return null;
 
   const sizeClasses = {
     sm: 'sm:max-w-sm',
@@ -50,21 +51,21 @@ export function Modal({
     ? 'h-[100dvh] w-full sm:h-auto sm:max-h-[90vh] sm:w-full sm:mx-4 rounded-none sm:rounded-2xl'
     : 'max-h-[90vh] w-full mx-4 rounded-2xl';
 
-  return (
-    <div 
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[1000] flex items-end sm:items-center justify-center"
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-title"
     >
-      <div 
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm motion-safe:transition-opacity"
+      <div
+        className="absolute inset-0 z-[1000] bg-black/60 backdrop-blur-sm motion-safe:transition-opacity"
         onClick={onClose}
         aria-hidden="true"
       />
-      
-      <div 
-        className={`relative ${mobileClasses} ${sizeClasses[size]} bg-theme-secondary shadow-2xl border-0 sm:border border-theme-primary motion-safe:animate-slide-in overflow-hidden flex flex-col`}
+
+      <div
+        className={`relative z-[1001] ${mobileClasses} ${sizeClasses[size]} bg-theme-secondary shadow-2xl border-0 sm:border border-theme-primary motion-safe:animate-slide-in overflow-hidden flex flex-col`}
       >
         <div className="flex items-center justify-between p-4 border-b border-theme-primary shrink-0">
           <h2 id="modal-title" className="text-lg font-semibold text-theme-primary">{title}</h2>
@@ -76,11 +77,12 @@ export function Modal({
             <X className="w-5 h-5" />
           </button>
         </div>
-        
+
         <div className="flex-1 overflow-y-auto p-4 overscroll-contain">
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

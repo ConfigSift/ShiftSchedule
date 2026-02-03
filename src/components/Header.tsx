@@ -42,6 +42,7 @@ export function Header({ minimal = false }: HeaderProps) {
   const { 
     openModal,
     getPendingTimeOffRequests,
+    getPendingBlockedDayRequests,
   } = useScheduleStore();
 
   const { currentUser, signOut, accessibleRestaurants, pendingInvitations, activeRestaurantId } = useAuthStore();
@@ -55,6 +56,8 @@ export function Header({ minimal = false }: HeaderProps) {
   };
 
   const pendingRequests = getPendingTimeOffRequests();
+  const pendingBlockedRequests = getPendingBlockedDayRequests();
+  const pendingReviewCount = pendingRequests.length + pendingBlockedRequests.length;
   // Show "Restaurants" link if user has multiple restaurants OR has pending invitations
   const showRestaurantsLink = accessibleRestaurants.length > 1 || pendingInvitations.length > 0;
   const activeRestaurantName =
@@ -163,9 +166,9 @@ export function Header({ minimal = false }: HeaderProps) {
               >
                 <ClipboardList className="w-4 h-4" />
                 <span className="hidden lg:inline">Review Requests</span>
-                {pendingRequests.length > 0 && (
+                {isManagerRole(currentRole) && pendingReviewCount > 0 && (
                   <span className="w-5 h-5 bg-amber-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
-                    {pendingRequests.length}
+                    {pendingReviewCount}
                   </span>
                 )}
               </Link>
@@ -247,9 +250,9 @@ export function Header({ minimal = false }: HeaderProps) {
                     >
                       <ClipboardList className="w-4 h-4" />
                       Review Requests
-                      {pendingRequests.length > 0 && (
+                      {isManagerRole(currentRole) && pendingReviewCount > 0 && (
                         <span className="ml-auto w-5 h-5 bg-amber-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
-                          {pendingRequests.length}
+                          {pendingReviewCount}
                         </span>
                       )}
                     </Link>

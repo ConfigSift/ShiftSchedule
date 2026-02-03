@@ -49,6 +49,20 @@ function formatTimeFromDecimal(value: number): string {
   return `${paddedHours}:${paddedMinutes}:00`;
 }
 
+function toDateYMD(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function toTimeHMS(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${hours}:${minutes}:${seconds}`;
+}
+
 const DEBUG_SHIFT_SAVE = false;
 
 function clampForEditShift(startHour: number, endHour: number) {
@@ -82,6 +96,22 @@ function toLocalDateString(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function buildWorkingTodayKey(restaurantId: string | null, date: Date): string {
+  return `${restaurantId ?? 'none'}:${toLocalDateString(date)}`;
+}
+
+function getEffectiveRole(
+  restaurantId: string | null,
+  accessibleRestaurants: Array<{ id: string; role: string }>,
+  fallbackRole: unknown
+): 'ADMIN' | 'MANAGER' | 'EMPLOYEE' {
+  const matched = restaurantId
+    ? accessibleRestaurants.find((restaurant) => restaurant.id === restaurantId)
+    : undefined;
+  const role = getUserRole(matched?.role ?? fallbackRole);
+  return role === 'ADMIN' || role === 'MANAGER' ? role : 'EMPLOYEE';
+}
+
 type ViewMode = 'day' | 'week' | 'month';
 type ModalType =
   | 'addShift'
@@ -113,6 +143,7 @@ interface ScheduleState {
   selectedEmployeeIds: string[];
   workingTodayOnly: boolean;
   hoveredShiftId: string | null;
+  lastAppliedWorkingTodayKey: string | null;
 
   modalType: ModalType;
   modalData: any;
@@ -222,6 +253,7 @@ interface ScheduleState {
   getEmployeesForRestaurant: (restaurantId: string | null) => Employee[];
   getShiftsForRestaurant: (restaurantId: string | null) => Shift[];
   getPendingTimeOffRequests: () => TimeOffRequest[];
+  getPendingBlockedDayRequests: () => BlockedDayRequest[];
   getOpenDropRequests: () => DropShiftRequest[];
 
   getEffectiveHourRange: (dayOfWeek?: number) => { startHour: number; endHour: number };
@@ -245,6 +277,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   selectedEmployeeIds: [],
   workingTodayOnly: true,
   hoveredShiftId: null,
+  lastAppliedWorkingTodayKey: null,
 
   modalType: null,
   modalData: null,
@@ -276,6 +309,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         employees: [],
         shifts: [],
         selectedEmployeeIds: [],
+        lastAppliedWorkingTodayKey: null,
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
@@ -286,8 +320,13 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return;
     }
 
-    const currentUser = useAuthStore.getState().currentUser;
-    const currentRole = getUserRole(currentUser?.role);
+    const authState = useAuthStore.getState();
+    const currentUser = authState.currentUser;
+    const currentRole = getEffectiveRole(
+      restaurantId,
+      authState.accessibleRestaurants,
+      currentUser?.role
+    );
 
     const { data: userData, error: userError } = (await supabase
       .from('users')
@@ -370,7 +409,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       set({
         employees,
         shifts: [],
-        selectedEmployeeIds: employees.map((e) => e.id),
+        selectedEmployeeIds: [],
+        lastAppliedWorkingTodayKey: buildWorkingTodayKey(restaurantId, get().selectedDate),
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
@@ -550,10 +590,17 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           customEndHour: Number(settingsData.custom_end_hour ?? 24),
         };
 
+    const selectedDate = get().selectedDate;
+    const workingTodayKey = buildWorkingTodayKey(restaurantId, selectedDate);
+    const workingIdsForDate = shifts
+      .filter((shift) => shift.date === toLocalDateString(selectedDate) && !shift.isBlocked)
+      .map((shift) => shift.employeeId);
+
     set({
       employees,
       shifts,
-      selectedEmployeeIds: employees.map((e) => e.id),
+      selectedEmployeeIds: get().workingTodayOnly ? workingIdsForDate : employees.map((e) => e.id),
+      lastAppliedWorkingTodayKey: get().workingTodayOnly ? workingTodayKey : null,
       timeOffRequests,
       blockedDayRequests,
       businessHours,
@@ -566,7 +613,22 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     });
   },
 
-  setSelectedDate: (date) => set({ selectedDate: date }),
+  setSelectedDate: (date) => set((state) => {
+    if (!state.workingTodayOnly) {
+      return { selectedDate: date };
+    }
+    const restaurantId = useAuthStore.getState().activeRestaurantId ?? null;
+    const nextKey = buildWorkingTodayKey(restaurantId, date);
+    if (state.lastAppliedWorkingTodayKey === nextKey) {
+      return { selectedDate: date };
+    }
+    const workingIds = get().getWorkingEmployeeIdsForDate(date);
+    return {
+      selectedDate: date,
+      selectedEmployeeIds: workingIds,
+      lastAppliedWorkingTodayKey: nextKey,
+    };
+  }),
   setViewMode: (mode) => set({ viewMode: mode }),
 
   toggleSection: (section) => set((state) => {
@@ -636,17 +698,28 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
   selectAllEmployeesForRestaurant: (restaurantId) => set((state) => {
     if (!restaurantId) return { selectedEmployeeIds: [] };
-    // Select all active employees in the restaurant (not filtered by legacy sections)
-    return {
-      selectedEmployeeIds: state.employees
-        .filter((e) => e.restaurantId === restaurantId && e.isActive)
-        .map((e) => e.id),
-    };
+    const eligibleEmployees = state.employees
+      .filter((e) => e.restaurantId === restaurantId && e.isActive)
+      .map((e) => e.id);
+    return { selectedEmployeeIds: eligibleEmployees };
   }),
 
   deselectAllEmployees: () => set({ selectedEmployeeIds: [] }),
 
-  toggleWorkingTodayOnly: () => set((state) => ({ workingTodayOnly: !state.workingTodayOnly })),
+  toggleWorkingTodayOnly: () => set((state) => {
+    const next = !state.workingTodayOnly;
+    if (!next) {
+      return { workingTodayOnly: next };
+    }
+    const workingIds = get().getWorkingEmployeeIdsForDate(state.selectedDate);
+    const restaurantId = useAuthStore.getState().activeRestaurantId ?? null;
+    const nextKey = buildWorkingTodayKey(restaurantId, state.selectedDate);
+    return {
+      workingTodayOnly: next,
+      selectedEmployeeIds: workingIds,
+      lastAppliedWorkingTodayKey: nextKey,
+    };
+  }),
 
   getWorkingEmployeeIdsForDate: (date) => {
     const state = get();
@@ -720,14 +793,34 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     }
 
     const safeJob = shift.job;
+    const shiftDate =
+      shift.date instanceof Date
+        ? toDateYMD(shift.date)
+        : String(shift.date || toDateYMD(state.selectedDate)).trim();
+    const startTimeValue = shift.startHour as unknown;
+    const endTimeValue = shift.endHour as unknown;
+    const startTime =
+      startTimeValue instanceof Date ? toTimeHMS(startTimeValue) : formatTimeFromDecimal(shift.startHour);
+    const endTime =
+      endTimeValue instanceof Date ? toTimeHMS(endTimeValue) : formatTimeFromDecimal(shift.endHour);
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.debug('[shift-insert]', {
+        shift_date: shiftDate,
+        start_time: startTime,
+        end_time: endTime,
+        user_id: shift.employeeId,
+        job: safeJob,
+      });
+    }
     const { data, error } = await (supabase as any)
       .from('shifts')
       .insert({
         organization_id: restaurantId,
         user_id: shift.employeeId,
-        shift_date: shift.date,
-        start_time: formatTimeFromDecimal(shift.startHour),
-        end_time: formatTimeFromDecimal(shift.endHour),
+        shift_date: shiftDate,
+        start_time: startTime,
+        end_time: endTime,
         notes: shift.notes ?? null,
         is_blocked: false,
         job: safeJob,
@@ -1440,26 +1533,21 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     const state = get();
     if (!restaurantId) return [];
 
-    // When workingTodayOnly is enabled, compute working employee IDs for the selected date
-    let effectiveSelectedIds = state.selectedEmployeeIds;
-    if (state.workingTodayOnly) {
-      const dateString = toLocalDateString(state.selectedDate);
-      const workingIds = new Set<string>();
-      for (const shift of state.shifts) {
-        if (shift.date === dateString && !shift.isBlocked) {
-          workingIds.add(shift.employeeId);
-        }
-      }
-      // Intersection of selectedEmployeeIds and workingIds
-      effectiveSelectedIds = state.selectedEmployeeIds.filter((id) => workingIds.has(id));
+    const scopedEmployees = state.employees.filter(
+      (e) => e.restaurantId === restaurantId && state.selectedSections.includes(e.section)
+    );
+
+    if (state.selectedEmployeeIds.length > 0) {
+      const selectedSet = new Set(state.selectedEmployeeIds);
+      return scopedEmployees.filter((e) => selectedSet.has(e.id));
     }
 
-    return state.employees.filter(
-      (e) =>
-        e.restaurantId === restaurantId &&
-        state.selectedSections.includes(e.section) &&
-        effectiveSelectedIds.includes(e.id)
-    );
+    if (state.workingTodayOnly) {
+      const workingIds = new Set(get().getWorkingEmployeeIdsForDate(state.selectedDate));
+      return scopedEmployees.filter((e) => workingIds.has(e.id));
+    }
+
+    return scopedEmployees;
   },
 
   getEmployeesForRestaurant: (restaurantId) => {
@@ -1475,6 +1563,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   },
 
   getPendingTimeOffRequests: () => get().timeOffRequests.filter((r) => r.status === 'PENDING'),
+  getPendingBlockedDayRequests: () => get().blockedDayRequests.filter((r) => r.status === 'PENDING'),
   getOpenDropRequests: () => get().dropRequests.filter((r) => r.status === 'open'),
 
   getEffectiveHourRange: (dayOfWeek?: number) => {

@@ -23,8 +23,6 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
   const isChatPage = pathname === '/chat';
   const isDashboardPage = pathname === '/dashboard';
   const isRestaurantsPage = pathname === '/restaurants';
-  // Hide footer on /restaurants - it's not relevant for restaurant selection
-  const shouldShowFooter = showFooter && !isRestaurantsPage;
 
   const { currentUser, activeRestaurantId, refreshProfile } = useAuthStore();
   const { showToast } = useScheduleStore();
@@ -32,6 +30,9 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
   const role = getUserRole(currentUser?.role);
   const isAdmin = role === 'ADMIN';
   const isManager = isManagerRole(role);
+  const isEmployee = role === 'EMPLOYEE';
+  // Hide footer on /restaurants or for employees
+  const shouldShowFooter = showFooter && !isRestaurantsPage && !isEmployee;
   const profileUser = currentUser
     ? {
         id: currentUser.id,

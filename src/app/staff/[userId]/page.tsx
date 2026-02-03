@@ -132,7 +132,7 @@ export default function StaffProfilePage() {
     const initialJobPay: Record<string, string> = {};
     mapped.jobs.forEach((job) => {
       const value = mapped.jobPay?.[job];
-      initialJobPay[job] = value !== undefined ? value.toFixed(2) : '';
+      initialJobPay[job] = value !== undefined ? value.toFixed(2) : '0.00';
     });
     setJobPay(initialJobPay);
     setEmail(mapped.email);
@@ -167,7 +167,7 @@ export default function StaffProfilePage() {
         });
         return prev.filter((j) => j !== job);
       }
-      setJobPay((payPrev) => ({ ...payPrev, [job]: '' }));
+      setJobPay((payPrev) => ({ ...payPrev, [job]: '0.00' }));
       return [...prev, job];
     });
   };

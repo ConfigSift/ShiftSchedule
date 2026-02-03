@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
-import { normalizeUserRow } from '@/utils/userMapper';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -27,6 +26,7 @@ type ShiftRow = {
   end_time: string;
   job?: string | null;
   location_id?: string | null;
+  is_marketplace?: boolean | null;
 };
 
 function parseTimeToDecimal(value: string | null | undefined) {
@@ -58,22 +58,19 @@ export async function GET(request: NextRequest) {
     return applySupabaseCookies(jsonError(message, 401), response);
   }
 
-  const { data: requesterRow, error: requesterError } = await supabase
-    .from('users')
-    .select('*')
+  const { data: membershipRow, error: membershipError } = await supabaseAdmin
+    .from('organization_memberships')
+    .select('role')
     .eq('auth_user_id', authUserId)
+    .eq('organization_id', organizationId)
     .maybeSingle();
 
-  if (requesterError || !requesterRow) {
+  if (membershipError || !membershipRow) {
     return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
   }
 
-  const requester = normalizeUserRow(requesterRow);
-  if (requester.organizationId !== organizationId) {
-    return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
-  }
-
-  const isManager = ['ADMIN', 'MANAGER'].includes(requester.role);
+  const membershipRole = String(membershipRow.role ?? '').trim().toUpperCase();
+  const isManager = ['ADMIN', 'MANAGER'].includes(membershipRole);
 
   let query = supabaseAdmin
     .from('shift_exchange_requests')
@@ -91,13 +88,19 @@ export async function GET(request: NextRequest) {
   };
 
   if (requestError) {
+    const message = String(requestError.message ?? '');
+    const missingTable =
+      message.toLowerCase().includes('relation') && message.toLowerCase().includes('shift_exchange_requests');
+    if (missingTable) {
+      return applySupabaseCookies(NextResponse.json({ requests: [] }), response);
+    }
     return applySupabaseCookies(
       NextResponse.json({ error: requestError.message }, { status: 400 }),
       response
     );
   }
 
-  const safeRequests = requests ?? [];
+  const safeRequests = (requests ?? []).filter((row) => row.status === 'OPEN');
   if (safeRequests.length === 0) {
     return applySupabaseCookies(NextResponse.json({ requests: [] }), response);
   }
@@ -110,10 +113,39 @@ export async function GET(request: NextRequest) {
     )
   ) as string[];
 
-  const { data: shiftRows } = await supabaseAdmin
+  let shiftRows: ShiftRow[] = [];
+  let hasMarketplaceColumn = true;
+
+  const shiftWithMarketplace = await supabaseAdmin
     .from('shifts')
-    .select('id,user_id,shift_date,start_time,end_time,job,location_id')
+    .select('id,user_id,shift_date,start_time,end_time,job,location_id,is_marketplace')
     .in('id', shiftIds);
+
+  if (shiftWithMarketplace.error) {
+    const message = String(shiftWithMarketplace.error.message ?? '');
+    const missingMarketplace =
+      message.toLowerCase().includes('is_marketplace') && message.toLowerCase().includes('does not exist');
+    if (!missingMarketplace) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: shiftWithMarketplace.error.message }, { status: 400 }),
+        response
+      );
+    }
+    hasMarketplaceColumn = false;
+    const fallback = await supabaseAdmin
+      .from('shifts')
+      .select('id,user_id,shift_date,start_time,end_time,job,location_id')
+      .in('id', shiftIds);
+    if (fallback.error) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: fallback.error.message }, { status: 400 }),
+        response
+      );
+    }
+    shiftRows = (fallback.data ?? []) as ShiftRow[];
+  } else {
+    shiftRows = (shiftWithMarketplace.data ?? []) as ShiftRow[];
+  }
 
   const shiftUserIds = Array.from(new Set((shiftRows ?? []).map((row: ShiftRow) => row.user_id)));
 
@@ -133,13 +165,17 @@ export async function GET(request: NextRequest) {
   const userIdMap = new Map((usersById ?? []).map((row: any) => [row.id, row]));
   const authMap = new Map((usersByAuth ?? []).map((row: any) => [row.auth_user_id, row]));
 
-  const responseRows = safeRequests.map((row) => {
+  const responseRows = safeRequests.reduce<Array<Record<string, any>>>((acc, row) => {
     const shift = shiftMap.get(row.shift_id);
+    if (!shift) return acc;
+    if (hasMarketplaceColumn && shift.is_marketplace !== true) {
+      return acc;
+    }
     const requesterUser = authMap.get(row.requested_by_auth_user_id);
     const claimedUser = row.claimed_by_auth_user_id ? authMap.get(row.claimed_by_auth_user_id) : null;
-    const shiftOwner = shift ? userIdMap.get(shift.user_id) : null;
+    const shiftOwner = userIdMap.get(shift.user_id);
 
-    return {
+    acc.push({
       id: row.id,
       organizationId: row.organization_id,
       shiftId: row.shift_id,
@@ -151,20 +187,19 @@ export async function GET(request: NextRequest) {
       cancelledAt: row.cancelled_at,
       requesterName: requesterUser?.full_name || requesterUser?.email || 'Unknown',
       claimedByName: claimedUser?.full_name || claimedUser?.email || null,
-      shift: shift
-        ? {
-            id: shift.id,
-            userId: shift.user_id,
-            date: shift.shift_date,
-            startHour: parseTimeToDecimal(shift.start_time),
-            endHour: parseTimeToDecimal(shift.end_time),
-            job: shift.job ?? null,
-            locationId: shift.location_id ?? null,
-            employeeName: shiftOwner?.full_name || shiftOwner?.email || 'Unknown',
-          }
-        : null,
-    };
-  });
+      shift: {
+        id: shift.id,
+        userId: shift.user_id,
+        date: shift.shift_date,
+        startHour: parseTimeToDecimal(shift.start_time),
+        endHour: parseTimeToDecimal(shift.end_time),
+        job: shift.job ?? null,
+        locationId: shift.location_id ?? null,
+        employeeName: shiftOwner?.full_name || shiftOwner?.email || 'Unknown',
+      },
+    });
+    return acc;
+  }, []);
 
   return applySupabaseCookies(NextResponse.json({ requests: responseRows }), response);
 }

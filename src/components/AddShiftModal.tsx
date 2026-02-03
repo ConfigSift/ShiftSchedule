@@ -29,6 +29,11 @@ export function AddShiftModal() {
   
   const isOpen = modalType === 'addShift' || modalType === 'editShift';
   const isEditing = modalType === 'editShift';
+  const modalKey = isEditing && modalData?.modalKey
+    ? String(modalData.modalKey)
+    : isEditing && modalData?.id
+    ? `${modalData.id}:${modalData.date ?? ''}:${modalData.startHour ?? ''}:${modalData.endHour ?? ''}`
+    : 'shift-modal';
   
   const [employeeId, setEmployeeId] = useState('');
   const [date, setDate] = useState('');
@@ -42,10 +47,13 @@ export function AddShiftModal() {
   useEffect(() => {
     if (isOpen) {
       if (isEditing && modalData) {
+        const draftDate = modalData.draftDate ?? modalData.date;
+        const draftStart = modalData.draftStartHour ?? modalData.startHour;
+        const draftEnd = modalData.draftEndHour ?? modalData.endHour;
         setEmployeeId(modalData.employeeId);
-        setDate(modalData.date);
-        setStartHour(modalData.startHour);
-        setEndHour(modalData.endHour);
+        setDate(draftDate);
+        setStartHour(draftStart);
+        setEndHour(draftEnd);
         setNotes(modalData.notes || '');
         setJob(modalData.job || '');
         setLocationId(modalData.locationId || '');
@@ -184,9 +192,10 @@ export function AddShiftModal() {
   const hourOptions = Array.from({ length: 19 }, (_, i) => i + 6);
 
   return (
-    <Modal 
-      isOpen={isOpen} 
-      onClose={closeModal} 
+    <Modal
+      key={modalKey}
+      isOpen={isOpen}
+      onClose={closeModal}
       title={isEditing ? 'Edit Shift' : 'Add Shift'}
       size="md"
     >

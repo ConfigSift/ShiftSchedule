@@ -4,9 +4,13 @@ import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { useUIStore } from '../store/uiStore';
 import { Users, ChevronDown, Check, Eye, EyeOff, User, X, ChevronLeft, ChevronRight, CalendarCheck } from 'lucide-react';
-import Link from 'next/link';
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
+import { StaffProfileModal } from './StaffProfileModal';
+import { getUserRole, isManagerRole } from '../utils/role';
+import { supabase } from '../lib/supabase/client';
+import { normalizeUserRow } from '../utils/userMapper';
+import { getWeekDates } from '../utils/timeUtils';
 
 const STORAGE_KEY = 'schedule.sidebarCollapsed';
 
@@ -21,9 +25,11 @@ export function StaffSidebar() {
     selectAllEmployeesForRestaurant,
     deselectAllEmployees,
     getShiftsForRestaurant,
+    loadRestaurantData,
     selectedDate,
     workingTodayOnly,
     toggleWorkingTodayOnly,
+    showToast,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
@@ -32,6 +38,24 @@ export function StaffSidebar() {
   const [expandedSections, setExpandedSections] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [profileUser, setProfileUser] = useState<{
+    id: string;
+    authUserId: string | null;
+    fullName: string;
+    email: string;
+    phone: string;
+    employeeNumber?: number | null;
+    accountType: string;
+    jobs: string[];
+    hourlyPay?: number;
+    jobPay?: Record<string, number>;
+  } | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  const currentRole = getUserRole(currentUser?.role);
+  const isManager = isManagerRole(currentRole);
+  const isAdmin = currentRole === 'ADMIN';
+  const isEmployee = currentRole === 'EMPLOYEE';
 
   // Close sidebar on window resize to desktop
   useEffect(() => {
@@ -96,6 +120,67 @@ export function StaffSidebar() {
 
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
+
+  const employeeHoursSummary = useMemo(() => {
+    if (!isEmployee || !currentUser) {
+      return { lastWeek: 0, thisWeek: 0, today: 0 };
+    }
+
+    const toLocalYMD = (value: Date) =>
+      `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+
+    const getBreakMinutes = (shift: any) => {
+      const raw = shift?.breakMinutes ?? shift?.break_minutes ?? 0;
+      const minutes = Number(raw);
+      return Number.isFinite(minutes) ? minutes : 0;
+    };
+
+    const calcDuration = (shift: any) => {
+      const base = Number(shift.endHour) - Number(shift.startHour);
+      const breakMinutes = getBreakMinutes(shift);
+      const hours = base - breakMinutes / 60;
+      return Number.isFinite(hours) ? Math.max(0, hours) : 0;
+    };
+
+    const weekDates = getWeekDates(selectedDate);
+    const weekStart = weekDates[0];
+    const weekEnd = weekDates[6];
+    const lastWeekStart = new Date(weekStart);
+    lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+    const lastWeekEnd = new Date(weekStart);
+    lastWeekEnd.setDate(lastWeekEnd.getDate() - 1);
+
+    const weekStartYmd = toLocalYMD(weekStart);
+    const weekEndYmd = toLocalYMD(weekEnd);
+    const lastWeekStartYmd = toLocalYMD(lastWeekStart);
+    const lastWeekEndYmd = toLocalYMD(lastWeekEnd);
+
+    let lastWeek = 0;
+    let thisWeek = 0;
+    let today = 0;
+
+    scopedShifts.forEach((shift) => {
+      if (shift.isBlocked) return;
+      if (shift.employeeId !== currentUser.id) return;
+      const hours = calcDuration(shift);
+      if (shift.date === dateString) {
+        today += hours;
+      }
+      if (shift.date >= weekStartYmd && shift.date <= weekEndYmd) {
+        thisWeek += hours;
+      }
+      if (shift.date >= lastWeekStartYmd && shift.date <= lastWeekEndYmd) {
+        lastWeek += hours;
+      }
+    });
+
+    return { lastWeek, thisWeek, today };
+  }, [isEmployee, currentUser, scopedShifts, selectedDate, dateString]);
+
+  const formatHours = (value: number) => {
+    const safe = Number.isFinite(value) ? Math.round(value * 10) / 10 : 0;
+    return `${safe}h`;
+  };
 
   // Search filter: only affects visible employees in the sidebar
   // Group toggles operate on VISIBLE employees only (what you see is what you toggle)
@@ -194,6 +279,36 @@ export function StaffSidebar() {
     }
   }, [allSelected, deselectAllEmployees, selectAllEmployeesForRestaurant, activeRestaurantId]);
 
+  const openProfileForEmployee = useCallback(async (employeeId: string) => {
+    if (!activeRestaurantId) return;
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', employeeId)
+      .eq('organization_id', activeRestaurantId)
+      .maybeSingle();
+
+    if (error || !data) {
+      showToast(error?.message || 'Unable to load staff profile.', 'error');
+      return;
+    }
+
+    const normalized = normalizeUserRow(data);
+    setProfileUser({
+      id: normalized.id,
+      authUserId: data.auth_user_id ?? null,
+      fullName: normalized.fullName,
+      email: normalized.email ?? '',
+      phone: normalized.phone ?? '',
+      employeeNumber: normalized.employeeNumber ?? null,
+      accountType: normalized.role,
+      jobs: normalized.jobs,
+      hourlyPay: normalized.hourlyPay,
+      jobPay: normalized.jobPay,
+    });
+    setProfileOpen(true);
+  }, [activeRestaurantId, showToast]);
+
   const sidebarContent = (
     <>
       <div className="px-2 py-2 border-b border-theme-primary">
@@ -265,6 +380,26 @@ export function StaffSidebar() {
             />
           </span>
         </button>
+
+        {isEmployee && currentUser && (
+          <div className="mt-3 rounded-xl border border-theme-primary bg-theme-tertiary/70 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-theme-muted">Employee Hours Summary</p>
+            <div className="mt-2 space-y-1 text-[11px] text-theme-tertiary">
+              <div className="flex items-center justify-between">
+                <span>Last week</span>
+                <span className="font-semibold text-theme-primary">{formatHours(employeeHoursSummary.lastWeek)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>This week</span>
+                <span className="font-semibold text-theme-primary">{formatHours(employeeHoursSummary.thisWeek)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Selected day</span>
+                <span className="font-semibold text-theme-primary">{formatHours(employeeHoursSummary.today)}</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-1.5">
@@ -373,14 +508,14 @@ export function StaffSidebar() {
                               <div className={`w-2 h-2 rounded-full ${jobColor.dotClass} shrink-0`} title="Working today" />
                             )}
                           </button>
-                          <Link
-                            href={`/staff/${employee.id}`}
+                          <button
+                            type="button"
                             className="p-1 rounded hover:bg-theme-hover text-theme-muted hover:text-theme-primary transition-colors text-[11px]"
                             title="View Profile"
-                            onClick={closeSidebar}
+                            onClick={() => openProfileForEmployee(employee.id)}
                           >
                             <User className="w-3 h-3" />
-                          </Link>
+                          </button>
                         </div>
                       );
                     })}
@@ -392,13 +527,6 @@ export function StaffSidebar() {
         )}
       </div>
 
-      {currentUser && (
-        <div className="border-t border-theme-primary p-4">
-          <p className="text-xs text-theme-muted">
-            Use Review Requests to track time off and blocked days.
-          </p>
-        </div>
-      )}
     </>
   );
 
@@ -447,6 +575,25 @@ export function StaffSidebar() {
           {sidebarContent}
         </div>
       </aside>
+
+      {activeRestaurantId && currentUser && (
+        <StaffProfileModal
+          isOpen={profileOpen}
+          mode="edit"
+          user={profileUser}
+          isAdmin={isAdmin}
+          isManager={isManager}
+          organizationId={activeRestaurantId}
+          currentAuthUserId={currentUser.authUserId ?? null}
+          onClose={() => setProfileOpen(false)}
+          onSaved={async () => {
+            await loadRestaurantData(activeRestaurantId);
+            showToast('Profile updated', 'success');
+          }}
+          onError={(message) => showToast(message, 'error')}
+          onAuthError={(message) => showToast(message, 'error')}
+        />
+      )}
     </>
   );
 }

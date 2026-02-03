@@ -304,7 +304,7 @@ export default function StaffPage() {
       if (isSelected) {
         delete nextJobPay[job];
       } else {
-        nextJobPay[job] = '';
+        nextJobPay[job] = '0.00';
       }
       return { ...prev, jobs: nextJobs, jobPay: nextJobPay };
     });

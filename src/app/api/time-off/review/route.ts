@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
-import { normalizeUserRow } from '@/utils/userMapper';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -60,31 +59,48 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError(message, 401), response);
   }
 
+  const { data: membershipRow, error: membershipError } = await supabaseAdmin
+    .from('organization_memberships')
+    .select('role')
+    .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
+    .maybeSingle();
+
+  if (membershipError || !membershipRow) {
+    return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
+  }
+
+  const membershipRole = String(membershipRow.role ?? '').trim().toUpperCase();
+  if (!['ADMIN', 'MANAGER'].includes(membershipRole)) {
+    return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
+  }
+
   const { data: requesterRow, error: requesterError } = await supabase
     .from('users')
     .select('*')
     .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
     return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
   }
 
-  const requester = normalizeUserRow(requesterRow);
-  const requesterRole = requester.role;
-  if (!['ADMIN', 'MANAGER'].includes(requesterRole)) {
-    return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
-  }
-
-  if (requester.organizationId !== payload.organizationId) {
-    return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.debug('[time-off:review]', {
+      authUserId,
+      organizationId: payload.organizationId,
+      membershipRole,
+      requestId: payload.id,
+    });
   }
 
   const { data, error } = await supabaseAdmin
     .from('time_off_requests')
     .update({
       status: normalizedStatus,
-      reviewed_by: requester.id,
+      reviewed_by: requesterRow.id,
       reviewed_at: new Date().toISOString(),
       manager_note: payload.managerNote ?? null,
       updated_at: new Date().toISOString(),
@@ -95,6 +111,10 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (error || !data) {
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.debug('[time-off:review] update error', error);
+    }
     return applySupabaseCookies(
       NextResponse.json(
         {

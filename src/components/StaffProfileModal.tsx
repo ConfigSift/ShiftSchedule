@@ -89,14 +89,12 @@ export function StaffProfileModal({
     setJobs(normalizedJobs);
 
     // Initialize per-job pay with 2 decimal formatting.
-    // Only use existing job_pay values; do not create keys for missing jobs.
+    // Default missing values to 0.00 for assigned jobs.
     const existingJobPay = user.jobPay ?? {};
     const initialJobPay: Record<string, string> = {};
     normalizedJobs.forEach((job) => {
       const payValue = existingJobPay[job];
-      if (payValue !== undefined) {
-        initialJobPay[job] = payValue.toFixed(2);
-      }
+      initialJobPay[job] = payValue !== undefined ? payValue.toFixed(2) : '0.00';
     });
     setJobPay(initialJobPay);
     setJobPayErrors({});
@@ -216,10 +214,10 @@ export function StaffProfileModal({
         });
         return prev.filter((j) => j !== job);
       } else {
-        // Add job - default to blank (not hourlyPay)
+        // Add job - default to 0.00
         setJobPay((payPrev) => ({
           ...payPrev,
-          ...(payPrev[job] === undefined ? { [job]: '' } : {}),
+          ...(payPrev[job] === undefined ? { [job]: '0.00' } : {}),
         }));
         return [...prev, job];
       }
