@@ -86,6 +86,7 @@ export function Timeline() {
     selectedDate,
     setSelectedDate,
     getFilteredEmployeesForRestaurant,
+    getEmployeesForRestaurant,
     getShiftsForRestaurant,
     businessHours,
     locations,
@@ -197,11 +198,98 @@ export function Timeline() {
   const { activeRestaurantId, currentUser } = useAuthStore();
   const isManager = isManagerRole(getUserRole(currentUser?.role));
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
+  const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const locationMap = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name])),
     [locations]
   );
+
+  const jobOrder = useMemo(() => {
+    const order: string[] = [];
+    scopedEmployees.forEach((employee) => {
+      if (!employee.isActive) return;
+      const jobs = employee.jobs ?? [];
+      jobs.forEach((job) => {
+        if (!order.includes(job)) {
+          order.push(job);
+        }
+      });
+    });
+    return order;
+  }, [scopedEmployees]);
+
+  const groupedRows = useMemo(() => {
+    if (filteredEmployees.length === 0) return [];
+    const rangeStartDate = continuousDays ? windowStartDate : selectedDate;
+    const rangeEndDate = continuousDays ? addDays(windowStartDate, CONTINUOUS_DAYS_COUNT - 1) : selectedDate;
+    const rangeStart = toDateString(rangeStartDate);
+    const rangeEnd = toDateString(rangeEndDate);
+    const jobIndex = (job: string) => {
+      const idx = jobOrder.indexOf(job);
+      return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+    };
+
+    const filteredIds = new Set(filteredEmployees.map((employee) => employee.id));
+    const earliestByEmployee = new Map<string, { date: string; startHour: number; job: string }>();
+
+    scopedShifts.forEach((shift) => {
+      if (shift.isBlocked) return;
+      if (!filteredIds.has(shift.employeeId)) return;
+      if (shift.date < rangeStart || shift.date > rangeEnd) return;
+      const jobName = shift.job ?? 'Unassigned';
+      const existing = earliestByEmployee.get(shift.employeeId);
+      if (!existing) {
+        earliestByEmployee.set(shift.employeeId, { date: shift.date, startHour: shift.startHour, job: jobName });
+        return;
+      }
+      if (shift.date < existing.date) {
+        earliestByEmployee.set(shift.employeeId, { date: shift.date, startHour: shift.startHour, job: jobName });
+        return;
+      }
+      if (shift.date === existing.date) {
+        if (shift.startHour < existing.startHour) {
+          earliestByEmployee.set(shift.employeeId, { date: shift.date, startHour: shift.startHour, job: jobName });
+          return;
+        }
+        if (shift.startHour === existing.startHour && jobIndex(jobName) < jobIndex(existing.job)) {
+          earliestByEmployee.set(shift.employeeId, { date: shift.date, startHour: shift.startHour, job: jobName });
+        }
+      }
+    });
+
+    const groups = new Map<string, typeof filteredEmployees>();
+    const assignToGroup = (job: string, employee: (typeof filteredEmployees)[number]) => {
+      if (!groups.has(job)) groups.set(job, []);
+      groups.get(job)!.push(employee);
+    };
+
+    filteredEmployees.forEach((employee) => {
+      const earliest = earliestByEmployee.get(employee.id);
+      const preferredJob = earliest?.job && jobOrder.includes(earliest.job) ? earliest.job : 'Unassigned';
+      assignToGroup(preferredJob, employee);
+    });
+
+    const rows: Array<
+      | { type: 'group'; job: string; count: number }
+      | { type: 'employee'; employee: (typeof filteredEmployees)[number]; group: string }
+    > = [];
+
+    jobOrder.forEach((job) => {
+      const list = groups.get(job);
+      if (!list || list.length === 0) return;
+      rows.push({ type: 'group', job, count: list.length });
+      list.forEach((employee) => rows.push({ type: 'employee', employee, group: job }));
+    });
+
+    const unassigned = groups.get('Unassigned');
+    if (unassigned && unassigned.length > 0) {
+      rows.push({ type: 'group', job: 'Unassigned', count: unassigned.length });
+      unassigned.forEach((employee) => rows.push({ type: 'employee', employee, group: 'Unassigned' }));
+    }
+
+    return rows;
+  }, [filteredEmployees, scopedShifts, jobOrder, selectedDate, continuousDays, windowStartDate]);
 
   // Load continuous days preference from localStorage
   useEffect(() => {
@@ -1671,7 +1759,17 @@ export function Timeline() {
             </div>
           </div>
         ) : (
-          filteredEmployees.map((employee) => {
+          groupedRows.map((row) => {
+            if (row.type === 'group') {
+              return (
+                <div
+                  key={`group-${row.job}`}
+                  className="h-7 border-b border-theme-primary/50 bg-theme-tertiary/40 pointer-events-none"
+                  aria-hidden="true"
+                />
+              );
+            }
+            const employee = row.employee;
             const employeeShifts = scopedShifts.filter(
               s => s.employeeId === employee.id && s.date === dateString && !s.isBlocked
             );
@@ -1980,7 +2078,18 @@ export function Timeline() {
             </div>
           </div>
         ) : (
-          filteredEmployees.map((employee) => {
+          groupedRows.map((row) => {
+            if (row.type === 'group') {
+              return (
+                <div
+                  key={`group-${row.job}`}
+                  className="h-7 border-b border-theme-primary/50 bg-theme-tertiary/40 pointer-events-none"
+                  style={{ width: `${continuousGridWidth}px`, maxWidth: `${continuousGridWidth}px` }}
+                  aria-hidden="true"
+                />
+              );
+            }
+            const employee = row.employee;
             // Get shifts for this employee across all 3 days
             const employeeShifts = continuousShifts.filter(s => s.employeeId === employee.id);
 
@@ -2562,7 +2671,19 @@ export function Timeline() {
                   No staff
                 </div>
               ) : (
-                filteredEmployees.map((employee) => {
+                groupedRows.map((row) => {
+                  if (row.type === 'group') {
+                    return (
+                      <div
+                        key={`group-${row.job}`}
+                        className="h-7 border-b border-theme-primary/50 flex items-center px-2 text-[10px] uppercase tracking-widest text-theme-muted bg-theme-tertiary/40 pointer-events-none"
+                        style={{ boxShadow: '4px 0 8px rgba(0,0,0,0.08)' }}
+                      >
+                        {row.job} ({row.count})
+                      </div>
+                    );
+                  }
+                  const employee = row.employee;
                   const sectionConfig = SECTIONS[employee.section];
                   return (
                     <div
