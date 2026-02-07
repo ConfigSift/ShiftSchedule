@@ -20,7 +20,7 @@ type AppShellProps = {
 
 export function AppShell({ children, showFooter = true }: AppShellProps) {
   const pathname = usePathname();
-  const isStandalonePage = pathname === '/login' || pathname === '/setup';
+  const isStandalonePage = pathname === '/' || pathname === '/login' || pathname === '/setup' || pathname === '/landing';
   const isChatPage = pathname === '/chat';
   const isDashboardPage = pathname === '/dashboard';
   const isRestaurantsPage = pathname === '/restaurants';
