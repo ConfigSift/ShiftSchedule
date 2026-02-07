@@ -30,6 +30,7 @@ export function StaffSidebar() {
     workingTodayOnly,
     toggleWorkingTodayOnly,
     showToast,
+    scheduleViewSettings,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
@@ -142,7 +143,8 @@ export function StaffSidebar() {
       return Number.isFinite(hours) ? Math.max(0, hours) : 0;
     };
 
-    const weekDates = getWeekDates(selectedDate);
+    const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+    const weekDates = getWeekDates(selectedDate, weekStartDay);
     const weekStart = weekDates[0];
     const weekEnd = weekDates[6];
     const lastWeekStart = new Date(weekStart);

@@ -63,6 +63,7 @@ export interface Shift {
   locationId?: string | null;
   payRate?: number; // Hourly rate for this shift (set by DB trigger)
   paySource?: string; // Source of pay rate: 'job_pay', 'hourly_pay', or 'default'
+  scheduleState?: 'draft' | 'published';
 }
 
 export type TimeOffStatus = 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED';
@@ -170,7 +171,10 @@ export interface ScheduleViewSettings {
   hourMode: ScheduleHourMode;
   customStartHour: number; // 0-23
   customEndHour: number;   // 1-24
+  weekStartDay: WeekStartDay;
 }
+
+export type WeekStartDay = 'sunday' | 'monday';
 
 export interface Location {
   id: string;

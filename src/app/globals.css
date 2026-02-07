@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --bg-primary: #ffffff;
   --bg-secondary: #f4f4f5;
@@ -92,6 +94,13 @@
   
   .transition-theme { 
     transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; 
+  }
+
+  @media (max-width: 767px) {
+    .employee-nav-pad {
+      padding-bottom: calc(var(--employee-nav-h, 0px) + env(safe-area-inset-bottom) + 32px);
+      scroll-padding-bottom: calc(var(--employee-nav-h, 0px) + env(safe-area-inset-bottom) + 32px);
+    }
   }
   
   /* Respect reduced motion preference */

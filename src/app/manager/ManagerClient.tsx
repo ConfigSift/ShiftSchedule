@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Building2, ChevronRight, PlusCircle, Pencil } from 'lucide-react';
+import { Building2, ChevronRight, PlusCircle, Pencil, Trash2 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
+import { Modal } from '../../components/Modal';
 
 const MANAGER_ROLES = new Set(['admin', 'manager']);
 
@@ -20,12 +21,17 @@ export default function ManagerClient() {
     isInitialized,
     activeRestaurantId,
     setActiveOrganization,
+    clearActiveOrganization,
     refreshProfile,
     accessibleRestaurants,
   } = useAuthStore();
 
   const [newRestaurantName, setNewRestaurantName] = useState('');
   const [error, setError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; restaurantCode: string } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editedName, setEditedName] = useState('');
 
@@ -37,6 +43,15 @@ export default function ManagerClient() {
     () => accessibleRestaurants.some((restaurant) => hasManagerMembership(restaurant.role)),
     [accessibleRestaurants]
   );
+  const hasAdminMembership = useMemo(
+    () =>
+      accessibleRestaurants.some((restaurant) => {
+        const value = String(restaurant.role ?? '').trim().toLowerCase();
+        return value === 'admin';
+      }),
+    [accessibleRestaurants]
+  );
+  const canCreateRestaurant = accessibleRestaurants.length === 0 || hasAdminMembership;
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -120,6 +135,57 @@ export default function ManagerClient() {
     router.push('/dashboard');
   };
 
+  const handleOpenDelete = (restaurant: { id: string; name: string; restaurantCode: string }) => {
+    const orgId = String(restaurant.id ?? '').trim();
+    if (!orgId) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[manager] delete modal skipped (missing org id)', restaurant);
+      }
+      return;
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('[manager] open delete modal', { organizationId: orgId });
+    }
+    setDeleteTarget({ ...restaurant, id: orgId });
+    setDeleteConfirm('');
+    setDeleteError('');
+  };
+
+  const handleCloseDelete = () => {
+    if (deleteSubmitting) return;
+    setDeleteTarget(null);
+    setDeleteConfirm('');
+    setDeleteError('');
+  };
+
+  const handleDeleteRestaurant = async () => {
+    if (!deleteTarget) return;
+    const organizationId = String(deleteTarget.id ?? '').trim();
+    if (!organizationId) return;
+    const confirmValue = deleteConfirm.trim();
+    const isMatch =
+      confirmValue === deleteTarget.name || confirmValue === deleteTarget.restaurantCode;
+    if (!isMatch) return;
+    setDeleteSubmitting(true);
+    setDeleteError('');
+    const result = await apiFetch(`/api/organizations/${organizationId}/delete`, {
+      method: 'POST',
+    });
+    if (!result.ok) {
+      setDeleteError(result.error || 'Unable to delete restaurant.');
+      setDeleteSubmitting(false);
+      return;
+    }
+    if (activeRestaurantId === deleteTarget.id) {
+      clearActiveOrganization();
+    }
+    await refreshProfile();
+    setDeleteSubmitting(false);
+    setDeleteTarget(null);
+  };
+
   return (
     <div className="min-h-screen bg-theme-primary p-6">
       <header className="max-w-3xl mx-auto mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -172,6 +238,22 @@ export default function ManagerClient() {
                         Edit
                       </button>
                     )}
+                    {String(restaurant.role ?? '').trim().toLowerCase() === 'admin' && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleOpenDelete({
+                            id: restaurant.id,
+                            name: restaurant.name,
+                            restaurantCode: restaurant.restaurantCode,
+                          })
+                        }
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete
+                      </button>
+                    )}
                     <span className="inline-flex items-center gap-1">
                       {activeRestaurantId === restaurant.id ? 'Active' : 'Select'}
                       <ChevronRight className="w-4 h-4" />
@@ -217,7 +299,7 @@ export default function ManagerClient() {
           </div>
         )}
 
-        {canManageSite && (
+        {canCreateRestaurant && (
           <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-5">
             <h2 className="text-lg font-semibold text-theme-primary mb-3">Create a Restaurant</h2>
             <div className="flex flex-col sm:flex-row gap-3">
@@ -239,7 +321,63 @@ export default function ManagerClient() {
             {error && <p className="text-sm text-red-400 mt-2">{error}</p>}
           </div>
         )}
+        {!canCreateRestaurant && (
+          <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-5">
+            <h2 className="text-lg font-semibold text-theme-primary mb-3">Create a Restaurant</h2>
+            <p className="text-sm text-theme-muted">Only admins can create restaurants.</p>
+          </div>
+        )}
       </main>
+
+      <Modal
+        isOpen={Boolean(deleteTarget)}
+        onClose={handleCloseDelete}
+        title="Delete restaurant?"
+        size="md"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-theme-secondary">
+            This permanently deletes this restaurant and ALL associated data. This cannot be undone.
+          </p>
+          <div className="space-y-2">
+            <label className="text-xs uppercase tracking-wide text-theme-muted">
+              Type restaurant name or code to confirm
+            </label>
+            <input
+              type="text"
+              value={deleteConfirm}
+              onChange={(e) => setDeleteConfirm(e.target.value)}
+              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+              placeholder={deleteTarget ? `${deleteTarget.name} or ${deleteTarget.restaurantCode}` : ''}
+            />
+          </div>
+          {deleteError && <p className="text-xs text-red-400">{deleteError}</p>}
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleCloseDelete}
+              className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteRestaurant}
+              disabled={
+                deleteSubmitting ||
+                !deleteTarget ||
+                !(
+                  deleteConfirm.trim() === deleteTarget.name ||
+                  deleteConfirm.trim() === deleteTarget.restaurantCode
+                )
+              }
+              className="px-4 py-2 rounded-lg bg-red-500 text-white font-semibold hover:bg-red-400 transition-colors disabled:opacity-50"
+            >
+              {deleteSubmitting ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

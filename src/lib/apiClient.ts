@@ -1,7 +1,7 @@
 type ApiResult<T> = {
   ok: boolean;
   status: number;
-  data?: T;
+  data: T | null;
   error?: string;
   code?: string;
   rawText?: string;
@@ -36,20 +36,33 @@ export async function apiFetch<T = any>(url: string, options: ApiFetchOptions = 
     }
   }
 
-  const response = await fetch(url, {
-    ...rest,
-    headers: mergedHeaders,
-    body,
-    credentials: 'include',
-    cache: 'no-store',
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...rest,
+      headers: mergedHeaders,
+      body,
+      credentials: 'include',
+      cache: 'no-store',
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      error: message,
+    };
+  }
 
   const { data, rawText } = await parseJsonSafe(response);
+  const parsed = (data ?? null) as T | null;
+  const error = response.ok ? undefined : data?.error || data?.message || rawText || response.statusText;
   const result: ApiResult<T> = {
     ok: response.ok,
     status: response.status,
-    data: data ?? undefined,
-    error: response.ok ? undefined : data?.error || response.statusText,
+    data: parsed,
+    error,
     code: data?.code,
     rawText,
   };

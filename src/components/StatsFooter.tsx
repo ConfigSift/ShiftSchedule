@@ -15,6 +15,7 @@ export function StatsFooter() {
     selectedEmployeeIds,
     shifts,      // Subscribe directly to shifts for reactivity
     employees,   // Subscribe directly to employees for reactivity
+    scheduleViewSettings,
   } = useScheduleStore();
   const { activeRestaurantId, currentUser } = useAuthStore();
 
@@ -36,7 +37,8 @@ export function StatsFooter() {
   const isManager = isManagerRole(role);
   const isEmployee = role === 'EMPLOYEE';
 
-  const weekDates = useMemo(() => getWeekDates(selectedDate), [selectedDate]);
+  const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+  const weekDates = useMemo(() => getWeekDates(selectedDate, weekStartDay), [selectedDate, weekStartDay]);
   const dayString = selectedDate.toISOString().split('T')[0];
   const weekStart = dateToString(weekDates[0]);
   const weekEnd = dateToString(weekDates[6]);

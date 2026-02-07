@@ -87,7 +87,9 @@ export default function BusinessHoursPage() {
   const [hourMode, setHourMode] = useState<ScheduleHourMode>('full24');
   const [customStartHour, setCustomStartHour] = useState(6);
   const [customEndHour, setCustomEndHour] = useState(22);
-  const [savingSettings, setSavingSettings] = useState(false);
+  const [weekStartDay, setWeekStartDay] = useState<'sunday' | 'monday'>('sunday');
+  const [savingViewSettings, setSavingViewSettings] = useState(false);
+  const [savingWeekStart, setSavingWeekStart] = useState(false);
   const openEditor = (
     dayOfWeek: number,
     startMinutes: number,
@@ -195,11 +197,13 @@ export default function BusinessHoursPage() {
       setHourMode(scheduleViewSettings.hourMode);
       setCustomStartHour(scheduleViewSettings.customStartHour);
       setCustomEndHour(scheduleViewSettings.customEndHour);
+      setWeekStartDay(scheduleViewSettings.weekStartDay ?? 'sunday');
     } else {
       // Default values
       setHourMode('full24');
       setCustomStartHour(6);
       setCustomEndHour(22);
+      setWeekStartDay('sunday');
     }
   }, [scheduleViewSettings]);
 
@@ -376,34 +380,82 @@ export default function BusinessHoursPage() {
   };
 
   const handleSave = async () => {
-    if (!activeRestaurantId) return;
-    setSaving(true);
-    const result = await apiFetch('/api/business-hours/save', {
-      method: 'POST',
-      json: {
-        organizationId: activeRestaurantId,
-        hours: rows.map((row) => ({
-          dayOfWeek: row.dayOfWeek,
-          openTime: row.enabled ? row.openTime : null,
-          closeTime: row.enabled ? row.closeTime : null,
-          enabled: row.enabled,
-        })),
-      },
-    });
-
-    if (!result.ok) {
-      showToast(result.error || 'Unable to save business hours', 'error');
-      setSaving(false);
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first', 'error');
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('[schedule-settings] save business hours failed', new Error('Missing active restaurant'));
+      }
       return;
     }
+    const payload = {
+      organizationId: activeRestaurantId,
+      hours: rows.map((row) => ({
+        dayOfWeek: row.dayOfWeek,
+        openTime: row.enabled ? row.openTime : null,
+        closeTime: row.enabled ? row.closeTime : null,
+        enabled: row.enabled,
+      })),
+    };
+    setSaving(true);
+    try {
+      const result = await apiFetch('/api/business-hours/save', {
+        method: 'POST',
+        json: payload,
+      });
 
-    await loadRestaurantData(activeRestaurantId);
-    showToast('Business hours updated', 'success');
-    setSaving(false);
+      if (!result.ok) {
+        const statusLabel = result.status === 0 ? 'network' : result.status;
+        const message = result.error ?? result.rawText?.slice(0, 120) ?? 'Unknown error';
+        showToast(`Save failed (${statusLabel}): ${message}`, 'error');
+        if (process.env.NODE_ENV !== 'production') {
+          let safeData: string;
+          try {
+            safeData = JSON.stringify(result.data ?? null);
+          } catch {
+            safeData = '"[unserializable]"';
+          }
+          const debugPayload = {
+            endpoint: '/api/business-hours/save',
+            payload,
+            status: result.status,
+            error: result.error,
+            rawText: result.rawText?.slice(0, 500),
+            data: safeData,
+          };
+          console.error('[schedule-settings] save business hours failed', JSON.stringify(debugPayload, null, 2));
+        }
+        return;
+      }
+
+      await loadRestaurantData(activeRestaurantId);
+      showToast('Business hours updated', 'success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
+      if (process.env.NODE_ENV !== 'production') {
+        const debugPayload = {
+          endpoint: '/api/business-hours/save',
+          payload,
+          status: 0,
+          error: message,
+          rawText: undefined,
+          data: null,
+        };
+        console.error('[schedule-settings] save business hours failed', JSON.stringify(debugPayload, null, 2));
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleSaveSettings = async () => {
-    if (!activeRestaurantId) return;
+  const handleSaveViewSettings = async () => {
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first', 'error');
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('[schedule-settings] save view settings failed', new Error('Missing active restaurant'));
+      }
+      return;
+    }
 
     // Validate custom hours
     if (hourMode === 'custom' && customEndHour <= customStartHour) {
@@ -411,37 +463,151 @@ export default function BusinessHoursPage() {
       return;
     }
 
-    setSavingSettings(true);
-    const result = await apiFetch<{ settings: Record<string, any> }>('/api/schedule-view-settings/save', {
-      method: 'POST',
-      json: {
-        organizationId: activeRestaurantId,
-        hourMode,
-        customStartHour,
-        customEndHour,
-      },
-    });
+    const payload = {
+      organizationId: activeRestaurantId,
+      hourMode,
+      customStartHour,
+      customEndHour,
+    };
+    setSavingViewSettings(true);
+    try {
+      const result = await apiFetch<{ settings: Record<string, any> }>('/api/schedule-view-settings/save', {
+        method: 'POST',
+        json: payload,
+      });
 
-    if (!result.ok) {
-      showToast(result.error || 'Unable to save schedule view settings', 'error');
-      setSavingSettings(false);
+      if (!result.ok) {
+        const statusLabel = result.status === 0 ? 'network' : result.status;
+        const message = result.error ?? result.rawText?.slice(0, 120) ?? 'Unknown error';
+        showToast(`Save failed (${statusLabel}): ${message}`, 'error');
+        if (process.env.NODE_ENV !== 'production') {
+          let safeData: string;
+          try {
+            safeData = JSON.stringify(result.data ?? null);
+          } catch {
+            safeData = '"[unserializable]"';
+          }
+          const debugPayload = {
+            endpoint: '/api/schedule-view-settings/save',
+            payload,
+            status: result.status,
+            error: result.error,
+            rawText: result.rawText?.slice(0, 500),
+            data: safeData,
+          };
+          console.error('[schedule-settings] save view settings failed', JSON.stringify(debugPayload, null, 2));
+        }
+        return;
+      }
+
+      // Update the store with new settings
+      if (result.data?.settings) {
+        const s = result.data.settings;
+        setScheduleViewSettings({
+          id: s.id,
+          organizationId: s.organization_id,
+          hourMode: s.hour_mode as ScheduleHourMode,
+          customStartHour: Number(s.custom_start_hour ?? 0),
+          customEndHour: Number(s.custom_end_hour ?? 24),
+          weekStartDay: s.week_start_day === 'monday' ? 'monday' : 'sunday',
+        });
+      }
+
+      showToast('Schedule view settings updated', 'success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
+      if (process.env.NODE_ENV !== 'production') {
+        const debugPayload = {
+          endpoint: '/api/schedule-view-settings/save',
+          payload,
+          status: 0,
+          error: message,
+          rawText: undefined,
+          data: null,
+        };
+        console.error('[schedule-settings] save view settings failed', JSON.stringify(debugPayload, null, 2));
+      }
+    } finally {
+      setSavingViewSettings(false);
+    }
+  };
+
+  const handleSaveWeekStart = async () => {
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first', 'error');
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('[schedule-settings] save week start failed', new Error('Missing active restaurant'));
+      }
       return;
     }
 
-    // Update the store with new settings
-    if (result.data?.settings) {
-      const s = result.data.settings;
-      setScheduleViewSettings({
-        id: s.id,
-        organizationId: s.organization_id,
-        hourMode: s.hour_mode as ScheduleHourMode,
-        customStartHour: Number(s.custom_start_hour ?? 0),
-        customEndHour: Number(s.custom_end_hour ?? 24),
-      });
-    }
+    const payload = {
+      organizationId: activeRestaurantId,
+      weekStartDay,
+    };
 
-    showToast('Schedule view settings updated', 'success');
-    setSavingSettings(false);
+    setSavingWeekStart(true);
+    try {
+      const result = await apiFetch<{ settings: Record<string, any> }>('/api/schedule-view-settings/save', {
+        method: 'POST',
+        json: payload,
+      });
+
+      if (!result.ok) {
+        const statusLabel = result.status === 0 ? 'network' : result.status;
+        const message = result.error ?? result.rawText?.slice(0, 120) ?? 'Unknown error';
+        showToast(`Save failed (${statusLabel}): ${message}`, 'error');
+        if (process.env.NODE_ENV !== 'production') {
+          let safeData: string;
+          try {
+            safeData = JSON.stringify(result.data ?? null);
+          } catch {
+            safeData = '"[unserializable]"';
+          }
+          const debugPayload = {
+            endpoint: '/api/schedule-view-settings/save',
+            payload,
+            status: result.status,
+            error: result.error,
+            rawText: result.rawText?.slice(0, 500),
+            data: safeData,
+          };
+          console.error('[schedule-settings] save week start failed', JSON.stringify(debugPayload, null, 2));
+        }
+        return;
+      }
+
+      if (result.data?.settings) {
+        const s = result.data.settings;
+        setScheduleViewSettings({
+          id: s.id,
+          organizationId: s.organization_id,
+          hourMode: s.hour_mode as ScheduleHourMode,
+          customStartHour: Number(s.custom_start_hour ?? 0),
+          customEndHour: Number(s.custom_end_hour ?? 24),
+          weekStartDay: s.week_start_day === 'monday' ? 'monday' : 'sunday',
+        });
+      }
+
+      showToast('Start of week updated', 'success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
+      if (process.env.NODE_ENV !== 'production') {
+        const debugPayload = {
+          endpoint: '/api/schedule-view-settings/save',
+          payload,
+          status: 0,
+          error: message,
+          rawText: undefined,
+          data: null,
+        };
+        console.error('[schedule-settings] save week start failed', JSON.stringify(debugPayload, null, 2));
+      }
+    } finally {
+      setSavingWeekStart(false);
+    }
   };
 
   const orderedRows =
@@ -506,7 +672,7 @@ export default function BusinessHoursPage() {
                 />
                 <div>
                   <span className="text-sm font-medium text-theme-primary">Business Hours</span>
-                  <p className="text-[11px] text-theme-muted leading-tight">Business hours + 1h padding</p>
+                  <p className="text-[11px] text-theme-muted leading-tight">Business hours + 3h padding</p>
                 </div>
               </label>
 
@@ -556,11 +722,57 @@ export default function BusinessHoursPage() {
             <div className="flex justify-end">
               <button
                 type="button"
-                onClick={handleSaveSettings}
-                disabled={savingSettings}
+                onClick={handleSaveViewSettings}
+                disabled={savingViewSettings}
                 className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-amber-500 text-zinc-900 text-sm font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
               >
-                {savingSettings ? 'Saving...' : 'Save View Settings'}
+                {savingViewSettings ? 'Saving...' : 'Save View Settings'}
+              </button>
+            </div>
+          </div>
+
+          {/* Start of Week Section */}
+          <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-3 space-y-2.5">
+            <div>
+              <h2 className="text-lg font-semibold text-theme-primary">Start of Week</h2>
+              <p className="text-xs text-theme-tertiary mt-0.5">
+                Set which day your schedule week begins.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setWeekStartDay('sunday')}
+                className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                  weekStartDay === 'sunday'
+                    ? 'bg-amber-500/20 text-amber-500 border-amber-500/40'
+                    : 'bg-theme-tertiary text-theme-secondary border-theme-primary hover:bg-theme-hover'
+                }`}
+              >
+                Sunday
+              </button>
+              <button
+                type="button"
+                onClick={() => setWeekStartDay('monday')}
+                className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                  weekStartDay === 'monday'
+                    ? 'bg-amber-500/20 text-amber-500 border-amber-500/40'
+                    : 'bg-theme-tertiary text-theme-secondary border-theme-primary hover:bg-theme-hover'
+                }`}
+              >
+                Monday
+              </button>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleSaveWeekStart}
+                disabled={savingWeekStart}
+                className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-amber-500 text-zinc-900 text-sm font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
+              >
+                {savingWeekStart ? 'Saving...' : 'Save Start of Week'}
               </button>
             </div>
           </div>

@@ -4,10 +4,12 @@ import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { SECTIONS } from '../types';
 import { getWeekDates, dateToString, isSameDay, formatHour, shiftsOverlap } from '../utils/timeUtils';
-import { Palmtree } from 'lucide-react';
+import { Palmtree, ArrowLeftRight, UploadCloud } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
+import { ScheduleToolbar } from './ScheduleToolbar';
+import { apiFetch } from '../lib/apiClient';
 
 // Compact sizing - pixels per day column
 const PX_PER_DAY = 100;
@@ -15,6 +17,9 @@ const PX_PER_DAY = 100;
 export function WeekView() {
   const {
     selectedDate,
+    goToToday,
+    goToPrevious,
+    goToNext,
     getFilteredEmployeesForRestaurant,
     getShiftsForRestaurant,
     locations,
@@ -22,17 +27,29 @@ export function WeekView() {
     setViewMode,
     openModal,
     showToast,
+    loadRestaurantData,
+    selectAllEmployeesForRestaurant,
+    publishDraftRange,
     hasApprovedTimeOff,
     hasBlockedShiftOnDate,
     hasOrgBlackoutOnDate,
     dateNavDirection,
     dateNavKey,
     getEffectiveHourRange,
+    scheduleViewSettings,
+    scheduleMode,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
   const isManager = isManagerRole(getUserRole(currentUser?.role));
-  const weekDates = getWeekDates(selectedDate);
+  const isToday = isSameDay(selectedDate, new Date());
+  const todayStr = dateToString(new Date());
+  const isEditableDate = useCallback((dateStr: string) => dateStr >= todayStr, [todayStr]);
+  const canEditDate = useCallback((dateStr: string) => isManager && isEditableDate(dateStr), [isManager, isEditableDate]);
+  const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+  const weekDates = getWeekDates(selectedDate, weekStartDay);
+  const weekStartYmd = useMemo(() => dateToString(weekDates[0]), [weekDates]);
+  const weekEndYmd = useMemo(() => dateToString(weekDates[6]), [weekDates]);
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const locationMap = useMemo(
@@ -40,6 +57,38 @@ export function WeekView() {
     [locations]
   );
   const today = new Date();
+  const hasDraftInWeek = useMemo(
+    () =>
+      scopedShifts.some(
+        (shift) =>
+          shift.scheduleState === 'draft' &&
+          shift.date >= weekStartYmd &&
+          shift.date <= weekEndYmd
+      ),
+    [scopedShifts, weekEndYmd, weekStartYmd]
+  );
+  const weekShiftCount = useMemo(
+    () => scopedShifts.filter((shift) => shift.date >= weekStartYmd && shift.date <= weekEndYmd).length,
+    [scopedShifts, weekEndYmd, weekStartYmd]
+  );
+  const publishStatusLabel = hasDraftInWeek ? 'DRAFT' : 'PUBLISHED';
+  const publishStatusTone = hasDraftInWeek
+    ? 'bg-amber-500/15 text-amber-500 border-amber-500/40'
+    : 'bg-emerald-500/15 text-emerald-500 border-emerald-500/40';
+  const statusBadge = (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border shrink-0 ${publishStatusTone}`}>
+      {publishStatusLabel}
+    </span>
+  );
+  const isDraftMode = scheduleMode === 'draft';
+  const draftHelperText = 'Changes are not visible to staff until published.';
+  const draftBadge = (
+    <span className="inline-flex items-center px-2 py-1 rounded-full bg-amber-500/20 text-amber-500 text-[11px] font-semibold tracking-wide">
+      DRAFT MODE
+    </span>
+  );
+  const showPublishWeek = isManager && hasDraftInWeek;
+  const showCopyDraftWeek = isManager && isDraftMode && weekShiftCount === 0;
 
   // Refs for scroll syncing
   const gridScrollRef = useRef<HTMLDivElement>(null);
@@ -65,10 +114,89 @@ export function WeekView() {
     setViewMode('day');
   };
 
+  const handleToday = useCallback(() => goToToday(), [goToToday]);
+  const handlePrevious = useCallback(() => goToPrevious(), [goToPrevious]);
+  const handleNext = useCallback(() => goToNext(), [goToNext]);
+  const handlePrevJump = useCallback(() => goToPrevious(), [goToPrevious]);
+  const handleNextJump = useCallback(() => goToNext(), [goToNext]);
+  const handleSelectDate = useCallback((date: Date) => {
+    const normalized = new Date(date);
+    normalized.setHours(0, 0, 0, 0);
+    setSelectedDate(normalized);
+  }, [setSelectedDate]);
+
+  const handlePublishWeek = useCallback(async () => {
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first.', 'error');
+      return;
+    }
+    const result = await publishDraftRange({ startDate: weekStartYmd, endDate: weekEndYmd });
+    if (!result.success) {
+      showToast(result.error || 'Unable to publish week.', 'error');
+      return;
+    }
+    await loadRestaurantData(activeRestaurantId);
+    showToast('Published week.', 'success');
+  }, [activeRestaurantId, loadRestaurantData, publishDraftRange, showToast, weekEndYmd, weekStartYmd]);
+
+  const handleCreateDraft = useCallback(async () => {
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first.', 'error');
+      return;
+    }
+    const addDays = (dateStr: string, days: number) => {
+      const date = new Date(`${dateStr}T00:00:00`);
+      date.setDate(date.getDate() + days);
+      return dateToString(date);
+    };
+    const sourceWeekStart = addDays(weekStartYmd, -7);
+    const sourceWeekEnd = addDays(weekEndYmd, -7);
+    const result = await apiFetch('/api/shifts/copy', {
+      method: 'POST',
+      json: {
+        mode: 'nextWeek',
+        sourceWeekStart,
+        sourceWeekEnd,
+        targetScheduleState: 'draft',
+        sourceScheduleState: 'published',
+      },
+    });
+    if (!result.ok) {
+      showToast(result.error || 'Unable to create draft.', 'error');
+      return;
+    }
+    await loadRestaurantData(activeRestaurantId);
+    const { selectedEmployeeIds } = useScheduleStore.getState();
+    if (!selectedEmployeeIds.length) {
+      selectAllEmployeesForRestaurant(activeRestaurantId);
+    }
+    showToast('Draft schedule created.', 'success');
+  }, [activeRestaurantId, loadRestaurantData, selectAllEmployeesForRestaurant, showToast, weekEndYmd, weekStartYmd]);
+
+  const rightActions = (
+    <>
+      {showPublishWeek ? (
+        <button
+          type="button"
+          onClick={handlePublishWeek}
+          className="w-[140px] h-[40px] flex items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-xs sm:text-sm font-semibold"
+        >
+          <UploadCloud className="w-4 h-4" />
+          <span>Publish Week</span>
+        </button>
+      ) : (
+        <div className="w-[140px] h-[40px] invisible" />
+      )}
+    </>
+  );
+
   const handleShiftClick = (shift: typeof scopedShifts[0], e: React.MouseEvent) => {
     e.stopPropagation();
     if (shift.isBlocked) return;
-    if (!isManager) return;
+    if (!canEditDate(shift.date)) {
+      showToast("Past schedules can't be edited.", 'error');
+      return;
+    }
     openModal('editShift', shift);
   };
 
@@ -157,14 +285,17 @@ export function WeekView() {
   }, [dateNavKey, dateNavDirection]);
 
   const handleCellMouseDown = (employeeId: string, date: string, e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isManager) return;
+    if (!canEditDate(date)) return;
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('[data-shift]')) return;
     cellPointerRef.current = { x: e.clientX, y: e.clientY, employeeId, date };
   };
 
   const handleCellMouseUp = (employeeId: string, date: string, e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isManager) return;
+    if (!canEditDate(date)) {
+      showToast("Past schedules can't be edited.", 'error');
+      return;
+    }
     if (!cellPointerRef.current) return;
     if ((e.target as HTMLElement).closest('[data-shift]')) {
       cellPointerRef.current = null;
@@ -208,11 +339,51 @@ export function WeekView() {
 
   return (
     <div className="flex-1 flex flex-col bg-theme-timeline overflow-hidden transition-theme">
+      <ScheduleToolbar
+        viewMode="week"
+        selectedDate={selectedDate}
+        weekStartDay={weekStartDay}
+        isToday={isToday}
+        onToday={handleToday}
+        onPrev={handlePrevious}
+        onNext={handleNext}
+        onPrevJump={handlePrevJump}
+        onNextJump={handleNextJump}
+        onSelectDate={handleSelectDate}
+        rightActions={rightActions}
+      />
+
+      <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
+        <div className="flex items-center justify-between gap-4 min-w-max">
+          <div className={`flex items-center gap-2 ${isDraftMode ? '' : 'invisible'}`}>
+            {draftBadge}
+            <span className="text-[11px] text-theme-muted whitespace-nowrap">{draftHelperText}</span>
+          </div>
+
+          <div className="w-[300px] flex items-center justify-end">
+            {showCopyDraftWeek ? (
+              <button
+                type="button"
+                onClick={handleCreateDraft}
+                className="w-[300px] h-[40px] flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs sm:text-sm font-medium"
+              >
+                <ArrowLeftRight className="w-4 h-4" />
+                <span className="truncate">Copy last published week into draft</span>
+              </button>
+            ) : (
+              <div className="w-[300px] h-[40px] invisible" />
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="flex-1 flex overflow-hidden">
         {/* Fixed Employee Names Column - compact */}
         <div className="w-36 shrink-0 flex flex-col bg-theme-timeline z-20 border-r border-theme-primary">
           {/* Header spacer */}
-          <div className="h-10 border-b border-theme-primary shrink-0" />
+          <div className="h-10 border-b border-theme-primary shrink-0 flex items-center justify-center">
+            {statusBadge}
+          </div>
 
           {/* Employee names list - synced scroll */}
           <div
@@ -348,7 +519,7 @@ export function WeekView() {
                             onMouseDown={(e) => handleCellMouseDown(employee.id, dateStr, e)}
                             onMouseUp={(e) => handleCellMouseUp(employee.id, dateStr, e)}
                           >
-                            {!hasTimeOff && !hasBlocked && !hasOrgBlackout && isManager && (
+                            {!hasTimeOff && !hasBlocked && !hasOrgBlackout && canEditDate(dateStr) && (
                               <div
                                 className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity ${
                                   hoveredShiftId ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'
@@ -381,6 +552,8 @@ export function WeekView() {
                                 {dayShifts.slice(0, 2).map((shift) => {
                                   const jobColor = getJobColorClasses(shift.job);
                                   const shiftDuration = shift.endHour - shift.startHour;
+                                  const isDraftShift = isManager && shift.scheduleState === 'draft';
+                                  const isBaselinePublished = scheduleMode === 'draft' && shift.scheduleState !== 'draft';
 
                                   return (
                                     <div
@@ -389,7 +562,9 @@ export function WeekView() {
                                       onClick={(e) => handleShiftClick(shift, e)}
                                       onMouseEnter={() => setHoveredShiftId(shift.id)}
                                       onMouseLeave={() => setHoveredShiftId(null)}
-                                      className="px-1 py-0.5 rounded text-[9px] truncate cursor-pointer hover:scale-[1.02] transition-transform"
+                                      className={`relative px-1 py-0.5 rounded text-[9px] truncate cursor-pointer hover:scale-[1.02] transition-transform ${
+                                        isDraftShift ? 'border border-amber-400/60 border-dashed' : ''
+                                      } ${isBaselinePublished ? 'ring-1 ring-emerald-400/40' : ''}`}
                                       style={{
                                         backgroundColor: jobColor.bgColor,
                                         borderLeft: `2px solid ${jobColor.color}`,
@@ -397,6 +572,11 @@ export function WeekView() {
                                       }}
                                       title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
                                     >
+                                      {isDraftShift && (
+                                        <span className="absolute top-0 right-0 px-1 rounded bg-amber-500/30 text-[7px] font-semibold text-amber-100/90">
+                                          DRAFT
+                                        </span>
+                                      )}
                                       {Math.round(shiftDuration)}h
                                     </div>
                                   );

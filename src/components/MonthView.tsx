@@ -4,15 +4,14 @@ import { useMemo, useCallback } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { getUserRole } from '../utils/role';
-import { dateToString } from '../utils/timeUtils';
-
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const WEEKDAYS_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+import { dateToString, getWeekStart, getWeekdayHeaders, isSameDay } from '../utils/timeUtils';
+import { ScheduleToolbar } from './ScheduleToolbar';
 
 export function MonthView() {
   const {
     selectedDate,
     viewMode,
+    goToToday,
     selectedEmployeeIds,
     getShiftsForRestaurant,
     getEmployeesForRestaurant,
@@ -20,13 +19,47 @@ export function MonthView() {
     setViewMode,
     hasOrgBlackoutOnDate,
     getBlockedRequestsForEmployee,
+    scheduleViewSettings,
   } = useScheduleStore();
   const { activeRestaurantId, currentUser } = useAuthStore();
+  const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
 
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const role = getUserRole(currentUser?.role);
   const isEmployee = role === 'EMPLOYEE';
+  const isToday = isSameDay(selectedDate, new Date());
+
+  const handleToday = useCallback(() => goToToday(), [goToToday]);
+  const handlePrevious = useCallback(() => {
+    const next = new Date(selectedDate);
+    next.setMonth(next.getMonth() - 1);
+    next.setHours(0, 0, 0, 0);
+    setSelectedDate(next);
+  }, [selectedDate, setSelectedDate]);
+  const handleNext = useCallback(() => {
+    const next = new Date(selectedDate);
+    next.setMonth(next.getMonth() + 1);
+    next.setHours(0, 0, 0, 0);
+    setSelectedDate(next);
+  }, [selectedDate, setSelectedDate]);
+  const handlePrevJump = useCallback(() => {
+    const next = new Date(selectedDate);
+    next.setFullYear(next.getFullYear() - 1);
+    next.setHours(0, 0, 0, 0);
+    setSelectedDate(next);
+  }, [selectedDate, setSelectedDate]);
+  const handleNextJump = useCallback(() => {
+    const next = new Date(selectedDate);
+    next.setFullYear(next.getFullYear() + 1);
+    next.setHours(0, 0, 0, 0);
+    setSelectedDate(next);
+  }, [selectedDate, setSelectedDate]);
+  const handleSelectDate = useCallback((date: Date) => {
+    const normalized = new Date(date);
+    normalized.setHours(0, 0, 0, 0);
+    setSelectedDate(normalized);
+  }, [setSelectedDate]);
 
   const monthStart = useMemo(() => 
     new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1),
@@ -37,10 +70,10 @@ export function MonthView() {
     [selectedDate]
   );
   const calendarStart = useMemo(() => {
-    const start = new Date(monthStart);
-    start.setDate(start.getDate() - start.getDay());
-    return start;
-  }, [monthStart]);
+    return getWeekStart(monthStart, weekStartDay);
+  }, [monthStart, weekStartDay]);
+
+  const weekdayHeaders = useMemo(() => getWeekdayHeaders(weekStartDay), [weekStartDay]);
 
   const weeks = useMemo(() => {
     const grid: Date[][] = [];
@@ -111,23 +144,37 @@ export function MonthView() {
   const selectedStr = dateToString(selectedDate);
 
   return (
-    <div className="h-full overflow-auto p-2 sm:p-4">
-      <div className="bg-theme-secondary border border-theme-primary rounded-xl sm:rounded-2xl p-3 sm:p-4 max-w-4xl mx-auto">
-        <div className="flex items-center justify-between mb-3 sm:mb-4">
-          <h2 className="text-base sm:text-lg font-semibold text-theme-primary">
-            {selectedDate.toLocaleString('default', { month: 'long' })} {selectedDate.getFullYear()}
-          </h2>
-          <p className="text-[10px] sm:text-xs text-theme-muted">
-            {isEmployee ? 'My Shifts' : 'Filtered shifts'}
-          </p>
-        </div>
+    <div className="flex-1 flex flex-col bg-theme-timeline overflow-hidden transition-theme">
+      <ScheduleToolbar
+        viewMode="month"
+        selectedDate={selectedDate}
+        weekStartDay={weekStartDay}
+        isToday={isToday}
+        onToday={handleToday}
+        onPrev={handlePrevious}
+        onNext={handleNext}
+        onPrevJump={handlePrevJump}
+        onNextJump={handleNextJump}
+        onSelectDate={handleSelectDate}
+      />
+
+      <div className="flex-1 overflow-auto p-2 sm:p-4">
+        <div className="bg-theme-secondary border border-theme-primary rounded-xl sm:rounded-2xl p-3 sm:p-4 max-w-4xl mx-auto">
+          <div className="flex items-center justify-between mb-3 sm:mb-4">
+            <h2 className="text-base sm:text-lg font-semibold text-theme-primary">
+              {selectedDate.toLocaleString('default', { month: 'long' })} {selectedDate.getFullYear()}
+            </h2>
+            <p className="text-[10px] sm:text-xs text-theme-muted">
+              {isEmployee ? 'My Shifts' : 'Filtered shifts'}
+            </p>
+          </div>
         
         {/* Weekday headers */}
         <div className="grid grid-cols-7 gap-1 text-theme-muted mb-1">
-          {WEEKDAYS.map((day, i) => (
+          {weekdayHeaders.full.map((day, i) => (
             <div key={day} className="text-center text-[10px] sm:text-xs font-semibold py-1">
               <span className="hidden sm:inline">{day}</span>
-              <span className="sm:hidden">{WEEKDAYS_SHORT[i]}</span>
+              <span className="sm:hidden">{weekdayHeaders.short[i]}</span>
             </div>
           ))}
         </div>
@@ -174,7 +221,7 @@ export function MonthView() {
                       {count}
                     </span>
                   )}
-                  
+
                   {blocked && (
                     <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true" />
                   )}
@@ -182,6 +229,7 @@ export function MonthView() {
               );
             })
           )}
+        </div>
         </div>
       </div>
     </div>

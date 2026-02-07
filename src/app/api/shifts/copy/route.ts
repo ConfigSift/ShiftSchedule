@@ -19,6 +19,8 @@ type CopyPayload = {
   targetStartWeek?: string;
   targetEndWeek?: string;
   allowOverrideBlocked?: boolean;
+  sourceScheduleState?: 'draft' | 'published';
+  targetScheduleState?: 'draft' | 'published';
 };
 
 type ExistingShift = {
@@ -50,10 +52,12 @@ function addDays(dateStr: string, days: number) {
   return date.toISOString().split('T')[0];
 }
 
-function weekStart(dateStr: string) {
+function weekStart(dateStr: string, weekStartDay: 'sunday' | 'monday') {
   const date = new Date(`${dateStr}T00:00:00`);
   const day = date.getDay();
-  date.setDate(date.getDate() - day);
+  const weekStartsOn = weekStartDay === 'monday' ? 1 : 0;
+  const diff = (day - weekStartsOn + 7) % 7;
+  date.setDate(date.getDate() - diff);
   return date.toISOString().split('T')[0];
 }
 
@@ -125,6 +129,13 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Organization missing.', 400), response);
   }
 
+  const { data: settingsRow } = await supabaseAdmin
+    .from('schedule_view_settings')
+    .select('week_start_day')
+    .eq('organization_id', organizationId)
+    .maybeSingle();
+  const weekStartDay = settingsRow?.week_start_day === 'monday' ? 'monday' : 'sunday';
+
   let targetWeekStarts: string[] = [];
   const isDayMode = payload.mode === 'nextDay';
   if (payload.mode === 'nextDay') {
@@ -147,8 +158,8 @@ export async function POST(request: NextRequest) {
         response
       );
     }
-    const start = weekStart(payload.targetStartWeek!);
-    const end = weekStart(payload.targetEndWeek!);
+    const start = weekStart(payload.targetStartWeek!, weekStartDay);
+    const end = weekStart(payload.targetEndWeek!, weekStartDay);
     if (start > end) {
       return applySupabaseCookies(
         NextResponse.json({ error: 'targetEndWeek must be after targetStartWeek.' }, { status: 400 }),
@@ -166,6 +177,20 @@ export async function POST(request: NextRequest) {
   }
 
   const allowOverrideBlocked = Boolean(payload.allowOverrideBlocked);
+  const sourceScheduleState = payload.sourceScheduleState ?? 'published';
+  const targetScheduleState = payload.targetScheduleState ?? 'draft';
+  if (!['draft', 'published'].includes(sourceScheduleState)) {
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'sourceScheduleState must be draft or published.' }, { status: 400 }),
+      response
+    );
+  }
+  if (!['draft', 'published'].includes(targetScheduleState)) {
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'targetScheduleState must be draft or published.' }, { status: 400 }),
+      response
+    );
+  }
   const sourceWeekStart = isDayMode ? payload.sourceDay! : payload.sourceWeekStart;
   const sourceWeekEnd = isDayMode ? payload.sourceDay! : payload.sourceWeekEnd;
 
@@ -173,6 +198,7 @@ export async function POST(request: NextRequest) {
     .from('shifts')
     .select('*')
     .eq('organization_id', organizationId)
+    .eq('schedule_state', sourceScheduleState)
     .gte('shift_date', sourceWeekStart)
     .lte('shift_date', sourceWeekEnd);
 
@@ -201,10 +227,28 @@ export async function POST(request: NextRequest) {
     isDayMode ? 0 : 6
   );
 
+  if (targetScheduleState === 'draft') {
+    const { error: deleteError } = await supabaseAdmin
+      .from('shifts')
+      .delete()
+      .eq('organization_id', organizationId)
+      .eq('schedule_state', 'draft')
+      .gte('shift_date', targetRangeStart)
+      .lte('shift_date', targetRangeEnd);
+
+    if (deleteError) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: deleteError.message }, { status: 400 }),
+        response
+      );
+    }
+  }
+
   const { data: existingShifts, error: existingError } = await supabaseAdmin
     .from('shifts')
     .select('user_id,shift_date,start_time,end_time,job')
     .eq('organization_id', organizationId)
+    .eq('schedule_state', targetScheduleState)
     .gte('shift_date', targetRangeStart)
     .lte('shift_date', targetRangeEnd);
 
@@ -342,6 +386,7 @@ export async function POST(request: NextRequest) {
         end_time: sourceEndTime,
         notes: sourceShift.notes ?? null,
         is_blocked: sourceShift.is_blocked ?? false,
+        schedule_state: targetScheduleState,
         job: sourceShift.job ?? null,
         location_id: sourceShift.location_id ?? null,
       });

@@ -1,4 +1,4 @@
-import { HOURS_START, HOURS_END, TOTAL_HOURS } from '../types';
+import { HOURS_START, HOURS_END, TOTAL_HOURS, type WeekStartDay } from '../types';
 
 export function formatHour(hour: number): string {
   const h = Math.floor(hour);
@@ -62,18 +62,45 @@ export function formatDateRange(startDate: Date, endDate: Date): string {
   return `${startMonth} ${startDay} - ${endMonth} ${endDay}, ${year}`;
 }
 
-export function getWeekDates(baseDate: Date): Date[] {
+export function getWeekStart(date: Date, weekStartDay: WeekStartDay = 'sunday'): Date {
+  const start = new Date(date);
+  const weekStartsOn = weekStartDay === 'monday' ? 1 : 0;
+  const day = start.getDay();
+  const diff = (day - weekStartsOn + 7) % 7;
+  start.setDate(start.getDate() - diff);
+  start.setHours(0, 0, 0, 0);
+  return start;
+}
+
+export function getWeekDates(baseDate: Date, weekStartDay: WeekStartDay = 'sunday'): Date[] {
   const dates: Date[] = [];
-  const start = new Date(baseDate);
-  start.setDate(start.getDate() - start.getDay());
-  
+  const start = getWeekStart(baseDate, weekStartDay);
+
   for (let i = 0; i < 7; i++) {
     const date = new Date(start);
     date.setDate(start.getDate() + i);
     dates.push(date);
   }
-  
+
   return dates;
+}
+
+export function getWeekRange(baseDate: Date, weekStartDay: WeekStartDay = 'sunday') {
+  const start = getWeekStart(baseDate, weekStartDay);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { start, end };
+}
+
+export function getWeekdayHeaders(weekStartDay: WeekStartDay = 'sunday') {
+  const full = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const short = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  if (weekStartDay === 'sunday') {
+    return { full, short };
+  }
+  const shiftedFull = [...full.slice(1), full[0]];
+  const shiftedShort = [...short.slice(1), short[0]];
+  return { full: shiftedFull, short: shiftedShort };
 }
 
 export function isSameDay(date1: Date, date2: Date): boolean {

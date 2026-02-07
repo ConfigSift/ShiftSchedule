@@ -3,8 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Dashboard } from '../../components/Dashboard';
+import { EmployeeDashboard } from '../../components/employee/EmployeeDashboard';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
+import { getUserRole, isManagerRole } from '../../utils/role';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -95,6 +97,13 @@ export default function DashboardPage() {
     );
   }
 
+  // Branch here to keep manager/admin dashboard untouched while giving employees their own view.
+  const matchedRestaurant = activeRestaurantId
+    ? accessibleRestaurants.find((restaurant) => restaurant.id === activeRestaurantId)
+    : undefined;
+  const effectiveRole = getUserRole(matchedRestaurant?.role ?? currentUser.role);
+  const isManager = isManagerRole(effectiveRole);
+
   return (
     <div className="h-full flex flex-col bg-theme-primary overflow-hidden">
       {notice === 'forbidden' && (
@@ -103,7 +112,7 @@ export default function DashboardPage() {
         </div>
       )}
       <div className="flex-1 min-h-0 overflow-hidden">
-        <Dashboard />
+        {isManager ? <Dashboard /> : <EmployeeDashboard />}
       </div>
     </div>
   );

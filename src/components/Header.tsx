@@ -15,6 +15,7 @@ import {
   User,
   LogOut,
   CalendarOff,
+  ArrowLeftRight,
   Users,
   Clock,
   ClipboardList,
@@ -43,6 +44,7 @@ export function Header({ minimal = false }: HeaderProps) {
     openModal,
     getPendingTimeOffRequests,
     getPendingBlockedDayRequests,
+    scheduleMode,
   } = useScheduleStore();
 
   const { currentUser, signOut, accessibleRestaurants, pendingInvitations, activeRestaurantId } = useAuthStore();
@@ -58,8 +60,9 @@ export function Header({ minimal = false }: HeaderProps) {
   const pendingRequests = getPendingTimeOffRequests();
   const pendingBlockedRequests = getPendingBlockedDayRequests();
   const pendingReviewCount = pendingRequests.length + pendingBlockedRequests.length;
-  // Show "Restaurants" link if user has multiple restaurants OR has pending invitations
-  const showRestaurantsLink = accessibleRestaurants.length > 1 || pendingInvitations.length > 0;
+  const hasSingleRestaurant = accessibleRestaurants.length === 1;
+  // Always allow access to Restaurants/Site Manager for signed-in users
+  const showRestaurantsLink = Boolean(currentUser);
   const activeRestaurantName =
     accessibleRestaurants.find((restaurant) => restaurant.id === activeRestaurantId)?.name ?? null;
 
@@ -122,14 +125,22 @@ export function Header({ minimal = false }: HeaderProps) {
   }, [moreMenuOpen]);
 
   const isOnDashboard = pathname === '/dashboard';
+  const isEmployeeNavPage =
+    pathname === '/dashboard' ||
+    pathname === '/shift-exchange' ||
+    pathname === '/review-requests' ||
+    pathname === '/profile' ||
+    pathname === '/chat';
+  const isEmployee = currentRole === 'EMPLOYEE';
+  const showEmployeeMobileHeader = isEmployee && isEmployeeNavPage && !minimal;
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 h-14 sm:h-16 bg-theme-secondary border-b border-theme-primary transition-theme">
-      <div className="h-full px-2 sm:px-4 lg:px-6 flex items-center justify-between gap-2 sm:gap-4">
+      <div className="h-full px-2 sm:px-4 lg:px-6 flex items-center justify-between gap-2 sm:gap-4 relative">
         {/* Left: Logo + Mobile sidebar toggle + Primary nav */}
         <div className="flex items-center gap-1 sm:gap-2 min-w-0">
           {/* Mobile sidebar toggle - only on dashboard */}
-          {!minimal && isOnDashboard && (
+          {!minimal && isOnDashboard && !showEmployeeMobileHeader && (
             <button
               onClick={toggleSidebar}
               className="md:hidden p-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
@@ -143,12 +154,15 @@ export function Header({ minimal = false }: HeaderProps) {
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
               <Calendar className="w-4 h-4 text-zinc-900" />
             </div>
+            {showEmployeeMobileHeader && (
+              <span className="sm:hidden font-semibold text-theme-primary">ShiftFlow</span>
+            )}
             <span className="hidden sm:inline font-semibold text-theme-primary">ShiftFlow</span>
           </Link>
 
           {/* Primary nav - hidden in minimal mode */}
           {!minimal && (
-            <nav className="flex items-center gap-1 sm:gap-2">
+            <nav className={`flex items-center gap-1 sm:gap-2 ${showEmployeeMobileHeader ? 'hidden md:flex' : ''}`}>
               <Link
                 href="/dashboard"
                 className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
@@ -178,9 +192,25 @@ export function Header({ minimal = false }: HeaderProps) {
           {!minimal && activeRestaurantName && (
             <span className="hidden md:inline-flex items-center text-xs text-theme-muted ml-2">
               Restaurant: <span className="ml-1 text-theme-primary font-medium">{activeRestaurantName}</span>
+              {hasSingleRestaurant && (
+                <Link
+                  href="/restaurants"
+                  className="ml-2 text-[11px] font-semibold text-amber-500 hover:text-amber-400 transition-colors"
+                >
+                  Manage
+                </Link>
+              )}
             </span>
           )}
         </div>
+
+        {showEmployeeMobileHeader && (
+          <div className="md:hidden absolute left-1/2 -translate-x-1/2 min-w-0 max-w-[50%] text-center">
+            <span className="text-sm text-theme-secondary truncate block">
+              {activeRestaurantName ?? ''}
+            </span>
+          </div>
+        )}
 
         {/* Right: Actions + More menu */}
         <div className="flex items-center gap-1 sm:gap-2 shrink-0">
@@ -196,15 +226,15 @@ export function Header({ minimal = false }: HeaderProps) {
             </button>
           )}
 
-          {/* Request Time Off - hidden in minimal mode */}
-          {!minimal && currentUser && (
+          {/* Copy Schedule - hidden in minimal mode */}
+          {!minimal && isManagerRole(currentRole) && isOnDashboard && scheduleMode !== 'draft' && (
             <button
-              onClick={() => openTimeOffModal({ employeeId: currentUser.id })}
-              className="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors text-sm font-medium"
-              aria-label="Request Time Off"
+              onClick={() => openModal('copySchedule')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-400 transition-colors text-sm font-medium"
+              aria-label="Copy Schedule"
             >
-              <CalendarOff className="w-4 h-4" />
-              <span className="hidden lg:inline">Request Time Off</span>
+              <ArrowLeftRight className="w-4 h-4" />
+              <span className="hidden sm:inline">Copy Schedule</span>
             </button>
           )}
 
@@ -278,15 +308,25 @@ export function Header({ minimal = false }: HeaderProps) {
                   </button>
                 )}
 
-                {/* Request Time Off - hidden in minimal mode */}
+                {/* Schedule actions - hidden in minimal mode */}
                 {!minimal && currentUser && (
-                  <button
-                    onClick={() => { openTimeOffModal({ employeeId: currentUser.id }); setMoreMenuOpen(false); }}
-                    className="md:hidden flex items-center gap-3 w-full px-4 py-2.5 text-sm text-emerald-500 hover:bg-emerald-500/10 transition-colors"
-                  >
-                    <CalendarOff className="w-4 h-4" />
-                    Request Time Off
-                  </button>
+                  <div className="border-b border-theme-primary pb-2 mb-2">
+                    <button
+                      onClick={() => { openTimeOffModal({ employeeId: currentUser.id }); setMoreMenuOpen(false); }}
+                      className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-emerald-500 hover:bg-emerald-500/10 transition-colors"
+                    >
+                      <CalendarOff className="w-4 h-4" />
+                      Request Time Off
+                    </button>
+                    <Link
+                      href="/shift-exchange"
+                      onClick={() => setMoreMenuOpen(false)}
+                      className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                    >
+                      <ArrowLeftRight className="w-4 h-4" />
+                      Swap Shift
+                    </Link>
+                  </div>
                 )}
 
                 {/* Back to Schedule - shown in minimal mode */}

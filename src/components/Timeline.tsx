@@ -5,14 +5,13 @@ import { useAuthStore } from '../store/authStore';
 import { SECTIONS } from '../types';
 import { formatHourShort, formatHour, shiftsOverlap } from '../utils/timeUtils';
 import { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } from 'react';
-import { createPortal } from 'react-dom';
-import { Palmtree, ChevronLeft, ChevronRight, CalendarDays, Sun, Calendar, ArrowLeftRight, Copy, MoreHorizontal } from 'lucide-react';
+import { Palmtree, ArrowLeftRight, UploadCloud } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { getJobColorClasses } from '../lib/jobColors';
-import Link from 'next/link';
+import { ScheduleToolbar } from './ScheduleToolbar';
 
 // Compact timeline sizing - pixels per hour
-const PX_PER_HOUR = 48;
+const DEFAULT_PX_PER_HOUR = 48;
 
 // LocalStorage key for continuous days toggle
 const CONTINUOUS_DAYS_KEY = 'schedule_continuous_days';
@@ -102,8 +101,13 @@ export function Timeline() {
     dateNavKey,
     getEffectiveHourRange,
     viewMode,
-    setViewMode,
     workingTodayOnly,
+    scheduleViewSettings,
+    scheduleMode,
+    publishDraftRange,
+    copyPreviousDayIntoDraft,
+    shifts,
+    loadRestaurantData,
   } = useScheduleStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -111,8 +115,10 @@ export function Timeline() {
   const headerScrollRef = useRef<HTMLDivElement>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const isSyncingScrollRef = useRef(false);
+  const timelineResizeRafRef = useRef<number | null>(null);
   const [isSliding, setIsSliding] = useState(false);
   const [slideDirection, setSlideDirection] = useState<'prev' | 'next' | null>(null);
+  const [timelineWidthPx, setTimelineWidthPx] = useState(0);
   const [tooltip, setTooltip] = useState<{
     shiftId: string;
     left: number;
@@ -174,17 +180,6 @@ export function Timeline() {
 
   // Continuous Days state
   const [continuousDays, setContinuousDays] = useState(false);
-  // Mobile toolbar "More" menu state
-  const [mobileMoreMenuOpen, setMobileMoreMenuOpen] = useState(false);
-  const mobileMoreMenuRef = useRef<HTMLDivElement>(null);
-  // Date picker dropdown state
-  const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const datePickerMobileRef = useRef<HTMLDivElement>(null);
-  const datePickerDesktopRef = useRef<HTMLDivElement>(null);
-  const dateButtonMobileRef = useRef<HTMLButtonElement>(null);
-  const dateButtonDesktopRef = useRef<HTMLButtonElement>(null);
-  const datePickerDropdownRef = useRef<HTMLDivElement>(null);
-  const [datePickerPosition, setDatePickerPosition] = useState<{ top: number; left: number; width: number } | null>(null);
   // Window start date for continuous mode (first of 3 days)
   const [windowStartDate, setWindowStartDate] = useState<Date>(() => addDays(getMidnight(new Date()), -1));
   const continuousAnchorDateRef = useRef<Date | null>(null);
@@ -197,6 +192,88 @@ export function Timeline() {
 
   const { activeRestaurantId, currentUser } = useAuthStore();
   const isManager = isManagerRole(getUserRole(currentUser?.role));
+  const isDraftMode = scheduleMode === 'draft';
+  const todayYmd = toDateString(new Date());
+  const isEditableDate = useCallback((dateStr: string) => dateStr >= todayYmd, [todayYmd]);
+  const draftHelperText = 'Changes are not visible to staff until published.';
+  const draftBadge = (
+    <span className="inline-flex items-center px-2 py-1 rounded-full bg-amber-500/20 text-amber-500 text-[10px] font-semibold tracking-wide">
+      DRAFT MODE
+    </span>
+  );
+  const selectedDateYmd = useMemo(() => toDateString(selectedDate), [selectedDate]);
+  const rangeStartDate = continuousDays ? windowStartDate : selectedDate;
+  const rangeEndDate = continuousDays ? addDays(windowStartDate, CONTINUOUS_DAYS_COUNT - 1) : selectedDate;
+  const rangeStartYmd = useMemo(() => toDateString(rangeStartDate), [rangeStartDate]);
+  const rangeEndYmd = useMemo(() => toDateString(rangeEndDate), [rangeEndDate]);
+  const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+  const canEditSelectedDate = isManager && isEditableDate(selectedDateYmd);
+  const hasDraftOnSelectedDate = useMemo(
+    () =>
+      shifts.some(
+        (shift) =>
+          shift.restaurantId === activeRestaurantId &&
+          shift.scheduleState === 'draft' &&
+          shift.date === selectedDateYmd
+      ),
+    [activeRestaurantId, selectedDateYmd, shifts]
+  );
+  const hasDraftInRange = useMemo(
+    () =>
+      shifts.some(
+        (shift) =>
+          shift.restaurantId === activeRestaurantId &&
+          shift.scheduleState === 'draft' &&
+          shift.date >= rangeStartYmd &&
+          shift.date <= rangeEndYmd
+      ),
+    [activeRestaurantId, rangeEndYmd, rangeStartYmd, shifts]
+  );
+  const publishStatusLabel = hasDraftInRange ? 'DRAFT' : 'PUBLISHED';
+  const publishStatusTone = hasDraftInRange
+    ? 'bg-amber-500/15 text-amber-500 border-amber-500/40'
+    : 'bg-emerald-500/15 text-emerald-500 border-emerald-500/40';
+  const statusBadge = (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border shrink-0 ${publishStatusTone}`}>
+      {publishStatusLabel}
+    </span>
+  );
+  const showPublishDay = isManager && hasDraftOnSelectedDate;
+  const handlePublishDay = useCallback(async () => {
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first.', 'error');
+      return;
+    }
+    const result = await publishDraftRange({
+      startDate: selectedDateYmd,
+      endDate: selectedDateYmd,
+    });
+    if (!result.success) {
+      showToast(result.error || 'Unable to publish day.', 'error');
+      return;
+    }
+    await loadRestaurantData(activeRestaurantId);
+    showToast('Published day.', 'success');
+  }, [activeRestaurantId, loadRestaurantData, publishDraftRange, selectedDateYmd, showToast]);
+  const handleCopyPreviousDayIntoDraft = useCallback(async () => {
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first.', 'error');
+      return;
+    }
+    const result = await copyPreviousDayIntoDraft(selectedDate);
+    if (!result.success) {
+      showToast(result.error || 'Unable to copy previous day into draft.', 'error');
+      return;
+    }
+    if ((result.sourceCount ?? 0) === 0) {
+      showToast('No shifts found for previous day.', 'error');
+      return;
+    }
+    const inserted = result.insertedCount ?? 0;
+    const skipped = result.skippedCount ?? 0;
+    const countsLabel = ` (${inserted} added${skipped ? `, ${skipped} skipped` : ''})`;
+    showToast(`Copied previous day into draft.${countsLabel}`, 'success');
+  }, [activeRestaurantId, copyPreviousDayIntoDraft, selectedDate, showToast]);
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
@@ -309,114 +386,42 @@ export function Timeline() {
     }
   }, [continuousDays, selectedDate]);
 
-  // Close mobile more menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (mobileMoreMenuRef.current && !mobileMoreMenuRef.current.contains(e.target as Node)) {
-        setMobileMoreMenuOpen(false);
-      }
-    };
-    if (mobileMoreMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [mobileMoreMenuOpen]);
 
-  // Close date picker on click-outside or Escape key
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      // Check if click is inside the dropdown (portal), button, or container
-      const inDropdown = datePickerDropdownRef.current?.contains(target);
-      const inMobileButton = dateButtonMobileRef.current?.contains(target);
-      const inDesktopButton = dateButtonDesktopRef.current?.contains(target);
-      if (!inDropdown && !inMobileButton && !inDesktopButton) {
-        setDatePickerOpen(false);
-      }
-    };
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setDatePickerOpen(false);
-      }
-    };
-    if (datePickerOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      document.addEventListener('keydown', handleEscape);
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [datePickerOpen]);
-
-  // Calculate date picker dropdown position (for portal rendering)
-  const updateDatePickerPosition = useCallback(() => {
-    // Find which button is visible (mobile or desktop)
-    const mobileButton = dateButtonMobileRef.current;
-    const desktopButton = dateButtonDesktopRef.current;
-    // Check which one is actually visible using offsetParent or getComputedStyle
-    const button = desktopButton && desktopButton.offsetParent !== null ? desktopButton : mobileButton;
-    if (!button) return;
-
-    const rect = button.getBoundingClientRect();
-    const dropdownWidth = 288; // w-72 = 18rem = 288px
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-
-    // Default: center below the button
-    let left = rect.left + rect.width / 2 - dropdownWidth / 2;
-    let top = rect.bottom + 4; // 4px gap
-
-    // Clamp to viewport edges
-    const margin = 8;
-    if (left < margin) left = margin;
-    if (left + dropdownWidth > viewportWidth - margin) {
-      left = viewportWidth - dropdownWidth - margin;
-    }
-
-    // On mobile, use full width with margins
-    const isMobile = window.innerWidth < 640;
-    const width = isMobile ? viewportWidth - margin * 2 : dropdownWidth;
-    if (isMobile) {
-      left = margin;
-    }
-
-    // TODO: flip above if near bottom (optional enhancement)
-    // For now, just ensure it doesn't go below viewport
-    const estimatedHeight = 340; // approximate dropdown height
-    if (top + estimatedHeight > viewportHeight - margin) {
-      // Try to flip above
-      const topAbove = rect.top - estimatedHeight - 4;
-      if (topAbove > margin) {
-        top = topAbove;
-      }
-    }
-
-    setDatePickerPosition({ top, left, width });
-  }, []);
-
-  // Update position when dropdown opens and on scroll/resize
+  // Fit timeline grid width to available space
   useLayoutEffect(() => {
-    if (!datePickerOpen) {
-      setDatePickerPosition(null);
-      return;
-    }
+    if (continuousDays) return;
+    const el = gridScrollRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
 
-    // Initial position calculation
-    updateDatePickerPosition();
+    const updateWidth = (nextWidth: number) => {
+      setTimelineWidthPx((prev) => (Math.abs(prev - nextWidth) > 0.5 ? nextWidth : prev));
+    };
 
-    // Recalculate on scroll (capture phase to catch all scrolls) and resize
-    const handleScroll = () => updateDatePickerPosition();
-    const handleResize = () => updateDatePickerPosition();
+    updateWidth(el.clientWidth);
 
-    window.addEventListener('scroll', handleScroll, true);
-    window.addEventListener('resize', handleResize);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const nextWidth = entry.contentRect.width;
+      if (timelineResizeRafRef.current !== null) {
+        cancelAnimationFrame(timelineResizeRafRef.current);
+      }
+      timelineResizeRafRef.current = requestAnimationFrame(() => {
+        timelineResizeRafRef.current = null;
+        updateWidth(nextWidth);
+      });
+    });
+
+    observer.observe(el);
 
     return () => {
-      window.removeEventListener('scroll', handleScroll, true);
-      window.removeEventListener('resize', handleResize);
+      if (timelineResizeRafRef.current !== null) {
+        cancelAnimationFrame(timelineResizeRafRef.current);
+        timelineResizeRafRef.current = null;
+      }
+      observer.disconnect();
     };
-  }, [datePickerOpen, updateDatePickerPosition]);
+  }, [continuousDays]);
 
   // Save continuous days preference to localStorage
   const toggleContinuousDays = useCallback(() => {
@@ -436,12 +441,15 @@ export function Timeline() {
   const dayOfWeek = selectedDate.getDay();
   const { startHour: HOURS_START, endHour: HOURS_END } = getEffectiveHourRange(dayOfWeek);
   const TOTAL_HOURS = HOURS_END - HOURS_START;
+  const totalHoursForScale = Math.max(1, TOTAL_HOURS);
+  const gridViewportWidth = timelineWidthPx > 0 ? timelineWidthPx : totalHoursForScale * DEFAULT_PX_PER_HOUR;
+  const pxPerHour = continuousDays ? DEFAULT_PX_PER_HOUR : gridViewportWidth / totalHoursForScale;
   const singleDayHours = Array.from({ length: TOTAL_HOURS }, (_, i) => HOURS_START + i);
-  const singleDayGridWidth = TOTAL_HOURS * PX_PER_HOUR;
+  const singleDayGridWidth = TOTAL_HOURS * pxPerHour;
   const dateString = toDateString(selectedDate);
 
   // Continuous mode values
-  const continuousGridWidth = CONTINUOUS_TOTAL_HOURS * PX_PER_HOUR;
+  const continuousGridWidth = CONTINUOUS_TOTAL_HOURS * pxPerHour;
 
   const continuousDaysData = useMemo(() => {
     if (!continuousDays) return [];
@@ -551,11 +559,11 @@ export function Timeline() {
 
     // Calculate pixel offset from window start
     const hoursFromWindowStart = dayIndex * 24 + startHour;
-    const leftPx = hoursFromWindowStart * PX_PER_HOUR;
-    const widthPx = (endHour - startHour) * PX_PER_HOUR;
+    const leftPx = hoursFromWindowStart * pxPerHour;
+    const widthPx = (endHour - startHour) * pxPerHour;
 
     return { leftPx, widthPx };
-  }, [continuousDaysData]);
+  }, [continuousDaysData, pxPerHour]);
 
   // ─────────────────────────────────────────────────────────────────
   // Current time indicator
@@ -575,14 +583,12 @@ export function Timeline() {
     const todayString = toDateString(now);
     const dayIndex = continuousDaysData.findIndex(d => d.dateString === todayString);
     if (dayIndex === -1) return null;
-    return (dayIndex * 24 + currentHour) * PX_PER_HOUR;
-  }, [continuousDays, continuousDaysData, currentHour, now]);
+    return (dayIndex * 24 + currentHour) * pxPerHour;
+  }, [continuousDays, continuousDaysData, currentHour, now, pxPerHour]);
 
   // ─────────────────────────────────────────────────────────────────
   // Navigation
   // ─────────────────────────────────────────────────────────────────
-  const handleViewMode = useCallback((mode: 'day' | 'week' | 'month') => setViewMode(mode), [setViewMode]);
-  const handleCopySchedule = useCallback(() => openModal('copySchedule'), [openModal]);
 
 
   // Recenter scroll to a specific date in continuous mode.
@@ -607,13 +613,13 @@ export function Timeline() {
           const targetDayBusinessHours = getBusinessHoursForDate(effectiveTarget);
           const centerHour = targetDayBusinessHours ? targetDayBusinessHours.openHour + 2 : 12;
           const hoursFromWindowStart = 24 + centerHour; // day 1 (24h offset) + center hour
-          const desired = hoursFromWindowStart * PX_PER_HOUR - el.clientWidth / 2;
+          const desired = hoursFromWindowStart * pxPerHour - el.clientWidth / 2;
           const maxScroll = el.scrollWidth - el.clientWidth;
           el.scrollLeft = Math.max(0, Math.min(maxScroll, desired));
         }
       });
     });
-  }, [continuousDays, clampDateToContinuousBounds, getBusinessHoursForDate]);
+  }, [continuousDays, clampDateToContinuousBounds, getBusinessHoursForDate, pxPerHour]);
 
   useEffect(() => {
     scrollToDateRef.current = scrollToDate;
@@ -668,7 +674,7 @@ export function Timeline() {
       if (!gridScrollRef.current) return;
       const el = gridScrollRef.current;
       const scrollCenter = el.scrollLeft + el.clientWidth / 2;
-      const hoursFromStart = scrollCenter / PX_PER_HOUR;
+      const hoursFromStart = scrollCenter / pxPerHour;
       const dayIndex = Math.floor(hoursFromStart / 24);
 
       if (dayIndex >= 0 && dayIndex < CONTINUOUS_DAYS_COUNT) {
@@ -678,7 +684,7 @@ export function Timeline() {
         }
       }
     });
-  }, [continuousDays, windowStartDate, displayedDate]);
+  }, [continuousDays, windowStartDate, displayedDate, pxPerHour]);
 
   // ─────────────────────────────────────────────────────────────────
   // Shift interaction helpers
@@ -702,10 +708,10 @@ export function Timeline() {
   const getSnappedStartHourFromClientX = useCallback((clientX: number): number | null => {
     const metrics = getSingleDayXInGridPx(clientX);
     if (!metrics) return null;
-    const hourIndex = Math.floor(metrics.xInGrid / PX_PER_HOUR);
+    const hourIndex = Math.floor(metrics.xInGrid / pxPerHour);
     const clampedIndex = Math.max(0, Math.min(TOTAL_HOURS - 1, hourIndex));
     return HOURS_START + clampedIndex;
-  }, [HOURS_START, TOTAL_HOURS, getSingleDayXInGridPx]);
+  }, [HOURS_START, TOTAL_HOURS, getSingleDayXInGridPx, pxPerHour]);
 
   // Absolute grid mapping for move/resize - use full scroll width, not view hours.
   const getDayMinutesFromClientX = useCallback((clientX: number): number => {
@@ -735,17 +741,17 @@ export function Timeline() {
     const gridLeft = rect.left;
     const scrollLeft = el.scrollLeft;
     const xInGrid = clientX - gridLeft + scrollLeft;
-    return { el, gridLeft, scrollLeft, xInGrid, pxPerHour: PX_PER_HOUR, windowStartDate };
-  }, [windowStartDate]);
+    return { el, gridLeft, scrollLeft, xInGrid, pxPerHour, windowStartDate };
+  }, [windowStartDate, pxPerHour]);
 
   const getContinuousHourInfoFromClientX = useCallback((clientX: number) => {
     const metrics = getContinuousGridMetrics(clientX);
     if (!metrics) return null;
-    const hoursFromStart = metrics.xInGrid / PX_PER_HOUR;
+    const hoursFromStart = metrics.xInGrid / pxPerHour;
     const dayIndex = Math.floor(hoursFromStart / 24);
     const hourInDay = hoursFromStart % 24;
     return { hoursFromStart, dayIndex, hourInDay, el: metrics.el, scrollLeft: metrics.scrollLeft, xInGrid: metrics.xInGrid };
-  }, [getContinuousGridMetrics]);
+  }, [getContinuousGridMetrics, pxPerHour]);
 
   // For continuous mode: get hour and date from clientX
   const getHourAndDateFromClientX = useCallback((clientX: number): { hour: number; date: string } | null => {
@@ -768,9 +774,13 @@ export function Timeline() {
     (shift: typeof scopedShifts[0]) => {
       if (shift.isBlocked) return;
       if (!isManager) return;
+      if (!isEditableDate(shift.date)) {
+        showToast("Past schedules can't be edited.", 'error');
+        return;
+      }
       openModal('editShift', shift);
     },
-    [isManager, openModal]
+    [isEditableDate, isManager, openModal, showToast]
   );
 
   const showTooltipFn = (shiftId: string, target: HTMLElement) => {
@@ -800,9 +810,12 @@ export function Timeline() {
   };
 
   const handleEmptyClick = (employeeId: string, e: React.MouseEvent, targetDate?: string) => {
-    if (!isManager) return;
-
     const dateToUse = targetDate || dateString;
+    if (!isManager) return;
+    if (!isEditableDate(dateToUse)) {
+      showToast("Past schedules can't be edited.", 'error');
+      return;
+    }
     const baseHour = continuousDays
       ? (getHourAndDateFromClientX(e.clientX)?.hour ?? 9)
       : getHourFromClientX(e.clientX);
@@ -860,6 +873,10 @@ export function Timeline() {
       }
       const targetDate = addDays(windowStartDate, info.dayIndex);
       const dateValue = toDateString(targetDate);
+      if (!isEditableDate(dateValue)) {
+        setHoveredAddSlot(null);
+        return;
+      }
       const bh = getBusinessHoursForDate(targetDate);
       if (!bh) {
         setHoveredAddSlot(null);
@@ -889,6 +906,10 @@ export function Timeline() {
       setHoveredAddSlot(null);
       return;
     }
+    if (!isEditableDate(dateString)) {
+      setHoveredAddSlot(null);
+      return;
+    }
     const startHour = getSnappedStartHourFromClientX(clientX);
     if (startHour === null) {
       setHoveredAddSlot(null);
@@ -908,6 +929,7 @@ export function Timeline() {
   }, [
     isDragScrolling,
     continuousDays,
+    isEditableDate,
     getContinuousHourInfoFromClientX,
     getBusinessHoursForDate,
     getHourFromClientX,
@@ -917,6 +939,14 @@ export function Timeline() {
     windowStartDate,
   ]);
 
+  const clearHoverAddSlot = useCallback(() => {
+    if (hoverRafRef.current !== null) {
+      cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = null;
+    }
+    hoverPendingRef.current = null;
+    setHoveredAddSlot(null);
+  }, []);
   const handleLanePointerMove = useCallback((employeeId: string, e: React.PointerEvent) => {
     if (!isManager) return;
     lastPointerTypeRef.current = e.pointerType as 'mouse' | 'pen' | 'touch';
@@ -933,15 +963,7 @@ export function Timeline() {
       if (!pending) return;
       updateHoverAddSlot(pending.employeeId, pending.clientX, pending.target);
     });
-  }, [isManager, updateHoverAddSlot]);
-  const clearHoverAddSlot = useCallback(() => {
-    if (hoverRafRef.current !== null) {
-      cancelAnimationFrame(hoverRafRef.current);
-      hoverRafRef.current = null;
-    }
-    hoverPendingRef.current = null;
-    setHoveredAddSlot(null);
-  }, []);
+  }, [clearHoverAddSlot, isManager, updateHoverAddSlot]);
 
   const handleLaneMouseDown = (employeeId: string, e: React.MouseEvent) => {
     if (!isManager) return;
@@ -1202,6 +1224,10 @@ export function Timeline() {
       const shiftIdRaw = rootEl?.getAttribute('data-shift-id');
       const shift = shiftIdRaw ? scopedShifts.find((s) => String(s.id) === String(shiftIdRaw)) : null;
       if (!shift) return;
+      if (!isEditableDate(shift.date)) {
+        showToast("Past schedules can't be edited.", 'error');
+        return;
+      }
 
       const edge = handleEl?.getAttribute('data-edge');
       const mode: 'move' | 'resize-left' | 'resize-right' = handleEl
@@ -1283,9 +1309,11 @@ export function Timeline() {
     getGridBackgroundContext,
     handleGridDragStart,
     handleLaneMouseDown,
+    isEditableDate,
     isManager,
     scopedShifts,
     shouldStartGrabScroll,
+    showToast,
   ]);
 
   const handleGridPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -1400,6 +1428,11 @@ export function Timeline() {
           if (continuousDays) {
             const startInfo = resolveAbsoluteMinutes(drag.lastStartMin);
             const endInfo = resolveAbsoluteMinutes(drag.lastEndMin);
+            if (!isEditableDate(startInfo.date)) {
+              showToast("Past schedules can't be edited.", 'error');
+              clearActiveDrag();
+              return;
+            }
             const sameDate = shift.date === startInfo.date;
             const sameStart = Math.abs(shift.startHour - startInfo.hour) < 0.001;
             const sameEnd = Math.abs(shift.endHour - endInfo.hour) < 0.001;
@@ -1429,6 +1462,11 @@ export function Timeline() {
             }
           } else {
             const selectedDateString = toDateString(selectedDate);
+            if (!isEditableDate(selectedDateString)) {
+              showToast("Past schedules can't be edited.", 'error');
+              clearActiveDrag();
+              return;
+            }
             const nextStart = drag.lastStartMin / 60;
             const nextEnd = drag.lastEndMin / 60;
             const sameDate = shift.date === selectedDateString;
@@ -1496,11 +1534,13 @@ export function Timeline() {
     getHourAndDateFromClientX,
     handleGridDragEnd,
     handleLaneMouseUp,
+    isEditableDate,
     openModal,
     openShiftEditor,
     resolveAbsoluteMinutes,
     scopedShifts,
     selectedDate,
+    showToast,
   ]);
 
   const handleGridPointerCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -1556,147 +1596,9 @@ export function Timeline() {
     return () => clearTimeout(timeout);
   }, [dateNavKey, dateNavDirection, continuousDays]);
 
-  // Format date for display
-  const formattedDate = (continuousDays ? displayedDate : selectedDate).toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  });
-
-  // Date picker: track which month is being viewed (defaults to current selected date's month)
-  const currentDisplayDate = continuousDays ? displayedDate : selectedDate;
-  const [datePickerMonth, setDatePickerMonth] = useState<Date>(() => getMidnight(currentDisplayDate));
-
-  // Sync date picker month when selected date changes significantly
-  useEffect(() => {
-    if (!datePickerOpen) {
-      setDatePickerMonth(getMidnight(currentDisplayDate));
-    }
-  }, [currentDisplayDate, datePickerOpen]);
-
-  // Generate calendar grid for a month
-  const getCalendarDays = useCallback((monthDate: Date) => {
-    const year = monthDate.getFullYear();
-    const month = monthDate.getMonth();
-    const firstDay = new Date(year, month, 1);
-    const lastDay = new Date(year, month + 1, 0);
-    const startDayOfWeek = firstDay.getDay(); // 0 = Sunday
-    const daysInMonth = lastDay.getDate();
-
-    const days: (Date | null)[] = [];
-    // Add empty slots for days before the 1st
-    for (let i = 0; i < startDayOfWeek; i++) {
-      days.push(null);
-    }
-    // Add all days in the month
-    for (let d = 1; d <= daysInMonth; d++) {
-      days.push(new Date(year, month, d));
-    }
-    return days;
-  }, []);
-
-  const datePickerDays = useMemo(() => getCalendarDays(datePickerMonth), [getCalendarDays, datePickerMonth]);
-
-  const handleDatePickerSelect = useCallback((date: Date) => {
-    handleGoToDate(date, { reanchor: true });
-    setDatePickerOpen(false);
-  }, [handleGoToDate]);
-
-  const handleDatePickerPrevMonth = useCallback(() => {
-    setDatePickerMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
-  }, []);
-
-  const handleDatePickerNextMonth = useCallback(() => {
-    setDatePickerMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
-  }, []);
-
-  // Render the date picker dropdown calendar (via portal to avoid clipping)
-  const renderDatePickerDropdown = () => {
-    if (!datePickerPosition || typeof document === 'undefined') return null;
-
-    const todayStr = toDateString(new Date());
-    const selectedStr = toDateString(currentDisplayDate);
-    const monthLabel = datePickerMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-
-    const dropdown = (
-      <div
-        ref={datePickerDropdownRef}
-        className="fixed bg-theme-secondary border border-theme-primary rounded-xl shadow-2xl z-[9999]"
-        style={{
-          top: datePickerPosition.top,
-          left: datePickerPosition.left,
-          width: datePickerPosition.width,
-        }}
-      >
-        {/* Month navigation header */}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-theme-primary">
-          <button
-            onClick={handleDatePickerPrevMonth}
-            className="p-1.5 rounded-lg hover:bg-theme-hover transition-colors"
-            aria-label="Previous month"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <span className="font-medium text-sm text-theme-primary">{monthLabel}</span>
-          <button
-            onClick={handleDatePickerNextMonth}
-            className="p-1.5 rounded-lg hover:bg-theme-hover transition-colors"
-            aria-label="Next month"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
-        {/* Day headers */}
-        <div className="grid grid-cols-7 gap-0.5 px-2 pt-2">
-          {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => (
-            <div key={day} className="text-center text-[10px] font-medium text-theme-muted py-1">
-              {day}
-            </div>
-          ))}
-        </div>
-        {/* Calendar grid */}
-        <div className="grid grid-cols-7 gap-0.5 px-2 pb-2">
-          {datePickerDays.map((date, idx) => {
-            if (!date) {
-              return <div key={`empty-${idx}`} className="aspect-square" />;
-            }
-            const dateStr = toDateString(date);
-            const isSelected = dateStr === selectedStr;
-            const isToday = dateStr === todayStr;
-            return (
-              <button
-                key={dateStr}
-                onClick={() => handleDatePickerSelect(date)}
-                className={`aspect-square flex items-center justify-center text-sm rounded-lg transition-colors ${
-                  isSelected
-                    ? 'bg-amber-500 text-zinc-900 font-semibold'
-                    : isToday
-                    ? 'bg-amber-500/20 text-amber-500 font-medium hover:bg-amber-500/30'
-                    : 'text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
-                }`}
-              >
-                {date.getDate()}
-              </button>
-            );
-          })}
-        </div>
-        {/* Quick actions */}
-        <div className="border-t border-theme-primary px-2 py-2">
-          <button
-            onClick={() => handleDatePickerSelect(new Date())}
-            className="w-full py-1.5 text-xs font-medium text-amber-500 hover:bg-amber-500/10 rounded-lg transition-colors"
-          >
-            Go to Today
-          </button>
-        </div>
-      </div>
-    );
-
-    return createPortal(dropdown, document.body);
-  };
 
   // Determine if we should show every-other-hour labels for very compact views
-  const showEveryOtherLabel = PX_PER_HOUR < 40;
+  const showEveryOtherLabel = pxPerHour < 40;
 
   // ─────────────────────────────────────────────────────────────────
   // DEBUG: DOM Probe for scroll container identification
@@ -1719,7 +1621,7 @@ export function Timeline() {
         <div
           key={hour}
           className="border-r border-theme-primary/50 flex items-center justify-center"
-          style={{ width: `${PX_PER_HOUR}px`, minWidth: `${PX_PER_HOUR}px` }}
+          style={{ width: `${pxPerHour}px`, minWidth: `${pxPerHour}px` }}
         >
           {(!showEveryOtherLabel || idx % 2 === 0) && (
             <span className={`text-[10px] font-medium ${
@@ -1802,7 +1704,7 @@ export function Timeline() {
                         <div
                           key={hour}
                           className="border-r border-theme-primary/30"
-                          style={{ width: `${PX_PER_HOUR}px`, minWidth: `${PX_PER_HOUR}px` }}
+                          style={{ width: `${pxPerHour}px`, minWidth: `${pxPerHour}px` }}
                         />
                       ))}
                     </div>
@@ -1853,7 +1755,7 @@ export function Timeline() {
                     />
 
                     {/* Hover add ghost */}
-                    {isManager && !hasTimeOff && !hasBlocked && hoveredAddSlot?.employeeId === employee.id && hoveredAddSlot.date === dateString && (() => {
+                    {canEditSelectedDate && !hasTimeOff && !hasBlocked && hoveredAddSlot?.employeeId === employee.id && hoveredAddSlot.date === dateString && (() => {
                       const metrics = gridScrollRef.current ? gridScrollRef.current.getBoundingClientRect() : null;
                       if (!metrics) {
                         return (
@@ -1865,8 +1767,8 @@ export function Timeline() {
                           </div>
                         );
                       }
-                      const leftPx = (hoveredAddSlot.startHour - HOURS_START) * PX_PER_HOUR;
-                      const widthPx = PX_PER_HOUR;
+                      const leftPx = (hoveredAddSlot.startHour - HOURS_START) * pxPerHour;
+                      const widthPx = pxPerHour;
                       return (
                         <div
                           className="absolute top-1 bottom-1 rounded border border-amber-400/50 bg-amber-400/10 flex items-center justify-center text-amber-500/80 text-sm font-semibold pointer-events-none box-border"
@@ -1890,10 +1792,12 @@ export function Timeline() {
                       const isEndDrag = isDraggingShift && activeDragMode === 'resize-right';
                       const jobColor = getJobColorClasses(shift.job);
                       const shiftDuration = endHour - startHour;
-                      const shiftWidth = shiftDuration * PX_PER_HOUR;
+                      const shiftWidth = shiftDuration * pxPerHour;
                       const showTimeText = shiftWidth > 60;
                       const showJobText = shiftWidth > 80;
                       const shiftNotes = typeof shift.notes === 'string' ? shift.notes.trim() : '';
+                      const isDraftShift = isManager && shift.scheduleState === 'draft';
+                      const isBaselinePublished = isDraftMode && shift.scheduleState !== 'draft';
 
                       return (
                         <div
@@ -1911,6 +1815,7 @@ export function Timeline() {
                             backgroundColor: isHovered || isDraggingShift ? jobColor.hoverBgColor : jobColor.bgColor,
                             borderWidth: '1px',
                             borderColor: jobColor.color,
+                            borderStyle: isDraftShift ? 'dashed' : 'solid',
                             transform: isHovered && !isDraggingShift ? 'scale(1.02)' : 'scale(1)',
                           }}
                           onMouseEnter={(e) => {
@@ -1922,6 +1827,16 @@ export function Timeline() {
                             setTooltip(null);
                           }}
                         >
+                          {isDraftShift && (
+                            <span className="absolute top-0.5 right-1 px-1 rounded bg-amber-500/30 text-[8px] font-semibold text-amber-100/90">
+                              DRAFT
+                            </span>
+                          )}
+                          {isBaselinePublished && !isDraftShift && (
+                            <span className="absolute top-0.5 right-1 px-1 rounded bg-emerald-500/20 text-[8px] font-semibold text-emerald-100/90">
+                              PUBLISHED
+                            </span>
+                          )}
                           <div
                             data-shift-body="true"
                             className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none overflow-hidden pointer-events-auto"
@@ -2022,7 +1937,7 @@ export function Timeline() {
       }}
     >
       {continuousDaysData.map((dayData) => (
-        <div key={dayData.dateString} className="flex" style={{ width: `${24 * PX_PER_HOUR}px` }}>
+        <div key={dayData.dateString} className="flex" style={{ width: `${24 * pxPerHour}px` }}>
           {dayData.hours.map((hour) => {
             const isFirstHour = hour === 0;
             return (
@@ -2031,7 +1946,7 @@ export function Timeline() {
                 className={`flex items-center justify-center relative ${
                   isFirstHour ? 'border-l-2 border-theme-primary' : 'border-r border-theme-primary/50'
                 }`}
-                style={{ width: `${PX_PER_HOUR}px`, minWidth: `${PX_PER_HOUR}px` }}
+                style={{ width: `${pxPerHour}px`, minWidth: `${pxPerHour}px` }}
               >
                 {/* Day label at midnight */}
                 {isFirstHour && (
@@ -2116,7 +2031,7 @@ export function Timeline() {
                               className={`${
                                 isFirstHour ? 'border-l-2 border-theme-primary' : 'border-r border-theme-primary/30'
                               } ${dayBg}`}
-                              style={{ width: `${PX_PER_HOUR}px`, minWidth: `${PX_PER_HOUR}px` }}
+                              style={{ width: `${pxPerHour}px`, minWidth: `${pxPerHour}px` }}
                             />
                           );
                         })}
@@ -2128,8 +2043,8 @@ export function Timeline() {
                     {continuousDaysData.map((dayData, dayIdx) => {
                     const bh = getBusinessHoursForDate(dayData.date);
                     if (!bh) return null;
-                    const leftPx = (dayIdx * 24 + bh.openHour) * PX_PER_HOUR;
-                    const widthPx = (bh.closeHour - bh.openHour) * PX_PER_HOUR;
+                    const leftPx = (dayIdx * 24 + bh.openHour) * pxPerHour;
+                    const widthPx = (bh.closeHour - bh.openHour) * pxPerHour;
                     return (
                       <div
                         key={`bh-${dayData.dateString}`}
@@ -2155,8 +2070,8 @@ export function Timeline() {
                     const dayHasBlocked = hasBlockedShiftOnDate(employee.id, dayData.dateString);
                     const dayHasOrgBlackout = hasOrgBlackoutOnDate(dayData.dateString);
                     if (!dayHasTimeOff && !dayHasBlocked && !dayHasOrgBlackout) return null;
-                    const leftPx = dayIdx * 24 * PX_PER_HOUR;
-                    const widthPx = 24 * PX_PER_HOUR;
+                    const leftPx = dayIdx * 24 * pxPerHour;
+                    const widthPx = 24 * pxPerHour;
                     return (
                       <div key={`blocker-${dayData.dateString}`}>
                         {/* Time Off Indicator */}
@@ -2214,8 +2129,8 @@ export function Timeline() {
                             })();
                       if (absHours === null) return null;
                       // Ghost is inside scrollable content, so use absolute grid coordinates (no scrollLeft subtraction)
-                      const ghostLeftPx = absHours * PX_PER_HOUR;
-                      const ghostWidthPx = PX_PER_HOUR;
+                      const ghostLeftPx = absHours * pxPerHour;
+                      const ghostWidthPx = pxPerHour;
                       return (
                         <div
                           className="absolute top-1 bottom-1 rounded border border-amber-400/50 bg-amber-400/10 flex items-center justify-center text-amber-500/80 text-sm font-semibold pointer-events-none z-30"
@@ -2249,6 +2164,8 @@ export function Timeline() {
                     const showTimeText = pos.widthPx > 60;
                     const showJobText = pos.widthPx > 80;
                     const shiftNotes = typeof shift.notes === 'string' ? shift.notes.trim() : '';
+                    const isDraftShift = isManager && shift.scheduleState === 'draft';
+                    const isBaselinePublished = isDraftMode && shift.scheduleState !== 'draft';
 
                     return (
                       <div
@@ -2266,6 +2183,7 @@ export function Timeline() {
                           backgroundColor: isHovered || isDraggingShift ? jobColor.hoverBgColor : jobColor.bgColor,
                           borderWidth: '1px',
                           borderColor: jobColor.color,
+                          borderStyle: isDraftShift ? 'dashed' : 'solid',
                           transform: isHovered && !isDraggingShift ? 'scale(1.02)' : 'scale(1)',
                         }}
                         onMouseEnter={(e) => {
@@ -2277,6 +2195,16 @@ export function Timeline() {
                           setTooltip(null);
                         }}
                       >
+                        {isDraftShift && (
+                          <span className="absolute top-0.5 right-1 px-1 rounded bg-amber-500/30 text-[8px] font-semibold text-amber-100/90">
+                            DRAFT
+                          </span>
+                        )}
+                        {isBaselinePublished && !isDraftShift && (
+                          <span className="absolute top-0.5 right-1 px-1 rounded bg-emerald-500/20 text-[8px] font-semibold text-emerald-100/90">
+                            PUBLISHED
+                          </span>
+                        )}
                         <div
                           data-shift-body="true"
                           className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none overflow-hidden pointer-events-auto"
@@ -2367,278 +2295,90 @@ export function Timeline() {
   // ─────────────────────────────────────────────────────────────────
   // Main render
   // ─────────────────────────────────────────────────────────────────
+  const continuousButtonLabel = continuousDays ? 'Continuous: ON' : 'Continuous: OFF';
+  const continuousButtonClasses = continuousDays
+    ? 'bg-amber-500 text-zinc-900 hover:bg-amber-400'
+    : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary';
+  const rightActions = (
+    <>
+      {showPublishDay ? (
+        <button
+          type="button"
+          onClick={handlePublishDay}
+          className="w-[140px] h-[40px] flex items-center justify-center gap-1.5 rounded-lg bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 transition-colors text-xs font-semibold"
+        >
+          <UploadCloud className="w-4 h-4" />
+          <span>Publish Day</span>
+        </button>
+      ) : (
+        <div className="w-[140px] h-[40px] invisible" />
+      )}
+      <button
+        type="button"
+        onClick={toggleContinuousDays}
+        className={`w-[160px] h-[40px] rounded-lg text-xs font-semibold transition-colors ${continuousButtonClasses}`}
+      >
+        {continuousButtonLabel}
+      </button>
+    </>
+  );
+
   return (
     <div
       ref={containerRef}
       className="h-full flex flex-col min-h-0 bg-theme-timeline overflow-hidden relative transition-theme"
     >
-      {/* Unified toolbar - responsive: 2 rows on mobile, 1 row on desktop */}
-      <div className="border-b border-theme-primary bg-theme-timeline shrink-0">
-        {/* Mobile: 2 rows layout */}
-        <div className="flex flex-col sm:hidden">
-          {/* Row 1: Date navigation - centered */}
-          <div className="flex items-center justify-center gap-1 px-2 py-1.5 border-b border-theme-primary/50">
-            <button
-              onClick={() => {
-                const baseDate = continuousDays ? displayedDate : selectedDate;
-                handleGoToDate(addDays(baseDate, -1));
-              }}
-              className="min-w-[40px] min-h-[40px] px-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors flex items-center justify-center"
-              title="Previous day"
-            >
-              <ChevronLeft className="w-5 h-5" />
-            </button>
-            <div ref={datePickerMobileRef} className="relative flex-1 max-w-[180px]">
-              <button
-                ref={dateButtonMobileRef}
-                onClick={() => setDatePickerOpen(!datePickerOpen)}
-                className="w-full px-3 py-2 rounded-xl bg-theme-tertiary text-theme-primary font-medium text-sm text-center truncate hover:bg-theme-hover transition-colors cursor-pointer"
-                aria-expanded={datePickerOpen}
-                aria-haspopup="true"
-              >
-                {formattedDate}
-              </button>
+      <ScheduleToolbar
+        viewMode="day"
+        selectedDate={continuousDays ? displayedDate : selectedDate}
+        weekStartDay={weekStartDay}
+        isToday={isToday}
+        onToday={handleToday}
+        onPrev={() => {
+          const baseDate = continuousDays ? displayedDate : selectedDate;
+          handleGoToDate(addDays(baseDate, -1));
+        }}
+        onNext={() => {
+          const baseDate = continuousDays ? displayedDate : selectedDate;
+          handleGoToDate(addDays(baseDate, 1));
+        }}
+        onPrevJump={() => {
+          const baseDate = continuousDays ? displayedDate : selectedDate;
+          handleGoToDate(addDays(baseDate, -7), { reanchor: true });
+        }}
+        onNextJump={() => {
+          const baseDate = continuousDays ? displayedDate : selectedDate;
+          handleGoToDate(addDays(baseDate, 7), { reanchor: true });
+        }}
+        onSelectDate={(date) => handleGoToDate(date, { reanchor: true })}
+        rightActions={rightActions}
+      />
+
+      {isDraftMode && (
+        <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
+          <div className="flex items-center justify-between gap-4 min-w-max">
+            <div className="flex items-center gap-2">
+              {draftBadge}
+              <span className="text-[11px] text-theme-muted whitespace-nowrap">{draftHelperText}</span>
             </div>
-            <button
-              onClick={() => {
-                const baseDate = continuousDays ? displayedDate : selectedDate;
-                handleGoToDate(addDays(baseDate, 1));
-              }}
-              className="min-w-[40px] min-h-[40px] px-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors flex items-center justify-center"
-              title="Next day"
-            >
-              <ChevronRight className="w-5 h-5" />
-            </button>
-          </div>
-          {/* Row 2: Today + View toggle + More menu + Continuous - horizontal scroll */}
-          <div className="flex items-center gap-1.5 px-2 py-1.5 overflow-x-auto scrollbar-hide">
-            <button
-              onClick={handleToday}
-              disabled={isToday}
-              className={`min-h-[40px] px-3 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center shrink-0 ${
-                isToday
-                  ? 'bg-theme-tertiary text-theme-muted cursor-not-allowed'
-                  : 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
-              }`}
-            >
-              Today
-            </button>
-            {/* View mode toggle */}
-            <div className="flex items-center gap-0.5 bg-theme-tertiary rounded-lg p-1 shrink-0">
-              <button
-                onClick={() => handleViewMode('day')}
-                className={`min-h-[32px] flex items-center justify-center px-2 rounded-md text-xs font-medium transition-colors ${
-                  viewMode === 'day'
-                    ? 'bg-theme-secondary text-theme-primary shadow-sm'
-                    : 'text-theme-tertiary hover:text-theme-primary'
-                }`}
-                aria-pressed={viewMode === 'day'}
-                aria-label="Day view"
-              >
-                <Sun className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => handleViewMode('week')}
-                className={`min-h-[32px] flex items-center justify-center px-2 rounded-md text-xs font-medium transition-colors ${
-                  viewMode === 'week'
-                    ? 'bg-theme-secondary text-theme-primary shadow-sm'
-                    : 'text-theme-tertiary hover:text-theme-primary'
-                }`}
-                aria-pressed={viewMode === 'week'}
-                aria-label="Week view"
-              >
-                <CalendarDays className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => handleViewMode('month')}
-                className={`min-h-[32px] flex items-center justify-center px-2 rounded-md text-xs font-medium transition-colors ${
-                  viewMode === 'month'
-                    ? 'bg-theme-secondary text-theme-primary shadow-sm'
-                    : 'text-theme-tertiary hover:text-theme-primary'
-                }`}
-                aria-pressed={viewMode === 'month'}
-                aria-label="Month view"
-              >
-                <Calendar className="w-4 h-4" />
-              </button>
-            </div>
-            {/* Mobile More menu for secondary actions */}
-            <div ref={mobileMoreMenuRef} className="relative shrink-0">
-              <button
-                onClick={() => setMobileMoreMenuOpen(!mobileMoreMenuOpen)}
-                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                aria-label="More actions"
-                aria-expanded={mobileMoreMenuOpen}
-              >
-                <MoreHorizontal className="w-5 h-5" />
-              </button>
-              {mobileMoreMenuOpen && (
-                <div className="absolute left-0 top-full mt-1 w-44 bg-theme-secondary border border-theme-primary rounded-lg shadow-xl py-1 z-50">
-                  <Link
-                    href="/shift-exchange"
-                    className="flex items-center gap-2 px-3 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                    onClick={() => setMobileMoreMenuOpen(false)}
-                  >
-                    <ArrowLeftRight className="w-4 h-4" />
-                    Shift Exchange
-                  </Link>
-                  {isManager && (
-                    <button
-                      type="button"
-                      onClick={() => { handleCopySchedule(); setMobileMoreMenuOpen(false); }}
-                      className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                    >
-                      <Copy className="w-4 h-4" />
-                      Copy Schedule
-                    </button>
-                  )}
-                </div>
+
+            <div className="flex items-center gap-2">
+              {isManager && viewMode === 'day' ? (
+                <button
+                  type="button"
+                  onClick={handleCopyPreviousDayIntoDraft}
+                  className="w-[200px] h-[40px] flex items-center justify-center gap-1.5 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs font-medium"
+                >
+                  <ArrowLeftRight className="w-4 h-4" />
+                  <span className="truncate">Copy previous day</span>
+                </button>
+              ) : (
+                <div className="w-[200px] h-[40px] invisible" />
               )}
             </div>
-            {/* Continuous toggle - pushed to right */}
-            <div className="ml-auto flex items-center gap-1.5 shrink-0">
-              <span className="text-[10px] text-theme-muted whitespace-nowrap">Continuous</span>
-              <button
-                onClick={toggleContinuousDays}
-                aria-checked={continuousDays}
-                role="switch"
-                type="button"
-                className={`relative w-10 h-5 rounded-full p-0.5 flex items-center transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 ${
-                  continuousDays ? 'bg-amber-500' : 'bg-theme-tertiary'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                    continuousDays ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
           </div>
         </div>
-
-        {/* Desktop: single row layout (sm and up) */}
-        <div className="hidden sm:flex items-center gap-2 px-3 py-1 h-10 min-w-max whitespace-nowrap">
-          <button
-            onClick={() => {
-              const baseDate = continuousDays ? displayedDate : selectedDate;
-              handleGoToDate(addDays(baseDate, -1));
-            }}
-            className="h-9 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors flex items-center justify-center"
-            title="Previous day"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <div ref={datePickerDesktopRef} className="relative">
-            <button
-              ref={dateButtonDesktopRef}
-              onClick={() => setDatePickerOpen(!datePickerOpen)}
-              className="px-3 py-1.5 rounded-xl bg-theme-tertiary text-theme-primary font-medium text-sm min-w-[150px] text-center truncate hover:bg-theme-hover transition-colors cursor-pointer"
-              aria-expanded={datePickerOpen}
-              aria-haspopup="true"
-            >
-              {formattedDate}
-            </button>
-          </div>
-          <button
-            onClick={() => {
-              const baseDate = continuousDays ? displayedDate : selectedDate;
-              handleGoToDate(addDays(baseDate, 1));
-            }}
-            className="h-9 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors flex items-center justify-center"
-            title="Next day"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-          <button
-            onClick={handleToday}
-            disabled={isToday}
-            className={`h-9 px-3 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center ${
-              isToday
-                ? 'bg-theme-tertiary text-theme-muted cursor-not-allowed'
-                : 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
-            }`}
-          >
-            Today
-          </button>
-          <div className="flex items-center gap-1 bg-theme-tertiary rounded-lg p-1 shrink-0">
-            <button
-              onClick={() => handleViewMode('day')}
-              className={`h-full flex items-center gap-1.5 px-2 rounded-md text-xs font-medium transition-colors ${
-                viewMode === 'day'
-                  ? 'bg-theme-secondary text-theme-primary shadow-sm'
-                  : 'text-theme-tertiary hover:text-theme-primary'
-              }`}
-              aria-pressed={viewMode === 'day'}
-            >
-              <Sun className="w-4 h-4" />
-              <span className="hidden md:inline">Day</span>
-            </button>
-            <button
-              onClick={() => handleViewMode('week')}
-              className={`h-full flex items-center gap-1.5 px-2 rounded-md text-xs font-medium transition-colors ${
-                viewMode === 'week'
-                  ? 'bg-theme-secondary text-theme-primary shadow-sm'
-                  : 'text-theme-tertiary hover:text-theme-primary'
-              }`}
-              aria-pressed={viewMode === 'week'}
-            >
-              <CalendarDays className="w-4 h-4" />
-              <span className="hidden md:inline">Week</span>
-            </button>
-            <button
-              onClick={() => handleViewMode('month')}
-              className={`h-full flex items-center gap-1.5 px-2 rounded-md text-xs font-medium transition-colors ${
-                viewMode === 'month'
-                  ? 'bg-theme-secondary text-theme-primary shadow-sm'
-                  : 'text-theme-tertiary hover:text-theme-primary'
-              }`}
-              aria-pressed={viewMode === 'month'}
-            >
-              <Calendar className="w-4 h-4" />
-              <span className="hidden md:inline">Month</span>
-            </button>
-          </div>
-          <Link
-            href="/shift-exchange"
-            className="h-9 flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs font-medium shrink-0"
-          >
-            <ArrowLeftRight className="w-4 h-4" />
-            <span className="hidden lg:inline">Shift Exchange</span>
-            <span className="lg:hidden">Exchange</span>
-          </Link>
-          {isManager && (
-            <button
-              type="button"
-              onClick={handleCopySchedule}
-              className="h-9 flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs font-medium shrink-0"
-            >
-              <Copy className="w-4 h-4" />
-              <span className="hidden lg:inline">Copy Schedule</span>
-              <span className="lg:hidden">Copy</span>
-            </button>
-          )}
-          <div className="ml-auto flex items-center gap-2 shrink-0">
-            <span className="text-[10px] text-theme-muted">Continuous</span>
-            <button
-              onClick={toggleContinuousDays}
-              aria-checked={continuousDays}
-              role="switch"
-              type="button"
-              className={`relative w-10 h-5 rounded-full p-0.5 flex items-center transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400 ${
-                continuousDays ? 'bg-amber-500' : 'bg-theme-tertiary'
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                  continuousDays ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
-        </div>
-      </div>
-
+      )}
       {/* Single vertical scroll container for names + grid */}
       <div
         ref={timelineScrollRef}
@@ -2646,11 +2386,13 @@ export function Timeline() {
       >
         {/* Sticky header row: names header + hour header */}
         <div className="sticky top-0 z-50 bg-theme-timeline border-b border-theme-primary flex">
-          <div className="w-36 shrink-0 bg-theme-timeline border-r border-theme-primary h-8" />
-          <div className="flex-1 min-w-0">
+          <div className="w-36 shrink-0 bg-theme-timeline border-r border-theme-primary h-8 flex items-center justify-center">
+            {statusBadge}
+          </div>
+          <div className="flex-1 min-w-0 overflow-x-hidden">
             <div
               ref={headerScrollRef}
-              className="overflow-x-auto overflow-y-hidden"
+              className="w-full overflow-x-auto overflow-y-hidden"
               onScroll={handleHeaderScroll}
             >
               <div style={{ width: continuousDays ? continuousGridWidth : singleDayGridWidth }}>
@@ -2714,21 +2456,23 @@ export function Timeline() {
           </div>
 
           {/* Grid Area - horizontal scroll wrapper */}
-          <div
-            ref={gridScrollRef}
-            className={`flex-1 overflow-x-auto overflow-y-hidden ${isDragScrolling ? 'cursor-grabbing' : 'cursor-grab'}`}
-            style={{ scrollBehavior: isDragScrolling ? 'auto' : 'smooth', touchAction: 'pan-y' }}
-            onPointerDown={handleGridPointerDown}
-            onPointerMove={handleGridPointerMove}
-            onPointerUp={handleGridPointerUp}
-            onPointerCancel={handleGridPointerCancel}
-            onPointerLeave={clearHoverAddSlot}
-            onScroll={handleGridScroll}
-          >
-            {/* Fixed width content for horizontal scroll */}
-            <div style={{ width: continuousDays ? continuousGridWidth : singleDayGridWidth }}>
-              {/* Grid rows - natural height */}
-              {continuousDays ? renderContinuousRows() : renderSingleDayRows()}
+          <div className="flex-1 min-w-0 overflow-x-hidden">
+            <div
+              ref={gridScrollRef}
+              className={`w-full overflow-x-auto overflow-y-hidden ${isDragScrolling ? 'cursor-grabbing' : 'cursor-grab'}`}
+              style={{ scrollBehavior: isDragScrolling ? 'auto' : 'smooth', touchAction: 'pan-y' }}
+              onPointerDown={handleGridPointerDown}
+              onPointerMove={handleGridPointerMove}
+              onPointerUp={handleGridPointerUp}
+              onPointerCancel={handleGridPointerCancel}
+              onPointerLeave={clearHoverAddSlot}
+              onScroll={handleGridScroll}
+            >
+              {/* Fixed width content for horizontal scroll */}
+              <div style={{ width: continuousDays ? continuousGridWidth : singleDayGridWidth }}>
+                {/* Grid rows - natural height */}
+                {continuousDays ? renderContinuousRows() : renderSingleDayRows()}
+              </div>
             </div>
           </div>
         </div>
@@ -2746,8 +2490,8 @@ export function Timeline() {
         </div>
       )}
 
-      {/* Date picker dropdown - rendered via portal to avoid clipping */}
-      {datePickerOpen && renderDatePickerDropdown()}
     </div>
   );
 }
+
+

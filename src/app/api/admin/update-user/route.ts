@@ -26,6 +26,12 @@ type UpdatePayload = {
 export async function POST(request: NextRequest) {
   const payload = (await request.json()) as UpdatePayload;
   const allowAdminCreation = process.env.ENABLE_ADMIN_CREATION === 'true';
+  const logForbidden = (tag: string, details?: Record<string, unknown>) => {
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.error('[update-user] forbidden', tag, details);
+    }
+  };
 
   if (!payload.userId || !payload.organizationId || !payload.fullName) {
     return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
@@ -51,6 +57,11 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (requesterMembershipError || !requesterMembership) {
+    logForbidden('requester_membership_missing', {
+      authUserId,
+      organizationId: payload.organizationId,
+      error: requesterMembershipError?.message,
+    });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
@@ -123,6 +134,11 @@ export async function POST(request: NextRequest) {
   }
 
   if (!targetMembership) {
+    logForbidden('target_membership_missing', {
+      authUserId,
+      targetAuthUserId,
+      organizationId: payload.organizationId,
+    });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
@@ -132,6 +148,11 @@ export async function POST(request: NextRequest) {
   const isSelfUpdate = targetAuthUserId === authUserId;
 
   if (!isManagerRole(requesterRole) && !isSelfUpdate) {
+    logForbidden('requester_not_manager', {
+      requesterRole,
+      authUserId,
+      targetAuthUserId,
+    });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
@@ -153,6 +174,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (requesterRole === 'MANAGER' && targetCurrentRole === 'ADMIN') {
+    logForbidden('manager_target_admin', { requesterRole, targetCurrentRole });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
@@ -160,6 +182,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
+    logForbidden('manager_promote_admin', { requesterRole, targetRole });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
@@ -167,6 +190,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (requesterRole === 'MANAGER' && targetRole !== 'MANAGER' && targetRole !== 'EMPLOYEE') {
+    logForbidden('manager_invalid_target_role', { requesterRole, targetRole });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
@@ -174,6 +198,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (payload.accountType && targetRole === 'ADMIN' && !allowAdminCreation) {
+    logForbidden('admin_creation_disabled', { targetRole });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
@@ -181,12 +206,14 @@ export async function POST(request: NextRequest) {
   }
 
   if (requesterRole === 'ADMIN' && targetAuthUserId === authUserId && targetRole !== 'ADMIN') {
+    logForbidden('admin_self_demotion', { targetRole });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
     );
   }
   if (targetAuthUserId === authUserId && payload.accountType && targetRole !== targetCurrentRole) {
+    logForbidden('self_role_change', { targetCurrentRole, targetRole });
     return applySupabaseCookies(
       NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
       response
@@ -196,6 +223,7 @@ export async function POST(request: NextRequest) {
   // Employees doing self-updates can only change name, email, phone
   if (isSelfUpdate && !isManagerRole(requesterRole)) {
     if (payload.accountType || payload.jobs || payload.hourlyPay !== undefined || payload.jobPay || payload.passcode) {
+      logForbidden('self_update_restricted', { requesterRole });
       return applySupabaseCookies(
         NextResponse.json({ error: 'You dont have permission for that action.' }, { status: 403 }),
         response
@@ -320,6 +348,30 @@ export async function POST(request: NextRequest) {
           exampleDates,
           earliestDate,
         }, { status: 400 }),
+        response
+      );
+    }
+  }
+
+  if (payload.accountType) {
+    const membershipRoleValue = String(targetRole).toLowerCase();
+    const { error: membershipUpdateError } = await supabaseAdmin
+      .from('organization_memberships')
+      .update({ role: membershipRoleValue })
+      .eq('organization_id', payload.organizationId)
+      .eq('auth_user_id', targetAuthUserId);
+    if (membershipUpdateError) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.error('[update-user] membership update failed', {
+          organizationId: payload.organizationId,
+          authUserId: targetAuthUserId,
+          role: membershipRoleValue,
+          error: membershipUpdateError,
+        });
+      }
+      return applySupabaseCookies(
+        NextResponse.json({ error: membershipUpdateError.message }, { status: 400 }),
         response
       );
     }

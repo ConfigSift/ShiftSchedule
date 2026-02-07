@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
-import { PlusCircle, Check, ChevronRight, Pencil, Store, Mail } from 'lucide-react';
+import { Modal } from '../../components/Modal';
+import { PlusCircle, Check, ChevronRight, Pencil, Store, Mail, Trash2 } from 'lucide-react';
 
 export default function RestaurantSelectPage() {
   const router = useRouter();
@@ -15,6 +16,7 @@ export default function RestaurantSelectPage() {
     activeRestaurantId,
     pendingInvitations,
     setActiveOrganization,
+    clearActiveOrganization,
     init,
     refreshProfile,
     refreshInvitations,
@@ -23,6 +25,10 @@ export default function RestaurantSelectPage() {
   const [inviteError, setInviteError] = useState('');
   const [newRestaurantName, setNewRestaurantName] = useState('');
   const [manageError, setManageError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; restaurantCode: string } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editedName, setEditedName] = useState('');
 
@@ -62,14 +68,15 @@ export default function RestaurantSelectPage() {
     // The page is now accessible to all authenticated users.
   }, [isInitialized, currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router, setActiveOrganization]);
 
-  const hasManagerMembership = useMemo(
+  const hasAdminMembership = useMemo(
     () =>
       accessibleRestaurants.some((restaurant) => {
         const value = String(restaurant.role ?? '').trim().toLowerCase();
-        return value === 'admin' || value === 'manager';
+        return value === 'admin';
       }),
     [accessibleRestaurants]
   );
+  const canCreateRestaurant = accessibleRestaurants.length === 0 || hasAdminMembership;
 
   if (!isInitialized) {
     return (
@@ -150,6 +157,57 @@ export default function RestaurantSelectPage() {
     router.push('/dashboard');
   };
 
+  const handleOpenDelete = (restaurant: { id: string; name: string; restaurantCode: string }) => {
+    const orgId = String(restaurant.id ?? '').trim();
+    if (!orgId) {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[restaurants] delete modal skipped (missing org id)', restaurant);
+      }
+      return;
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('[restaurants] open delete modal', { organizationId: orgId });
+    }
+    setDeleteTarget({ ...restaurant, id: orgId });
+    setDeleteConfirm('');
+    setDeleteError('');
+  };
+
+  const handleCloseDelete = () => {
+    if (deleteSubmitting) return;
+    setDeleteTarget(null);
+    setDeleteConfirm('');
+    setDeleteError('');
+  };
+
+  const handleDeleteRestaurant = async () => {
+    if (!deleteTarget) return;
+    const organizationId = String(deleteTarget.id ?? '').trim();
+    if (!organizationId) return;
+    const confirmValue = deleteConfirm.trim();
+    const isMatch =
+      confirmValue === deleteTarget.name || confirmValue === deleteTarget.restaurantCode;
+    if (!isMatch) return;
+    setDeleteSubmitting(true);
+    setDeleteError('');
+    const result = await apiFetch(`/api/organizations/${organizationId}/delete`, {
+      method: 'POST',
+    });
+    if (!result.ok) {
+      setDeleteError(result.error || 'Unable to delete restaurant.');
+      setDeleteSubmitting(false);
+      return;
+    }
+    if (activeRestaurantId === deleteTarget.id) {
+      clearActiveOrganization();
+    }
+    await refreshProfile();
+    setDeleteSubmitting(false);
+    setDeleteTarget(null);
+  };
+
   return (
     <div className="bg-theme-primary text-theme-primary p-4 sm:p-6">
       <div className="mx-auto max-w-3xl space-y-4">
@@ -176,6 +234,10 @@ export default function RestaurantSelectPage() {
                 const isManagerForThis = (() => {
                   const role = String(restaurant.role ?? '').trim().toLowerCase();
                   return role === 'admin' || role === 'manager';
+                })();
+                const isAdminForThis = (() => {
+                  const role = String(restaurant.role ?? '').trim().toLowerCase();
+                  return role === 'admin';
                 })();
 
                 return (
@@ -233,6 +295,24 @@ export default function RestaurantSelectPage() {
                         >
                           <Pencil className="w-3 h-3" />
                           <span className="hidden sm:inline">Edit</span>
+                        </button>
+                      )}
+                      {isAdminForThis && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenDelete({
+                              id: restaurant.id,
+                              name: restaurant.name,
+                              restaurantCode: restaurant.restaurantCode,
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-red-400 hover:bg-red-500/20 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                          aria-label={`Delete ${restaurant.name}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span className="hidden sm:inline">Delete</span>
                         </button>
                       )}
                       {!isActive && (
@@ -343,8 +423,8 @@ export default function RestaurantSelectPage() {
           </div>
         )}
 
-        {/* Create Restaurant Card - ONLY for admin/manager */}
-        {hasManagerMembership && !editingId && (
+        {/* Create Restaurant Card - ONLY for admin */}
+        {canCreateRestaurant && !editingId && (
           <div className="bg-theme-secondary border border-theme-primary rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-theme-primary bg-theme-tertiary/50">
               <h2 className="text-sm font-semibold text-theme-primary">Create Restaurant</h2>
@@ -370,7 +450,67 @@ export default function RestaurantSelectPage() {
             </div>
           </div>
         )}
+        {!canCreateRestaurant && !editingId && (
+          <div className="bg-theme-secondary border border-theme-primary rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-theme-primary bg-theme-tertiary/50">
+              <h2 className="text-sm font-semibold text-theme-primary">Create Restaurant</h2>
+            </div>
+            <div className="p-4">
+              <p className="text-xs text-theme-muted">Only admins can create restaurants.</p>
+            </div>
+          </div>
+        )}
       </div>
+
+      <Modal
+        isOpen={Boolean(deleteTarget)}
+        onClose={handleCloseDelete}
+        title="Delete restaurant?"
+        size="md"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-theme-secondary">
+            This permanently deletes this restaurant and ALL associated data. This cannot be undone.
+          </p>
+          <div className="space-y-2">
+            <label className="text-xs uppercase tracking-wide text-theme-muted">
+              Type restaurant name or code to confirm
+            </label>
+            <input
+              type="text"
+              value={deleteConfirm}
+              onChange={(e) => setDeleteConfirm(e.target.value)}
+              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+              placeholder={deleteTarget ? `${deleteTarget.name} or ${deleteTarget.restaurantCode}` : ''}
+            />
+          </div>
+          {deleteError && <p className="text-xs text-red-400">{deleteError}</p>}
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleCloseDelete}
+              className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteRestaurant}
+              disabled={
+                deleteSubmitting ||
+                !deleteTarget ||
+                !(
+                  deleteConfirm.trim() === deleteTarget.name ||
+                  deleteConfirm.trim() === deleteTarget.restaurantCode
+                )
+              }
+              className="px-4 py-2 rounded-lg bg-red-500 text-white font-semibold hover:bg-red-400 transition-colors disabled:opacity-50"
+            >
+              {deleteSubmitting ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

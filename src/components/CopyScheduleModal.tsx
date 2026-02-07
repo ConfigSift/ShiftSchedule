@@ -26,7 +26,15 @@ type CopySummary = {
 };
 
 export function CopyScheduleModal() {
-  const { modalType, closeModal, selectedDate, showToast, loadRestaurantData } = useScheduleStore();
+  const {
+    modalType,
+    closeModal,
+    selectedDate,
+    showToast,
+    loadRestaurantData,
+    scheduleViewSettings,
+    scheduleMode,
+  } = useScheduleStore();
   const { currentUser, activeRestaurantId } = useAuthStore();
   const isManager = isManagerRole(getUserRole(currentUser?.role));
   const isOpen = modalType === 'copySchedule';
@@ -40,7 +48,8 @@ export function CopyScheduleModal() {
   const [summary, setSummary] = useState<CopySummary | null>(null);
   const [showSkipped, setShowSkipped] = useState(false);
 
-  const weekDates = useMemo(() => getWeekDates(selectedDate), [selectedDate]);
+  const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+  const weekDates = useMemo(() => getWeekDates(selectedDate, weekStartDay), [selectedDate, weekStartDay]);
   const sourceWeekStart = dateToString(weekDates[0]);
   const sourceWeekEnd = dateToString(weekDates[6]);
   const sourceDay = dateToString(selectedDate);
@@ -65,11 +74,14 @@ export function CopyScheduleModal() {
   }, [isOpen, weekDates]);
 
   const buildPayload = (targetMode: CopyMode) => {
+    const sourceScheduleState: 'draft' | 'published' = scheduleMode === 'draft' ? 'draft' : 'published';
     const payload: Record<string, any> = {
       sourceWeekStart,
       sourceWeekEnd,
       mode: targetMode,
       allowOverrideBlocked: allowOverride,
+      sourceScheduleState,
+      targetScheduleState: 'draft',
     };
     if (targetMode === 'nextDay') {
       payload.sourceDay = sourceDay;

@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { usePathname } from 'next/navigation';
 import { Header } from './Header';
 import { StatsFooter } from './StatsFooter';
 import { StaffProfileModal } from './StaffProfileModal';
 import { TimeOffRequestModal } from './TimeOffRequestModal';
+import { EmployeeMobileNav } from './employee/EmployeeMobileNav';
 import { useAuthStore } from '../store/authStore';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useUIStore } from '../store/uiStore';
@@ -23,6 +24,12 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
   const isChatPage = pathname === '/chat';
   const isDashboardPage = pathname === '/dashboard';
   const isRestaurantsPage = pathname === '/restaurants';
+  const isEmployeeNavPage =
+    pathname === '/dashboard' ||
+    pathname === '/shift-exchange' ||
+    pathname === '/review-requests' ||
+    pathname === '/profile' ||
+    pathname === '/chat';
 
   const { currentUser, activeRestaurantId, refreshProfile } = useAuthStore();
   const { showToast } = useScheduleStore();
@@ -33,6 +40,13 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
   const isEmployee = role === 'EMPLOYEE';
   // Hide footer on /restaurants or for employees
   const shouldShowFooter = showFooter && !isRestaurantsPage && !isEmployee;
+  const shouldShowEmployeeNav = isEmployee && isEmployeeNavPage && !isStandalonePage;
+  const [employeeNavHeight, setEmployeeNavHeight] = useState(0);
+  const shouldPadContent = shouldShowEmployeeNav && !isDashboardPage && !isChatPage;
+  const employeeNavPadding = shouldPadContent ? 'employee-nav-pad' : '';
+  const employeeNavStyle: CSSProperties | undefined = shouldShowEmployeeNav
+    ? ({ ['--employee-nav-h' as const]: `${employeeNavHeight}px` } as CSSProperties)
+    : undefined;
   const profileUser = currentUser
     ? {
         id: currentUser.id,
@@ -71,6 +85,28 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
     };
   }, [isChatPage]);
 
+  useEffect(() => {
+    if (!shouldShowEmployeeNav) {
+      setEmployeeNavHeight(0);
+      return;
+    }
+
+    const measure = () => {
+      const nav = document.getElementById('employee-mobile-nav');
+      if (!nav) return;
+      const { height } = nav.getBoundingClientRect();
+      setEmployeeNavHeight((prev) => (Math.abs(prev - height) > 1 ? height : prev));
+    };
+
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+    };
+  }, [shouldShowEmployeeNav]);
+
   // Render standalone pages without header/footer
   if (isStandalonePage) {
     return (
@@ -86,6 +122,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
         isChatPage || isDashboardPage ? 'h-[100dvh] overflow-hidden' : ''
       }`}
       data-chat-shell={isChatPage ? 'true' : undefined}
+      style={employeeNavStyle}
     >
       <Header minimal={isRestaurantsPage} />
       {/* Main content area - accounts for fixed header and footer */}
@@ -96,7 +133,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
         data-chat-content={isChatPage ? 'true' : undefined}
       >
         <div
-          className={`flex-1 min-h-0 bg-theme-timeline ${
+          className={`flex-1 min-h-0 bg-theme-timeline ${employeeNavPadding} ${
             isChatPage || isDashboardPage ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
           }`}
         >
@@ -104,6 +141,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
         </div>
       </div>
       {shouldShowFooter && <StatsFooter />}
+      {shouldShowEmployeeNav && <EmployeeMobileNav />}
       <StaffProfileModal
         isOpen={isProfileModalOpen}
         mode="edit"

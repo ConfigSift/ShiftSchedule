@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
-import { normalizeUserRow } from '@/utils/userMapper';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+const badRequest = (message: string) =>
+  NextResponse.json({ error: message, code: 'BAD_REQUEST' }, { status: 400 });
 
 type HourPayload = {
   dayOfWeek: number;
@@ -21,38 +22,59 @@ type SavePayload = {
 
 export async function POST(request: NextRequest) {
   const payload = (await request.json()) as SavePayload;
-  if (!payload.organizationId || !payload.hours) {
-    return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
+  if (!payload.organizationId) {
+    return badRequest('organizationId is required.');
+  }
+  if (!payload.hours) {
+    return badRequest('Missing required fields.');
   }
 
   const { supabase, response } = createSupabaseRouteClient(request);
-  const { data: authData, error: authError } = await supabase.auth.getUser();
+  const { data: authData } = await supabase.auth.getUser();
   const authUserId = authData.user?.id;
   if (!authUserId) {
-    const message =
-      process.env.NODE_ENV === 'production'
-        ? 'Not signed in. Please sign out/in again.'
-        : authError?.message || 'Unauthorized.';
-    return applySupabaseCookies(jsonError(message, 401), response);
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[business-hours] auth failed', {
+        authUserId: null,
+        organizationId: payload.organizationId,
+        hasMembership: false,
+        role: null,
+      });
+    }
+    return applySupabaseCookies(jsonError('Not signed in.', 401), response);
   }
 
-  const { data: requesterRow, error: requesterError } = await supabase
-    .from('users')
-    .select('*')
+  const { data: membershipRow, error: membershipError } = await supabase
+    .from('organization_memberships')
+    .select('role')
     .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
     .maybeSingle();
 
-  if (requesterError || !requesterRow) {
-    return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
-  }
-
-  const requester = normalizeUserRow(requesterRow);
-  if (!['ADMIN', 'MANAGER'].includes(requester.role)) {
+  const hasMembership = Boolean(membershipRow);
+  if (membershipError || !membershipRow) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[business-hours] membership failed', {
+        authUserId,
+        organizationId: payload.organizationId,
+        hasMembership,
+        role: null,
+      });
+    }
     return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
   }
 
-  if (requester.organizationId !== payload.organizationId) {
-    return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
+  const role = String(membershipRow.role ?? '').toLowerCase();
+  if (!['admin', 'manager'].includes(role)) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[business-hours] role forbidden', {
+        authUserId,
+        organizationId: payload.organizationId,
+        hasMembership,
+        role,
+      });
+    }
+    return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
   }
 
   await supabaseAdmin.from('business_hours').delete().eq('organization_id', payload.organizationId);
@@ -72,10 +94,10 @@ export async function POST(request: NextRequest) {
 
   if (error) {
     return applySupabaseCookies(
-      NextResponse.json({ error: error.message }, { status: 400 }),
+      badRequest(error.message),
       response
     );
   }
 
-  return applySupabaseCookies(NextResponse.json({ hours: data ?? [] }), response);
+  return applySupabaseCookies(NextResponse.json({ ok: true, hours: data ?? [] }), response);
 }

@@ -18,7 +18,7 @@ import {
   ScheduleHourMode,
 } from '../types';
 import { STORAGE_KEYS, saveToStorage, loadFromStorage } from '../utils/storage';
-import { generateId, shiftsOverlap } from '../utils/timeUtils';
+import { generateId, shiftsOverlap, getWeekStart, getWeekRange } from '../utils/timeUtils';
 import { supabase } from '../lib/supabase/client';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { normalizeUserRow } from '../utils/userMapper';
@@ -96,8 +96,29 @@ function toLocalDateString(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function isPastDate(dateStr: string): boolean {
+  return dateStr < toLocalDateString(new Date());
+}
+
 function buildWorkingTodayKey(restaurantId: string | null, date: Date): string {
   return `${restaurantId ?? 'none'}:${toLocalDateString(date)}`;
+}
+
+function normalizeShiftNotes(notes?: string | null): string {
+  if (!notes) return '';
+  return String(notes).trim();
+}
+
+function buildShiftOverlayKey(shift: Shift): string {
+  return [
+    shift.restaurantId ?? '',
+    shift.employeeId,
+    shift.date,
+    formatTimeFromDecimal(shift.startHour),
+    formatTimeFromDecimal(shift.endHour),
+    shift.job ?? '',
+    normalizeShiftNotes(shift.notes),
+  ].join('|');
 }
 
 function getEffectiveRole(
@@ -113,6 +134,7 @@ function getEffectiveRole(
 }
 
 type ViewMode = 'day' | 'week' | 'month';
+type ScheduleMode = 'published' | 'draft';
 type ModalType =
   | 'addShift'
   | 'editShift'
@@ -139,6 +161,7 @@ interface ScheduleState {
 
   selectedDate: Date;
   viewMode: ViewMode;
+  scheduleMode: ScheduleMode;
   selectedSections: string[];
   selectedEmployeeIds: string[];
   workingTodayOnly: boolean;
@@ -158,6 +181,7 @@ interface ScheduleState {
   loadRestaurantData: (restaurantId: string | null) => Promise<void>;
   setSelectedDate: (date: Date) => void;
   setViewMode: (mode: ViewMode) => void;
+  setScheduleMode: (mode: ScheduleMode) => void;
   toggleSection: (section: string) => void;
   setSectionSelectedForRestaurant: (section: string, selected: boolean, restaurantId: string | null) => void;
   toggleEmployee: (employeeId: string) => void;
@@ -189,6 +213,33 @@ interface ScheduleState {
     options?: { allowTimeOffOverride?: boolean; allowBlockedOverride?: boolean }
   ) => Promise<{ success: boolean; error?: string }>;
   deleteShift: (id: string) => Promise<{ success: boolean; error?: string }>;
+  publishWeekDraft: (payload: {
+    organizationId: string;
+    weekStartDate: string;
+    weekEndDate: string;
+  }) => Promise<{ success: boolean; error?: string; deletedPublished?: number; promotedDrafts?: number; dedupedDrafts?: number }>;
+  publishDraftRange: (payload: {
+    startDate: string;
+    endDate: string;
+  }) => Promise<{ success: boolean; error?: string; publishedCount?: number; deletedCount?: number }>;
+  seedDraftWeekFromPublished: (payload: {
+    organizationId: string;
+    weekStartDate: string;
+    weekEndDate: string;
+  }) => Promise<{
+    seeded: boolean;
+    insertedCount: number;
+    skippedCount: number;
+    sourceCount: number;
+    error?: string;
+  }>;
+  copyPreviousDayIntoDraft: (selectedDate: Date) => Promise<{
+    success: boolean;
+    insertedCount?: number;
+    skippedCount?: number;
+    sourceCount?: number;
+    error?: string;
+  }>;
 
   addTimeOffRequest: (request: {
     employeeId: string;
@@ -260,6 +311,36 @@ interface ScheduleState {
   setScheduleViewSettings: (settings: ScheduleViewSettings | null) => void;
 }
 
+async function ensureDraftWeekSeeded(
+  getState: () => ScheduleState,
+  organizationId: string,
+  targetDate: string | Date
+): Promise<{ ok: boolean; error?: string }> {
+  const state = getState();
+  if (state.scheduleMode !== 'draft') {
+    return { ok: true };
+  }
+  if (!organizationId) {
+    return { ok: true };
+  }
+  const weekStartDay = state.scheduleViewSettings?.weekStartDay ?? 'sunday';
+  const baseDate =
+    targetDate instanceof Date ? targetDate : new Date(`${String(targetDate)}T00:00:00`);
+  if (Number.isNaN(baseDate.getTime())) {
+    return { ok: true };
+  }
+  const { start, end } = getWeekRange(baseDate, weekStartDay);
+  const seedResult = await state.seedDraftWeekFromPublished({
+    organizationId,
+    weekStartDate: toDateYMD(start),
+    weekEndDate: toDateYMD(end),
+  });
+  if (seedResult.error) {
+    return { ok: false, error: seedResult.error };
+  }
+  return { ok: true };
+}
+
 export const useScheduleStore = create<ScheduleState>((set, get) => ({
   employees: [],
   shifts: [],
@@ -273,6 +354,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
   selectedDate: new Date(),
   viewMode: 'day',
+  scheduleMode: 'published',
   selectedSections: ['kitchen', 'front', 'bar', 'management'],
   selectedEmployeeIds: [],
   workingTodayOnly: true,
@@ -400,6 +482,12 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       .select('*')
       .eq('organization_id', restaurantId);
 
+    if (currentRole === 'EMPLOYEE') {
+      shiftQuery = shiftQuery.eq('schedule_state', 'published');
+    } else {
+      shiftQuery = shiftQuery.in('schedule_state', ['draft', 'published']);
+    }
+
     const { data: shiftData, error: shiftError } = (await shiftQuery) as {
       data: Array<Record<string, any>> | null;
       error: { message: string } | null;
@@ -434,6 +522,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       locationId: row.location_id ?? null,
       payRate: row.pay_rate != null ? Number(row.pay_rate) : undefined,
       paySource: row.pay_source ?? undefined,
+      scheduleState: row.schedule_state === 'draft' ? 'draft' : 'published',
     }));
 
     let timeOffData: Array<Record<string, any>> | null = null;
@@ -588,6 +677,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           hourMode: (settingsData.hour_mode ?? 'full24') as ScheduleHourMode,
           customStartHour: Number(settingsData.custom_start_hour ?? 0),
           customEndHour: Number(settingsData.custom_end_hour ?? 24),
+          weekStartDay: (settingsData.week_start_day ?? 'sunday') === 'monday' ? 'monday' : 'sunday',
         };
 
     const selectedDate = get().selectedDate;
@@ -630,6 +720,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     };
   }),
   setViewMode: (mode) => set({ viewMode: mode }),
+  setScheduleMode: (mode) => set({ scheduleMode: mode }),
 
   toggleSection: (section) => set((state) => {
     const isSelected = state.selectedSections.includes(section);
@@ -759,20 +850,32 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   setLocations: (locations) => set({ locations }),
   getLocationById: (id) => get().locations.find((location) => location.id === id),
 
-  addShift: async (shift, options) => {
-    const state = get();
-    const currentUser = useAuthStore.getState().currentUser;
-    if (!isManagerRole(currentUser?.role)) {
-      return { success: false, error: "You don't have permission to modify shifts." };
-    }
-    const restaurantId = shift.restaurantId;
-    if (!restaurantId) {
-      return { success: false, error: 'Restaurant not assigned for this shift' };
-    }
+    addShift: async (shift, options) => {
+      let state = get();
+      const currentUser = useAuthStore.getState().currentUser;
+      if (!isManagerRole(currentUser?.role)) {
+        return { success: false, error: "You don't have permission to modify shifts." };
+      }
+      const restaurantId = shift.restaurantId;
+      if (!restaurantId) {
+        return { success: false, error: 'Restaurant not assigned for this shift' };
+      }
+      const shiftDateValue =
+        shift.date instanceof Date
+          ? toLocalDateString(shift.date)
+          : String(shift.date || toDateYMD(state.selectedDate)).trim();
+      if (isPastDate(shiftDateValue)) {
+        return { success: false, error: "Past schedules can't be edited." };
+      }
+      const seedResult = await ensureDraftWeekSeeded(get, restaurantId, shiftDateValue);
+      if (!seedResult.ok) {
+        return { success: false, error: seedResult.error ?? 'Unable to prepare draft week' };
+      }
+      state = get();
 
-    if (state.hasApprovedTimeOff(shift.employeeId, shift.date) && !options?.allowTimeOffOverride) {
-      return { success: false, error: 'Employee has approved time off on this date' };
-    }
+      if (state.hasApprovedTimeOff(shift.employeeId, shift.date) && !options?.allowTimeOffOverride) {
+        return { success: false, error: 'Employee has approved time off on this date' };
+      }
 
     if (state.hasBlockedShiftOnDate(shift.employeeId, shift.date) && !options?.allowBlockedOverride) {
       return { success: false, error: 'This employee is blocked out on that date' };
@@ -793,10 +896,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     }
 
     const safeJob = shift.job;
-    const shiftDate =
-      shift.date instanceof Date
-        ? toDateYMD(shift.date)
-        : String(shift.date || toDateYMD(state.selectedDate)).trim();
+    const shiftDate = shiftDateValue;
     const startTimeValue = shift.startHour as unknown;
     const endTimeValue = shift.endHour as unknown;
     const startTime =
@@ -813,6 +913,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         job: safeJob,
       });
     }
+    const shouldDraft = state.scheduleMode === 'draft' || isManagerRole(currentUser?.role);
+    const nextScheduleState = shouldDraft ? 'draft' : 'published';
     const { data, error } = await (supabase as any)
       .from('shifts')
       .insert({
@@ -823,6 +925,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         end_time: endTime,
         notes: shift.notes ?? null,
         is_blocked: false,
+        schedule_state: nextScheduleState,
         job: safeJob,
         location_id: shift.locationId ?? null,
       })
@@ -846,6 +949,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       locationId: data.location_id ?? null,
       payRate: data.pay_rate != null ? Number(data.pay_rate) : undefined,
       paySource: data.pay_source ?? undefined,
+      scheduleState: data.schedule_state === 'draft' ? 'draft' : 'published',
     };
 
     // Immutable update: create new array with the new shift
@@ -853,18 +957,52 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     return { success: true };
   },
 
-  updateShift: async (id, updates, options) => {
-    const state = get();
-    const currentUser = useAuthStore.getState().currentUser;
-    if (!isManagerRole(currentUser?.role)) {
-      return { success: false, error: "You don't have permission to modify shifts." };
-    }
-    const shift = state.shifts.find((s) => s.id === id);
-    if (!shift) return { success: false, error: 'Shift not found' };
-    if (shift.isBlocked) return { success: false, error: 'Blocked entries cannot be edited here' };
+    updateShift: async (id, updates, options) => {
+      let state = get();
+      const currentUser = useAuthStore.getState().currentUser;
+      if (!isManagerRole(currentUser?.role)) {
+        return { success: false, error: "You don't have permission to modify shifts." };
+      }
+      let shift = state.shifts.find((s) => s.id === id);
+      if (!shift) return { success: false, error: 'Shift not found' };
+      if (isPastDate(shift.date)) {
+        return { success: false, error: "Past schedules can't be edited." };
+      }
+      const targetDate = updates.date ?? shift.date;
+      const targetDateValue =
+        targetDate instanceof Date ? toLocalDateString(targetDate) : String(targetDate).trim();
+      if (isPastDate(targetDateValue)) {
+        return { success: false, error: "Past schedules can't be edited." };
+      }
+      const targetRestaurantId = updates.restaurantId ?? shift.restaurantId;
+      const seedResult = await ensureDraftWeekSeeded(get, targetRestaurantId, targetDate);
+      if (!seedResult.ok) {
+        return { success: false, error: seedResult.error ?? 'Unable to prepare draft week' };
+      }
+      state = get();
+      shift = state.shifts.find((s) => s.id === id);
+      if (!shift) return { success: false, error: 'Shift not found' };
+      if (shift.isBlocked) return { success: false, error: 'Blocked entries cannot be edited here' };
+
+      const shouldCloneToDraft =
+        isManagerRole(currentUser?.role) &&
+        shift.scheduleState === 'published';
+
+    const draftMatch = shouldCloneToDraft
+      ? state.shifts.find(
+          (s) =>
+            s.scheduleState === 'draft' &&
+            s.employeeId === shift.employeeId &&
+            s.date === shift.date &&
+            Math.abs(s.startHour - shift.startHour) < 0.001 &&
+            Math.abs(s.endHour - shift.endHour) < 0.001 &&
+            (s.locationId ?? null) === (shift.locationId ?? null)
+        )
+      : undefined;
 
     const updateId = `${id}-${Date.now()}`;
-    const updatedShift = { ...shift, ...updates };
+    const baseShift = draftMatch ?? shift;
+    const updatedShift = { ...baseShift, ...updates };
     if (DEBUG_SHIFT_SAVE) {
       console.log('SHIFT_SAVE', {
         stage: 'input',
@@ -909,9 +1047,13 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return { success: false, error: 'This employee is blocked out on that date' };
     }
 
+    const overlapExcludeId = draftMatch ? draftMatch.id : id;
     const existingShifts = state.shifts.filter(
       (s) =>
-        s.id !== id && s.employeeId === updatedShift.employeeId && s.date === updatedShift.date && !s.isBlocked
+        s.id !== overlapExcludeId &&
+        s.employeeId === updatedShift.employeeId &&
+        s.date === updatedShift.date &&
+        !s.isBlocked
     );
 
     for (const existing of existingShifts) {
@@ -944,10 +1086,45 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       });
     }
 
+    if (shouldCloneToDraft && !draftMatch) {
+      const { data: insertedRow, error: insertError } = await (supabase as any)
+        .from('shifts')
+        .insert({
+          ...payload,
+          schedule_state: 'draft',
+        })
+        .select('*')
+        .single();
+
+      if (insertError || !insertedRow) {
+        return { success: false, error: insertError?.message ?? 'Failed to create draft shift' };
+      }
+
+      const newShift: Shift = {
+        id: insertedRow.id,
+        employeeId: insertedRow.user_id,
+        restaurantId: insertedRow.organization_id,
+        date: insertedRow.shift_date,
+        startHour: parseTimeToDecimal(insertedRow.start_time),
+        endHour: parseTimeToDecimal(insertedRow.end_time),
+        notes: insertedRow.notes ?? undefined,
+        isBlocked: Boolean(insertedRow.is_blocked),
+        job: isValidJob(insertedRow.job) ? insertedRow.job : undefined,
+        locationId: insertedRow.location_id ?? null,
+        payRate: insertedRow.pay_rate != null ? Number(insertedRow.pay_rate) : undefined,
+        paySource: insertedRow.pay_source ?? undefined,
+        scheduleState: insertedRow.schedule_state === 'draft' ? 'draft' : 'published',
+      };
+
+      set({ shifts: [...state.shifts, newShift] });
+      return { success: true };
+    }
+
+    const targetId = draftMatch ? draftMatch.id : id;
     const { data: updatedRow, error } = await (supabase as any)
       .from('shifts')
       .update(payload)
-      .eq('id', id)
+      .eq('id', targetId)
       .select('*')
       .single();
 
@@ -977,10 +1154,11 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       locationId: updatedRow.location_id ?? null,
       payRate: updatedRow.pay_rate != null ? Number(updatedRow.pay_rate) : undefined,
       paySource: updatedRow.pay_source ?? undefined,
+      scheduleState: updatedRow.schedule_state === 'draft' ? 'draft' : 'published',
     };
 
     // Immutable update: create new array with the updated shift
-    const newShifts = state.shifts.map((s) => (s.id === id ? finalShift : s));
+    const newShifts = state.shifts.map((s) => (s.id === targetId ? finalShift : s));
     set({ shifts: newShifts });
 
     if (DEBUG_SHIFT_SAVE) {
@@ -1000,17 +1178,483 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   },
 
   deleteShift: async (id) => {
-    const state = get();
+      let state = get();
+      const currentUser = useAuthStore.getState().currentUser;
+      if (!isManagerRole(currentUser?.role)) {
+        return { success: false, error: "You don't have permission to modify shifts." };
+      }
+
+      let shift = state.shifts.find((s) => s.id === id);
+      if (!shift) {
+        return { success: false, error: 'Shift not found' };
+      }
+      if (isPastDate(shift.date)) {
+        return { success: false, error: "Past schedules can't be edited." };
+      }
+
+      const warnBlockedDelete = () => {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.warn('[shift-delete] blocked-day creation prevented', {
+            employeeId: shift.employeeId,
+            date: shift.date,
+          });
+        }
+      };
+
+      if (state.scheduleMode === 'draft') {
+        const seedResult = await ensureDraftWeekSeeded(get, shift.restaurantId, shift.date);
+        if (!seedResult.ok) {
+          return { success: false, error: seedResult.error ?? 'Unable to prepare draft week' };
+        }
+        state = get();
+        shift = state.shifts.find((s) => s.id === id);
+        if (!shift) {
+          return { success: false, error: 'Shift not found' };
+        }
+        const buildKey = (s: Shift) =>
+          [
+            s.employeeId,
+            s.date,
+            s.startHour.toFixed(4),
+            s.endHour.toFixed(4),
+            s.job ?? '',
+            s.notes ?? '',
+            s.locationId ?? '',
+          ].join('|');
+
+        const targetKey = buildKey(shift);
+        const existingDraft = state.shifts.find(
+          (s) => s.scheduleState === 'draft' && buildKey(s) === targetKey
+        );
+
+        const markDraftBlocked = async (draftId: string) => {
+          warnBlockedDelete();
+          const { error: updateError } = await (supabase as any)
+            .from('shifts')
+            .update({ is_blocked: true })
+            .eq('id', draftId);
+
+          if (updateError) {
+            return { success: false, error: updateError.message };
+          }
+
+          set({
+            shifts: state.shifts.map((s) =>
+              s.id === draftId ? { ...s, isBlocked: true, scheduleState: 'draft' } : s
+            ),
+          });
+          return { success: true };
+        };
+
+        if (shift.scheduleState === 'draft') {
+          return markDraftBlocked(shift.id);
+        }
+
+        if (existingDraft) {
+          return markDraftBlocked(existingDraft.id);
+        }
+
+        warnBlockedDelete();
+        const { data: insertedRow, error: insertError } = await (supabase as any)
+          .from('shifts')
+          .insert({
+            organization_id: shift.restaurantId,
+            user_id: shift.employeeId,
+            shift_date: shift.date,
+            start_time: formatTimeFromDecimal(shift.startHour),
+            end_time: formatTimeFromDecimal(shift.endHour),
+            notes: shift.notes ?? null,
+            is_blocked: true,
+            schedule_state: 'draft',
+            job: shift.job ?? null,
+            location_id: shift.locationId ?? null,
+          })
+          .select('*')
+          .single();
+
+        if (insertError || !insertedRow) {
+          return { success: false, error: insertError?.message ?? 'Failed to remove shift' };
+        }
+
+        const newShift: Shift = {
+          id: insertedRow.id,
+          employeeId: insertedRow.user_id,
+          restaurantId: insertedRow.organization_id,
+          date: insertedRow.shift_date,
+          startHour: parseTimeToDecimal(insertedRow.start_time),
+          endHour: parseTimeToDecimal(insertedRow.end_time),
+          notes: insertedRow.notes ?? undefined,
+          isBlocked: Boolean(insertedRow.is_blocked),
+          job: isValidJob(insertedRow.job) ? insertedRow.job : undefined,
+          locationId: insertedRow.location_id ?? null,
+          payRate: insertedRow.pay_rate != null ? Number(insertedRow.pay_rate) : undefined,
+          paySource: insertedRow.pay_source ?? undefined,
+          scheduleState: insertedRow.schedule_state === 'draft' ? 'draft' : 'published',
+        };
+
+        set({ shifts: [...state.shifts, newShift] });
+        return { success: true };
+      }
+
+      const { error } = await (supabase as any).from('shifts').delete().eq('id', id);
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      set({ shifts: state.shifts.filter((s) => s.id !== id) });
+      return { success: true };
+    },
+
+  publishWeekDraft: async ({ organizationId, weekStartDate, weekEndDate }) => {
     const currentUser = useAuthStore.getState().currentUser;
     if (!isManagerRole(currentUser?.role)) {
-      return { success: false, error: "You don't have permission to modify shifts." };
+      return { success: false, error: "You don't have permission to publish schedules." };
     }
-    const { error } = await (supabase as any).from('shifts').delete().eq('id', id);
-    if (error) {
-      return { success: false, error: error.message };
+    if (!organizationId) {
+      return { success: false, error: 'Organization not selected.' };
     }
-    set({ shifts: state.shifts.filter((s) => s.id !== id) });
-    return { success: true };
+      const { data: draftRows, error: draftError } = await (supabase as any)
+        .from('shifts')
+        .select('id,user_id,shift_date,start_time,end_time,job,notes,is_blocked')
+        .eq('organization_id', organizationId)
+        .eq('schedule_state', 'draft')
+        .gte('shift_date', weekStartDate)
+        .lte('shift_date', weekEndDate);
+
+      if (draftError) {
+        return { success: false, error: draftError.message };
+      }
+      if (!draftRows || draftRows.length === 0) {
+        return { success: false, error: 'No draft shifts to publish for this week.' };
+      }
+
+    const activeDraftRows = (draftRows ?? []).filter((row: Record<string, any>) => !row.is_blocked);
+    const blockedDraftRows = (draftRows ?? []).filter((row: Record<string, any>) => row.is_blocked);
+
+    if (blockedDraftRows.length > 0 && process.env.NODE_ENV !== 'production') {
+      blockedDraftRows.forEach((row: Record<string, any>) => {
+        // eslint-disable-next-line no-console
+        console.warn('[publish-week] blocked-day creation prevented', {
+          employeeId: row.user_id ?? 'unknown',
+          date: row.shift_date ?? 'unknown',
+        });
+      });
+    }
+
+    const seen = new Set<string>();
+    const dupIds: string[] = [];
+    (activeDraftRows ?? []).forEach((row: Record<string, any>) => {
+      const key = [
+        row.user_id ?? '',
+        row.shift_date ?? '',
+        row.start_time ?? '',
+        row.end_time ?? '',
+        row.job ?? '',
+        row.notes ?? '',
+      ].join('|');
+      if (seen.has(key)) {
+        dupIds.push(row.id);
+      } else {
+        seen.add(key);
+      }
+    });
+
+    if (dupIds.length > 0) {
+      const { error: dedupeError } = await (supabase as any)
+        .from('shifts')
+        .delete()
+        .in('id', dupIds);
+      if (dedupeError) {
+        return { success: false, error: dedupeError.message };
+      }
+    }
+
+    if (blockedDraftRows.length > 0) {
+      const blockedIds = blockedDraftRows.map((row: Record<string, any>) => row.id).filter(Boolean);
+      if (blockedIds.length > 0) {
+        const { error: blockedDeleteError } = await (supabase as any)
+          .from('shifts')
+          .delete()
+          .in('id', blockedIds);
+        if (blockedDeleteError) {
+          return { success: false, error: blockedDeleteError.message };
+        }
+      }
+    }
+
+    const { data: deletedRows, error: deletePublishedError } = await (supabase as any)
+      .from('shifts')
+      .delete()
+      .eq('organization_id', organizationId)
+      .eq('schedule_state', 'published')
+      .gte('shift_date', weekStartDate)
+      .lte('shift_date', weekEndDate)
+      .select('id');
+
+    if (deletePublishedError) {
+      return { success: false, error: deletePublishedError.message };
+    }
+
+    const { data: promotedRows, error: promoteError } = await (supabase as any)
+      .from('shifts')
+      .update({ schedule_state: 'published' })
+      .eq('organization_id', organizationId)
+      .eq('schedule_state', 'draft')
+      .eq('is_blocked', false)
+      .gte('shift_date', weekStartDate)
+      .lte('shift_date', weekEndDate)
+      .select('id');
+
+    if (promoteError) {
+      return { success: false, error: promoteError.message };
+    }
+
+    await get().loadRestaurantData(organizationId);
+    return {
+      success: true,
+      deletedPublished: deletedRows?.length ?? 0,
+      promotedDrafts: promotedRows?.length ?? 0,
+      dedupedDrafts: dupIds.length,
+    };
+  },
+
+  publishDraftRange: async ({ startDate, endDate }) => {
+    const authState = useAuthStore.getState();
+    const organizationId = authState.activeRestaurantId;
+    if (!organizationId) {
+      get().showToast('Select a restaurant first.', 'error');
+      return { success: false, error: 'Organization not selected.' };
+    }
+
+    const currentRole = getEffectiveRole(
+      organizationId,
+      authState.accessibleRestaurants,
+      authState.currentUser?.role
+    );
+    if (currentRole === 'EMPLOYEE') {
+      get().showToast("You don't have permission to publish schedules.", 'error');
+      return { success: false, error: "You don't have permission to publish schedules." };
+    }
+
+    const { data: draftRows, error: draftError } = await (supabase as any)
+      .from('shifts')
+      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,job,is_blocked,schedule_state,location_id,pay_rate,pay_source')
+      .eq('organization_id', organizationId)
+      .eq('schedule_state', 'draft')
+      .gte('shift_date', startDate)
+      .lte('shift_date', endDate);
+
+    if (draftError) {
+      get().showToast(draftError.message ?? 'Unable to load draft shifts.', 'error');
+      return { success: false, error: draftError.message };
+    }
+    if (!draftRows || draftRows.length === 0) {
+      get().showToast('No draft shifts to publish for this range.', 'error');
+      return { success: false, error: 'No draft shifts to publish for this range.' };
+    }
+
+    const { data: publishedRows, error: publishedError } = await (supabase as any)
+      .from('shifts')
+      .select('id,organization_id,user_id,shift_date,start_time,end_time,notes,job,is_blocked,schedule_state,location_id,pay_rate,pay_source')
+      .eq('organization_id', organizationId)
+      .eq('schedule_state', 'published')
+      .gte('shift_date', startDate)
+      .lte('shift_date', endDate);
+
+    if (publishedError) {
+      get().showToast(publishedError.message ?? 'Unable to load published shifts.', 'error');
+      return { success: false, error: publishedError.message };
+    }
+
+    const buildShiftFromRow = (row: Record<string, any>): Shift => ({
+      id: row.id,
+      employeeId: row.user_id,
+      restaurantId: row.organization_id ?? organizationId,
+      date: row.shift_date,
+      startHour: parseTimeToDecimal(row.start_time),
+      endHour: parseTimeToDecimal(row.end_time),
+      notes: row.notes ?? undefined,
+      isBlocked: Boolean(row.is_blocked),
+      job: isValidJob(row.job) ? row.job : undefined,
+      locationId: row.location_id ?? null,
+      payRate: row.pay_rate != null ? Number(row.pay_rate) : undefined,
+      paySource: row.pay_source ?? undefined,
+      scheduleState: row.schedule_state === 'draft' ? 'draft' : 'published',
+    });
+
+    const publishedByKey = new Map<string, Record<string, any>>();
+    (publishedRows ?? []).forEach((row: Record<string, any>) => {
+      const key = buildShiftOverlayKey(buildShiftFromRow(row));
+      if (!publishedByKey.has(key)) {
+        publishedByKey.set(key, row);
+      }
+    });
+
+    let deletedCount = 0;
+    let publishedCount = 0;
+
+    for (const row of draftRows ?? []) {
+      const draftShift = buildShiftFromRow(row);
+      const key = buildShiftOverlayKey(draftShift);
+      const publishedMatch = publishedByKey.get(key);
+
+      if (draftShift.isBlocked) {
+        if (publishedMatch?.id) {
+          const { error: deletePublishedError } = await (supabase as any)
+            .from('shifts')
+            .delete()
+            .eq('id', publishedMatch.id);
+          if (deletePublishedError) {
+            get().showToast(deletePublishedError.message ?? 'Unable to publish shifts.', 'error');
+            return { success: false, error: deletePublishedError.message };
+          }
+          deletedCount += 1;
+          publishedByKey.delete(key);
+        }
+
+        const { error: deleteDraftError } = await (supabase as any)
+          .from('shifts')
+          .delete()
+          .eq('id', row.id);
+        if (deleteDraftError) {
+          get().showToast(deleteDraftError.message ?? 'Unable to publish shifts.', 'error');
+          return { success: false, error: deleteDraftError.message };
+        }
+        deletedCount += 1;
+        continue;
+      }
+
+      if (publishedMatch?.id) {
+        const { error: deletePublishedError } = await (supabase as any)
+          .from('shifts')
+          .delete()
+          .eq('id', publishedMatch.id);
+        if (deletePublishedError) {
+          get().showToast(deletePublishedError.message ?? 'Unable to publish shifts.', 'error');
+          return { success: false, error: deletePublishedError.message };
+        }
+        deletedCount += 1;
+        publishedByKey.delete(key);
+      }
+
+      const { error: updateError } = await (supabase as any)
+        .from('shifts')
+        .update({ schedule_state: 'published' })
+        .eq('id', row.id);
+      if (updateError) {
+        get().showToast(updateError.message ?? 'Unable to publish shifts.', 'error');
+        return { success: false, error: updateError.message };
+      }
+      publishedCount += 1;
+    }
+
+    return { success: true, deletedCount, publishedCount };
+  },
+
+  seedDraftWeekFromPublished: async ({ organizationId, weekStartDate, weekEndDate }) => {
+    const currentUser = useAuthStore.getState().currentUser;
+    if (!isManagerRole(currentUser?.role)) {
+      return { seeded: false, insertedCount: 0, skippedCount: 0, sourceCount: 0, error: "You don't have permission to modify schedules." };
+    }
+    if (!organizationId) {
+      return { seeded: false, insertedCount: 0, skippedCount: 0, sourceCount: 0, error: 'Organization not selected.' };
+    }
+
+    const { data: existingDrafts, error: draftError } = await (supabase as any)
+      .from('shifts')
+      .select('user_id,start_time,end_time,location_id')
+      .eq('organization_id', organizationId)
+      .eq('schedule_state', 'draft')
+      .gte('shift_date', weekStartDate)
+      .lte('shift_date', weekEndDate);
+
+    if (draftError) {
+      return { seeded: false, insertedCount: 0, skippedCount: 0, sourceCount: 0, error: draftError.message };
+    }
+
+    if ((existingDrafts ?? []).length > 0) {
+      return { seeded: false, insertedCount: 0, skippedCount: 0, sourceCount: (existingDrafts ?? []).length };
+    }
+
+    const { data: publishedShifts, error: publishedError } = await (supabase as any)
+      .from('shifts')
+      .select('user_id,shift_date,start_time,end_time,notes,is_blocked,job,location_id')
+      .eq('organization_id', organizationId)
+      .eq('schedule_state', 'published')
+      .gte('shift_date', weekStartDate)
+      .lte('shift_date', weekEndDate);
+
+    if (publishedError) {
+      return { seeded: false, insertedCount: 0, skippedCount: 0, sourceCount: 0, error: publishedError.message };
+    }
+
+    if (!publishedShifts || publishedShifts.length === 0) {
+      return { seeded: false, insertedCount: 0, skippedCount: 0, sourceCount: 0 };
+    }
+
+    const inserts = publishedShifts.map((shift) => ({
+      organization_id: organizationId,
+      user_id: shift.user_id,
+      shift_date: shift.shift_date,
+      start_time: shift.start_time,
+      end_time: shift.end_time,
+      notes: shift.notes ?? null,
+      is_blocked: shift.is_blocked ?? false,
+      schedule_state: 'draft',
+      job: shift.job ?? null,
+      location_id: shift.location_id ?? null,
+    }));
+
+    const { error: insertError } = await (supabase as any).from('shifts').insert(inserts);
+    if (insertError) {
+      return { seeded: false, insertedCount: 0, skippedCount: 0, sourceCount: publishedShifts.length, error: insertError.message };
+    }
+
+    await get().loadRestaurantData(organizationId);
+    return { seeded: true, insertedCount: inserts.length, skippedCount: 0, sourceCount: publishedShifts.length };
+  },
+
+  copyPreviousDayIntoDraft: async (selectedDate) => {
+    const currentUser = useAuthStore.getState().currentUser;
+    if (!isManagerRole(currentUser?.role)) {
+      return { success: false, error: "You don't have permission to modify schedules." };
+    }
+    const organizationId = useAuthStore.getState().activeRestaurantId;
+    if (!organizationId) {
+      return { success: false, error: 'Organization not selected.' };
+    }
+    const targetDate = toLocalDateString(selectedDate);
+    const prevDate = new Date(selectedDate);
+    prevDate.setDate(prevDate.getDate() - 1);
+    const sourceDate = toLocalDateString(prevDate);
+
+    const result = await apiFetch<{ insertedCount: number; skippedCount: number; sourceCount: number }>(
+      '/api/shifts/copy-day',
+      {
+        method: 'POST',
+        json: {
+          organizationId,
+          sourceDate,
+          targetDate,
+          targetScheduleState: 'draft',
+          sourceScheduleState: 'published',
+        },
+      }
+    );
+
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to copy previous day.' };
+    }
+
+    const insertedCount = Number(result.data?.insertedCount ?? 0);
+    const skippedCount = Number(result.data?.skippedCount ?? 0);
+    const sourceCount = Number(result.data?.sourceCount ?? 0);
+
+    if (sourceCount > 0) {
+      await get().loadRestaurantData(organizationId);
+    }
+
+    return { success: true, insertedCount, skippedCount, sourceCount };
   },
 
   addTimeOffRequest: async (request) => {
@@ -1369,15 +2013,21 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   getOrgBlackoutDays: () =>
     get().blockedDayRequests.filter((req) => req.scope === 'ORG_BLACKOUT'),
 
-  hasBlockedShiftOnDate: (employeeId, date) =>
-    get().blockedDayRequests.some(
-      (req) =>
-        req.scope === 'EMPLOYEE' &&
-        req.userId === employeeId &&
-        req.status === 'APPROVED' &&
-        date >= req.startDate &&
-        date <= req.endDate
-    ) || get().shifts.some((shift) => shift.employeeId === employeeId && shift.date === date && shift.isBlocked),
+  hasBlockedShiftOnDate: (employeeId, date) => {
+      const state = get();
+      const hasBlockedRequest = state.blockedDayRequests.some(
+        (req) =>
+          req.scope === 'EMPLOYEE' &&
+          req.userId === employeeId &&
+          req.status === 'APPROVED' &&
+          date >= req.startDate &&
+          date <= req.endDate
+      );
+      if (hasBlockedRequest) {
+        return true;
+      }
+      return false;
+    },
 
   hasOrgBlackoutOnDate: (date) =>
     get().blockedDayRequests.some(
@@ -1510,6 +2160,16 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   })),
 
   goToPrevious: () => set((state) => {
+    if (state.viewMode === 'week') {
+      const weekStartDay = state.scheduleViewSettings?.weekStartDay ?? 'sunday';
+      const weekStart = getWeekStart(state.selectedDate, weekStartDay);
+      weekStart.setDate(weekStart.getDate() - 7);
+      return {
+        selectedDate: weekStart,
+        dateNavDirection: 'prev',
+        dateNavKey: state.dateNavKey + 1,
+      };
+    }
     const newDate = new Date(state.selectedDate);
     newDate.setDate(newDate.getDate() - 1);
     return {
@@ -1520,6 +2180,16 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   }),
 
   goToNext: () => set((state) => {
+    if (state.viewMode === 'week') {
+      const weekStartDay = state.scheduleViewSettings?.weekStartDay ?? 'sunday';
+      const weekStart = getWeekStart(state.selectedDate, weekStartDay);
+      weekStart.setDate(weekStart.getDate() + 7);
+      return {
+        selectedDate: weekStart,
+        dateNavDirection: 'next',
+        dateNavKey: state.dateNavKey + 1,
+      };
+    }
     const newDate = new Date(state.selectedDate);
     newDate.setDate(newDate.getDate() + 1);
     return {
@@ -1559,7 +2229,49 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   getShiftsForRestaurant: (restaurantId) => {
     const state = get();
     if (!restaurantId) return [];
-    return state.shifts.filter((s) => s.restaurantId === restaurantId);
+    const scoped = state.shifts.filter((s) => s.restaurantId === restaurantId);
+    const authState = useAuthStore.getState();
+    const currentRole = getEffectiveRole(
+      restaurantId,
+      authState.accessibleRestaurants,
+      authState.currentUser?.role
+    );
+    if (currentRole === 'EMPLOYEE') {
+      return scoped.filter((shift) => shift.scheduleState === 'published');
+    }
+
+    const result: Array<Shift | null> = [];
+    const indexByKey = new Map<string, number>();
+    scoped.forEach((shift) => {
+      if (shift.scheduleState !== 'published') return;
+      const key = buildShiftOverlayKey(shift);
+      if (indexByKey.has(key)) return;
+      indexByKey.set(key, result.length);
+      result.push(shift);
+    });
+
+    scoped.forEach((shift) => {
+      if (shift.scheduleState !== 'draft') return;
+      const key = buildShiftOverlayKey(shift);
+      if (shift.isBlocked) {
+        const existingIndex = indexByKey.get(key);
+        const existing = existingIndex !== undefined ? result[existingIndex] : undefined;
+        if (existing && existing.scheduleState !== 'draft') {
+          result[existingIndex] = null;
+          indexByKey.delete(key);
+        }
+        return;
+      }
+      const existingIndex = indexByKey.get(key);
+      if (existingIndex !== undefined) {
+        result[existingIndex] = shift;
+        return;
+      }
+      result.push(shift);
+      indexByKey.set(key, result.length - 1);
+    });
+
+    return result.filter((shift): shift is Shift => Boolean(shift));
   },
 
   getPendingTimeOffRequests: () => get().timeOffRequests.filter((r) => r.status === 'PENDING'),
@@ -1584,10 +2296,10 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           const openHour = parseTimeToDecimal(hoursRow.openTime);
           const closeHour = parseTimeToDecimal(hoursRow.closeTime);
           if (closeHour > openHour) {
-            // Add padding of 1 hour before and after
+            // Add padding of 3 hours before and after
             return {
-              startHour: Math.max(0, Math.floor(openHour) - 1),
-              endHour: Math.min(24, Math.ceil(closeHour) + 1),
+              startHour: Math.max(0, Math.floor(openHour) - 3),
+              endHour: Math.min(24, Math.ceil(closeHour) + 3),
             };
           }
         }
@@ -1599,8 +2311,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           const closeHour = parseTimeToDecimal(anyHours.closeTime);
           if (closeHour > openHour) {
             return {
-              startHour: Math.max(0, Math.floor(openHour) - 1),
-              endHour: Math.min(24, Math.ceil(closeHour) + 1),
+              startHour: Math.max(0, Math.floor(openHour) - 3),
+              endHour: Math.min(24, Math.ceil(closeHour) + 3),
             };
           }
         }
