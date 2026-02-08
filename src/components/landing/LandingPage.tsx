@@ -814,7 +814,7 @@ export function LandingPage() {
                 </tr>
               </thead>
               <tbody>
-                <CompRow label="Monthly Price" values={['$0 – $49', '$150-180', '$70-150', '$50-100']} />
+                <CompRow label="Monthly Price" values={['$0 – $19', '$150-180', '$70-150', '$50-100']} />
                 <CompRow label="Free Tier" values={[true, false, true, false]} />
                 <CompRow label="Shift Marketplace" values={[true, false, false, false]} />
                 <CompRow label="Mobile App Quality" values={['Excellent', 'Poor', 'Good', 'Average']} />
@@ -876,7 +876,7 @@ export function LandingPage() {
               </div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-zinc-100 mb-1">Pro</h3>
               <div className="flex items-baseline gap-1 mb-4">
-                <span className="text-4xl font-bold text-gray-900 dark:text-zinc-100">$49</span>
+                <span className="text-4xl font-bold text-gray-900 dark:text-zinc-100">$19</span>
                 <span className="text-gray-400 dark:text-zinc-500">/month</span>
               </div>
               <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">For growing restaurants that need the full power.</p>
