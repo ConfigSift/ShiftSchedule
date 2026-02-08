@@ -11,7 +11,6 @@ export function MonthView() {
   const {
     selectedDate,
     viewMode,
-    goToToday,
     selectedEmployeeIds,
     getShiftsForRestaurant,
     getEmployeesForRestaurant,
@@ -28,9 +27,6 @@ export function MonthView() {
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const role = getUserRole(currentUser?.role);
   const isEmployee = role === 'EMPLOYEE';
-  const isToday = isSameDay(selectedDate, new Date());
-
-  const handleToday = useCallback(() => goToToday(), [goToToday]);
   const handlePrevious = useCallback(() => {
     const next = new Date(selectedDate);
     next.setMonth(next.getMonth() - 1);
@@ -149,13 +145,16 @@ export function MonthView() {
         viewMode="month"
         selectedDate={selectedDate}
         weekStartDay={weekStartDay}
-        isToday={isToday}
-        onToday={handleToday}
         onPrev={handlePrevious}
         onNext={handleNext}
         onPrevJump={handlePrevJump}
         onNextJump={handleNextJump}
         onSelectDate={handleSelectDate}
+        onViewModeChange={setViewMode}
+        showPublish={false}
+        publishDayEnabled={false}
+        publishWeekEnabled={false}
+        publishDisabledReason="No drafts to publish."
       />
 
       <div className="flex-1 overflow-auto p-2 sm:p-4">

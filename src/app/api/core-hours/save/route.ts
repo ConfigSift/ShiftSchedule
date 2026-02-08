@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
   const authUserId = authData.user?.id;
   if (!authUserId) {
     if (process.env.NODE_ENV !== 'production') {
-      console.error('[business-hours] auth failed', {
+      console.error('[core-hours] auth failed', {
         authUserId: null,
         organizationId: payload.organizationId,
         hasMembership: false,
@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
   const hasMembership = Boolean(membershipRow);
   if (membershipError || !membershipRow) {
     if (process.env.NODE_ENV !== 'production') {
-      console.error('[business-hours] membership failed', {
+      console.error('[core-hours] membership failed', {
         authUserId,
         organizationId: payload.organizationId,
         hasMembership,
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
   const role = String(membershipRow.role ?? '').toLowerCase();
   if (!['admin', 'manager'].includes(role)) {
     if (process.env.NODE_ENV !== 'production') {
-      console.error('[business-hours] role forbidden', {
+      console.error('[core-hours] role forbidden', {
         authUserId,
         organizationId: payload.organizationId,
         hasMembership,
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
   }
 
-  await supabaseAdmin.from('business_hour_ranges').delete().eq('organization_id', payload.organizationId);
+  await supabaseAdmin.from('core_hour_ranges').delete().eq('organization_id', payload.organizationId);
 
   const rows = payload.hours
     .filter((hour) => hour.openTime && hour.closeTime)
@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
     }));
 
   const { data, error } = await supabaseAdmin
-    .from('business_hour_ranges')
+    .from('core_hour_ranges')
     .insert(rows)
     .select('*');
 

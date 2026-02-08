@@ -3,9 +3,9 @@
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { SECTIONS } from '../types';
-import { formatHourShort, formatHour, shiftsOverlap } from '../utils/timeUtils';
+import { formatHourShort, formatHour, shiftsOverlap, getWeekRange } from '../utils/timeUtils';
 import { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } from 'react';
-import { Palmtree, ArrowLeftRight, UploadCloud } from 'lucide-react';
+import { Palmtree, ArrowLeftRight } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { getJobColorClasses } from '../lib/jobColors';
 import { ScheduleToolbar } from './ScheduleToolbar';
@@ -13,15 +13,11 @@ import { ScheduleToolbar } from './ScheduleToolbar';
 // Compact timeline sizing - pixels per hour
 const DEFAULT_PX_PER_HOUR = 48;
 
-// LocalStorage key for continuous days toggle
-const CONTINUOUS_DAYS_KEY = 'schedule_continuous_days';
-
-// Continuous mode: 3-day window (72 hours)
-const CONTINUOUS_DAYS_COUNT = 3;
+// Week view: 7-day window (168 hours)
+const CONTINUOUS_DAYS_COUNT = 7;
 const CONTINUOUS_TOTAL_HOURS = 24 * CONTINUOUS_DAYS_COUNT;
-// Continuous mode bounds are locked to ±1 day from the anchor date.
-const CONTINUOUS_ANCHOR_RANGE_DAYS = 1;
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 const GRID_BACKGROUND_SELECTOR = '[data-grid-background="true"]';
 const NON_GRAB_SCROLL_SELECTOR = [
@@ -53,12 +49,6 @@ function getMidnight(date: Date): Date {
   return d;
 }
 
-function endOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
-
 // Helper to add days to a date
 function addDays(date: Date, days: number): Date {
   const d = new Date(date);
@@ -75,6 +65,21 @@ function formatDayLabel(date: Date): string {
   });
 }
 
+function formatPublishDayLabel(date: Date): string {
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatPublishWeekLabel(start: Date, end: Date): string {
+  const startMonthDay = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endMonthDay = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const startYear = start.getFullYear();
+  const endYear = end.getFullYear();
+  if (startYear !== endYear) {
+    return `${startMonthDay}, ${startYear} – ${endMonthDay}, ${endYear}`;
+  }
+  return `${startMonthDay} – ${endMonthDay}, ${startYear}`;
+}
+
 function dateFromDateString(dateString: string): Date {
   const [year, month, day] = dateString.split('-').map(Number);
   return new Date(year, (month ?? 1) - 1, day ?? 1);
@@ -84,6 +89,9 @@ export function Timeline() {
   const {
     selectedDate,
     setSelectedDate,
+    setViewMode,
+    continuousDays,
+    setContinuousDays,
     getFilteredEmployeesForRestaurant,
     getEmployeesForRestaurant,
     getShiftsForRestaurant,
@@ -178,14 +186,7 @@ export function Timeline() {
   const activePointerIdRef = useRef<number | null>(null);
   const scrollToDateRef = useRef<(date: Date, options?: { reanchor?: boolean }) => void>(() => {});
 
-  // Continuous Days state
-  const [continuousDays, setContinuousDays] = useState(false);
-  // Window start date for continuous mode (first of 3 days)
-  const [windowStartDate, setWindowStartDate] = useState<Date>(() => addDays(getMidnight(new Date()), -1));
-  const continuousAnchorDateRef = useRef<Date | null>(null);
-
-  // Displayed date for the header (based on scroll center in continuous mode)
-  const [displayedDate, setDisplayedDate] = useState<Date>(selectedDate);
+  // Timeline range state (day vs week)
 
   const lanePointerRef = useRef<{ x: number; y: number; employeeId: string } | null>(null);
   const lastDragAtRef = useRef(0);
@@ -201,12 +202,21 @@ export function Timeline() {
       DRAFT MODE
     </span>
   );
+  const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+  const weekRange = useMemo(() => getWeekRange(selectedDate, weekStartDay), [selectedDate, weekStartDay]);
+  const windowStartDate = continuousDays ? weekRange.start : selectedDate;
   const selectedDateYmd = useMemo(() => toDateString(selectedDate), [selectedDate]);
-  const rangeStartDate = continuousDays ? windowStartDate : selectedDate;
-  const rangeEndDate = continuousDays ? addDays(windowStartDate, CONTINUOUS_DAYS_COUNT - 1) : selectedDate;
+  const rangeStartDate = continuousDays ? weekRange.start : selectedDate;
+  const rangeEndDate = continuousDays ? weekRange.end : selectedDate;
   const rangeStartYmd = useMemo(() => toDateString(rangeStartDate), [rangeStartDate]);
   const rangeEndYmd = useMemo(() => toDateString(rangeEndDate), [rangeEndDate]);
-  const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+  const weekStartYmd = useMemo(() => toDateString(weekRange.start), [weekRange.start]);
+  const weekEndYmd = useMemo(() => toDateString(weekRange.end), [weekRange.end]);
+  const publishDayLabel = useMemo(() => formatPublishDayLabel(selectedDate), [selectedDate]);
+  const publishWeekLabel = useMemo(
+    () => formatPublishWeekLabel(weekRange.start, weekRange.end),
+    [weekRange.end, weekRange.start]
+  );
   const canEditSelectedDate = isManager && isEditableDate(selectedDateYmd);
   const hasDraftOnSelectedDate = useMemo(
     () =>
@@ -229,16 +239,33 @@ export function Timeline() {
       ),
     [activeRestaurantId, rangeEndYmd, rangeStartYmd, shifts]
   );
-  const publishStatusLabel = hasDraftInRange ? 'DRAFT' : 'PUBLISHED';
-  const publishStatusTone = hasDraftInRange
-    ? 'bg-amber-500/15 text-amber-500 border-amber-500/40'
-    : 'bg-emerald-500/15 text-emerald-500 border-emerald-500/40';
-  const statusBadge = (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border shrink-0 ${publishStatusTone}`}>
-      {publishStatusLabel}
-    </span>
+  const hasDraftInWeek = useMemo(
+    () =>
+      shifts.some(
+        (shift) =>
+          shift.restaurantId === activeRestaurantId &&
+          shift.scheduleState === 'draft' &&
+          shift.date >= weekStartYmd &&
+          shift.date <= weekEndYmd
+      ),
+    [activeRestaurantId, shifts, weekEndYmd, weekStartYmd]
   );
-  const showPublishDay = isManager && hasDraftOnSelectedDate;
+  const publishStatusLabel = hasDraftInRange ? 'DRAFT' : 'PUBLISHED';
+  const statusTone = hasDraftInRange ? 'bg-amber-500 text-zinc-900' : 'bg-emerald-500 text-white';
+  const isPastSelectedDate = selectedDateYmd < todayYmd;
+  const isPastWeek = weekEndYmd < todayYmd;
+  const publishDayEnabled = isManager && hasDraftOnSelectedDate && !isPastSelectedDate;
+  const publishWeekEnabled = isManager && hasDraftInWeek && !isPastWeek;
+  const publishDayDisabledReason = isPastSelectedDate
+    ? "Past schedules can't be published."
+    : !hasDraftOnSelectedDate
+    ? 'No draft changes'
+    : undefined;
+  const publishWeekDisabledReason = isPastWeek
+    ? "Past schedules can't be published."
+    : !hasDraftInWeek
+    ? 'No draft changes'
+    : undefined;
   const handlePublishDay = useCallback(async () => {
     if (!activeRestaurantId) {
       showToast('Select a restaurant first.', 'error');
@@ -253,8 +280,24 @@ export function Timeline() {
       return;
     }
     await loadRestaurantData(activeRestaurantId);
-    showToast('Published day.', 'success');
-  }, [activeRestaurantId, loadRestaurantData, publishDraftRange, selectedDateYmd, showToast]);
+    showToast(`Published ${publishDayLabel}.`, 'success');
+  }, [activeRestaurantId, loadRestaurantData, publishDayLabel, publishDraftRange, selectedDateYmd, showToast]);
+  const handlePublishWeek = useCallback(async () => {
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first.', 'error');
+      return;
+    }
+    const result = await publishDraftRange({
+      startDate: weekStartYmd,
+      endDate: weekEndYmd,
+    });
+    if (!result.success) {
+      showToast(result.error || 'Unable to publish week.', 'error');
+      return;
+    }
+    await loadRestaurantData(activeRestaurantId);
+    showToast(`Published week ${publishWeekLabel}.`, 'success');
+  }, [activeRestaurantId, loadRestaurantData, publishDraftRange, publishWeekLabel, showToast, weekEndYmd, weekStartYmd]);
   const handleCopyPreviousDayIntoDraft = useCallback(async () => {
     if (!activeRestaurantId) {
       showToast('Select a restaurant first.', 'error');
@@ -298,8 +341,6 @@ export function Timeline() {
 
   const groupedRows = useMemo(() => {
     if (filteredEmployees.length === 0) return [];
-    const rangeStartDate = continuousDays ? windowStartDate : selectedDate;
-    const rangeEndDate = continuousDays ? addDays(windowStartDate, CONTINUOUS_DAYS_COUNT - 1) : selectedDate;
     const rangeStart = toDateString(rangeStartDate);
     const rangeEnd = toDateString(rangeEndDate);
     const jobIndex = (job: string) => {
@@ -366,26 +407,7 @@ export function Timeline() {
     }
 
     return rows;
-  }, [filteredEmployees, scopedShifts, jobOrder, selectedDate, continuousDays, windowStartDate]);
-
-  // Load continuous days preference from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem(CONTINUOUS_DAYS_KEY);
-    if (saved === 'true') {
-      setContinuousDays(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (continuousDays) {
-      if (!continuousAnchorDateRef.current) {
-        continuousAnchorDateRef.current = getMidnight(selectedDate);
-      }
-    } else if (continuousAnchorDateRef.current) {
-      continuousAnchorDateRef.current = null;
-    }
-  }, [continuousDays, selectedDate]);
-
+  }, [filteredEmployees, scopedShifts, jobOrder, rangeStartDate, rangeEndDate]);
 
   // Fit timeline grid width to available space
   useLayoutEffect(() => {
@@ -422,20 +444,6 @@ export function Timeline() {
       observer.disconnect();
     };
   }, [continuousDays]);
-
-  // Save continuous days preference to localStorage
-  const toggleContinuousDays = useCallback(() => {
-    setContinuousDays((prev) => {
-      const next = !prev;
-      if (next) {
-        continuousAnchorDateRef.current = getMidnight(selectedDate);
-      } else {
-        continuousAnchorDateRef.current = null;
-      }
-      localStorage.setItem(CONTINUOUS_DAYS_KEY, String(next));
-      return next;
-    });
-  }, [selectedDate]);
 
   // Single-day mode values
   const dayOfWeek = selectedDate.getDay();
@@ -488,12 +496,19 @@ export function Timeline() {
 
   const getBusinessHoursForDate = useCallback((date: Date) => {
     const dow = date.getDay();
-    const hoursRow = businessHours.find((row) => row.dayOfWeek === dow && row.enabled);
-    if (!hoursRow) return null;
-    const openHour = parseTimeToDecimal(hoursRow.openTime);
-    const closeHour = parseTimeToDecimal(hoursRow.closeTime);
-    if (!closeHour || closeHour <= openHour) return null;
-    return { openHour, closeHour };
+    const dayRanges = businessHours
+      .filter((row) => row.dayOfWeek === dow && row.enabled && row.openTime && row.closeTime)
+      .map((row) => {
+        const openHour = parseTimeToDecimal(row.openTime);
+        const closeHour = parseTimeToDecimal(row.closeTime);
+        return closeHour > openHour ? { openHour, closeHour } : null;
+      })
+      .filter((range): range is { openHour: number; closeHour: number } => Boolean(range));
+    if (dayRanges.length === 0) return null;
+    dayRanges.sort((a, b) => a.openHour - b.openHour);
+    const minOpen = Math.min(...dayRanges.map((r) => r.openHour));
+    const maxClose = Math.max(...dayRanges.map((r) => r.closeHour));
+    return { openHour: minOpen, closeHour: maxClose, ranges: dayRanges };
   }, [businessHours]);
 
   const getBusinessHoursForDateString = useCallback(
@@ -518,24 +533,13 @@ export function Timeline() {
     return getBusinessHoursForDate(selectedDate);
   }, [getBusinessHoursForDate, selectedDate]);
 
-  const anchorDate = useMemo(() => {
-    return continuousAnchorDateRef.current ?? getMidnight(selectedDate);
-  }, [selectedDate, continuousDays]);
-
-  const minAllowedDate = useMemo(() => {
-    return getMidnight(addDays(anchorDate, -CONTINUOUS_ANCHOR_RANGE_DAYS));
-  }, [anchorDate]);
-
-  const maxAllowedDate = useMemo(() => {
-    return endOfDay(addDays(anchorDate, CONTINUOUS_ANCHOR_RANGE_DAYS));
-  }, [anchorDate]);
-
-  const clampDateToContinuousBounds = useCallback((date: Date) => {
-    const time = date.getTime();
-    if (time < minAllowedDate.getTime()) return new Date(minAllowedDate);
-    if (time > maxAllowedDate.getTime()) return new Date(maxAllowedDate);
-    return date;
-  }, [minAllowedDate, maxAllowedDate]);
+  const isWithinBusinessHours = useCallback(
+    (bh: { ranges: Array<{ openHour: number; closeHour: number }> } | null, startHour: number, endHour: number) => {
+      if (!bh) return false;
+      return bh.ranges.some((range) => startHour >= range.openHour && endHour <= range.closeHour);
+    },
+    []
+  );
 
   // ─────────────────────────────────────────────────────────────────
   // Position helpers
@@ -591,35 +595,29 @@ export function Timeline() {
   // ─────────────────────────────────────────────────────────────────
 
 
-  // Recenter scroll to a specific date in continuous mode.
+  // Recenter scroll to a specific date in week view.
   // Keep this above any hooks that call it to avoid TDZ in dependency arrays.
-  // When reanchor=true, bypass clamping (used for Today button to avoid stale closure issue).
-  const scrollToDate = useCallback((targetDate: Date, options?: { reanchor?: boolean }) => {
+  const scrollToDate = useCallback((targetDate: Date, _options?: { reanchor?: boolean }) => {
     if (!continuousDays || !gridScrollRef.current) return;
     const normalizedTarget = getMidnight(targetDate);
-    // When reanchoring, use the target directly (no clamping to old anchor bounds)
-    const effectiveTarget = options?.reanchor ? normalizedTarget : clampDateToContinuousBounds(normalizedTarget);
-    // Reset window around target date (yesterday/target/tomorrow)
-    const nextWindowStart = addDays(effectiveTarget, -1);
-    setWindowStartDate(nextWindowStart);
-    setDisplayedDate(effectiveTarget);
-    // Use double-RAF to ensure DOM has updated with new windowStartDate before scrolling
+    const weekStart = getWeekRange(normalizedTarget, weekStartDay).start;
+    const dayIndex = Math.floor((normalizedTarget.getTime() - weekStart.getTime()) / DAY_MS);
+    const clampedIndex = Math.max(0, Math.min(CONTINUOUS_DAYS_COUNT - 1, dayIndex));
+
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (gridScrollRef.current) {
           const el = gridScrollRef.current;
-          // Target is day index 1 in the new window (yesterday=0, target=1, tomorrow=2)
-          // Center around business hours start or noon
-          const targetDayBusinessHours = getBusinessHoursForDate(effectiveTarget);
+          const targetDayBusinessHours = getBusinessHoursForDate(normalizedTarget);
           const centerHour = targetDayBusinessHours ? targetDayBusinessHours.openHour + 2 : 12;
-          const hoursFromWindowStart = 24 + centerHour; // day 1 (24h offset) + center hour
+          const hoursFromWindowStart = clampedIndex * 24 + centerHour;
           const desired = hoursFromWindowStart * pxPerHour - el.clientWidth / 2;
           const maxScroll = el.scrollWidth - el.clientWidth;
           el.scrollLeft = Math.max(0, Math.min(maxScroll, desired));
         }
       });
     });
-  }, [continuousDays, clampDateToContinuousBounds, getBusinessHoursForDate, pxPerHour]);
+  }, [continuousDays, getBusinessHoursForDate, pxPerHour, weekStartDay]);
 
   useEffect(() => {
     scrollToDateRef.current = scrollToDate;
@@ -634,57 +632,24 @@ export function Timeline() {
     prevContinuousDaysRef.current = continuousDays;
     // Only initialize when toggling from OFF to ON
     if (wasOff && isNowOn) {
-      continuousAnchorDateRef.current = getMidnight(selectedDate);
-      scrollToDateRef.current(selectedDate, { reanchor: true });
+      scrollToDateRef.current(selectedDate);
     }
   }, [continuousDays, selectedDate]);
 
   const handleGoToDate = useCallback((targetDate: Date, options?: { reanchor?: boolean }) => {
     const normalized = getMidnight(targetDate);
     if (continuousDays) {
-      if (options?.reanchor) {
-        // Update anchor BEFORE scrolling so the new window is centered on the target
-        continuousAnchorDateRef.current = normalized;
-      }
       setSelectedDate(normalized);
-      // Pass reanchor option to scrollToDate to bypass stale clamp bounds
       scrollToDateRef.current(normalized, { reanchor: options?.reanchor });
       return;
     }
     setSelectedDate(normalized);
   }, [continuousDays, setSelectedDate]);
 
-  const handleToday = useCallback(() => {
-    handleGoToDate(new Date(), { reanchor: true });
-  }, [handleGoToDate]);
-
   // ─────────────────────────────────────────────────────────────────
   // Continuous mode: Recycling (infinite scroll feel)
   // ─────────────────────────────────────────────────────────────────
   const checkAndRecycle = useCallback(() => {}, []);
-
-  const displayRafRef = useRef<number | null>(null);
-
-  // Update displayed date based on scroll center
-  const updateDisplayedDateFromScroll = useCallback(() => {
-    if (!continuousDays || !gridScrollRef.current) return;
-    if (displayRafRef.current !== null) return;
-    displayRafRef.current = requestAnimationFrame(() => {
-      displayRafRef.current = null;
-      if (!gridScrollRef.current) return;
-      const el = gridScrollRef.current;
-      const scrollCenter = el.scrollLeft + el.clientWidth / 2;
-      const hoursFromStart = scrollCenter / pxPerHour;
-      const dayIndex = Math.floor(hoursFromStart / 24);
-
-      if (dayIndex >= 0 && dayIndex < CONTINUOUS_DAYS_COUNT) {
-        const centerDate = addDays(windowStartDate, dayIndex);
-        if (centerDate.toDateString() !== displayedDate.toDateString()) {
-          setDisplayedDate(centerDate);
-        }
-      }
-    });
-  }, [continuousDays, windowStartDate, displayedDate, pxPerHour]);
 
   // ─────────────────────────────────────────────────────────────────
   // Shift interaction helpers
@@ -826,7 +791,7 @@ export function Timeline() {
       ? getBusinessHoursForDateString(dateToUse)
       : businessHoursForDay;
     if (!businessHours) return;
-    if (hour < businessHours.openHour || hour + 1 > businessHours.closeHour) return;
+    if (!isWithinBusinessHours(businessHours, hour, hour + 1)) return;
     const defaultEnd = Math.round((hour + 1) * 4) / 4;
 
     const hasOverlap = scopedShifts.some(
@@ -883,7 +848,7 @@ export function Timeline() {
         return;
       }
       const startHour = getCenteredStartHour(info.hourInDay, bh.openHour, bh.closeHour);
-      const inside = startHour >= bh.openHour && startHour + 1 <= bh.closeHour;
+      const inside = isWithinBusinessHours(bh, startHour, startHour + 1);
       if (!inside) {
         setHoveredAddSlot(null);
         return;
@@ -915,7 +880,7 @@ export function Timeline() {
       setHoveredAddSlot(null);
       return;
     }
-    const inside = startHour >= businessHoursForDay.openHour && startHour + 1 <= businessHoursForDay.closeHour;
+    const inside = isWithinBusinessHours(businessHoursForDay, startHour, startHour + 1);
     if (!inside) {
       setHoveredAddSlot(null);
       return;
@@ -991,28 +956,35 @@ export function Timeline() {
     handleEmptyClick(employeeId, e, targetDate);
   };
 
-  const isWithinBusinessHours = useCallback((clientX: number) => {
+  const isWithinBusinessHoursAtX = useCallback((clientX: number) => {
     if (continuousDays) {
       const info = getHourAndDateFromClientX(clientX);
       // If we can't determine position, allow grab scroll (return false = not in business hours)
       if (!info) return false;
       const bh = getBusinessHoursForDate(dateFromDateString(info.date));
       if (!bh) return false;
-      return info.hour >= bh.openHour && info.hour <= bh.closeHour;
+      return isWithinBusinessHours(bh, info.hour, info.hour);
     }
     if (!businessHoursForDay) return false;
     const hour = getHourFromClientX(clientX);
-    return hour >= businessHoursForDay.openHour && hour <= businessHoursForDay.closeHour;
-  }, [continuousDays, getHourAndDateFromClientX, getBusinessHoursForDate, businessHoursForDay, getHourFromClientX]);
+    return isWithinBusinessHours(businessHoursForDay, hour, hour);
+  }, [
+    continuousDays,
+    getHourAndDateFromClientX,
+    getBusinessHoursForDate,
+    businessHoursForDay,
+    getHourFromClientX,
+    isWithinBusinessHours,
+  ]);
 
   const shouldStartGrabScroll = useCallback((target: EventTarget | null, clientX: number) => {
     const element = target as HTMLElement | null;
     if (!element) return false;
     if (!element.closest(GRID_BACKGROUND_SELECTOR)) return false;
     if (element.closest(NON_GRAB_SCROLL_SELECTOR)) return false;
-    if (isWithinBusinessHours(clientX)) return false;
+    if (isWithinBusinessHoursAtX(clientX)) return false;
     return true;
-  }, [isWithinBusinessHours]);
+  }, [isWithinBusinessHoursAtX]);
 
   // ─────────────────────────────────────────────────────────────────
   // Drag-to-scroll handlers
@@ -1045,10 +1017,7 @@ export function Timeline() {
     }
 
     // In continuous mode, check for recycling
-    if (continuousDays) {
-      updateDisplayedDateFromScroll();
-    }
-  }, [isDragScrolling, continuousDays, updateDisplayedDateFromScroll]);
+  }, [isDragScrolling, continuousDays]);
 
   const handleGridDragEnd = useCallback(() => {
     setIsDragScrolling(false);
@@ -1569,10 +1538,7 @@ export function Timeline() {
         });
       }
     }
-    if (continuousDays) {
-      updateDisplayedDateFromScroll();
-    }
-  }, [continuousDays, updateDisplayedDateFromScroll]);
+  }, []);
 
   const handleHeaderScroll = useCallback(() => {
     if (headerScrollRef.current && gridScrollRef.current) {
@@ -1710,12 +1676,13 @@ export function Timeline() {
                     </div>
 
                     {/* Business hours highlight */}
-                    {businessHoursForDay && (
+                    {businessHoursForDay?.ranges.map((range, idx) => (
                       <div
+                        key={`bh-${range.openHour}-${range.closeHour}-${idx}`}
                         className="absolute top-0.5 bottom-0.5 rounded bg-emerald-500/5 border border-emerald-500/20"
-                        style={getShiftPositionForRange(businessHoursForDay.openHour, businessHoursForDay.closeHour)}
+                        style={getShiftPositionForRange(range.openHour, range.closeHour)}
                       />
-                    )}
+                    ))}
 
                     {/* Current time indicator */}
                     {currentTimePosition !== null && (
@@ -2043,15 +2010,17 @@ export function Timeline() {
                     {continuousDaysData.map((dayData, dayIdx) => {
                     const bh = getBusinessHoursForDate(dayData.date);
                     if (!bh) return null;
-                    const leftPx = (dayIdx * 24 + bh.openHour) * pxPerHour;
-                    const widthPx = (bh.closeHour - bh.openHour) * pxPerHour;
-                    return (
-                      <div
-                        key={`bh-${dayData.dateString}`}
-                        className="absolute top-0.5 bottom-0.5 rounded bg-emerald-500/5 border border-emerald-500/20"
-                        style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
-                      />
-                    );
+                    return bh.ranges.map((range, rangeIdx) => {
+                      const leftPx = (dayIdx * 24 + range.openHour) * pxPerHour;
+                      const widthPx = (range.closeHour - range.openHour) * pxPerHour;
+                      return (
+                        <div
+                          key={`bh-${dayData.dateString}-${rangeIdx}`}
+                          className="absolute top-0.5 bottom-0.5 rounded bg-emerald-500/5 border border-emerald-500/20"
+                          style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
+                        />
+                      );
+                    });
                     })}
 
                     {/* Current time indicator */}
@@ -2295,33 +2264,34 @@ export function Timeline() {
   // ─────────────────────────────────────────────────────────────────
   // Main render
   // ─────────────────────────────────────────────────────────────────
-  const continuousButtonLabel = continuousDays ? 'Continuous: ON' : 'Continuous: OFF';
-  const continuousButtonClasses = continuousDays
-    ? 'bg-amber-500 text-zinc-900 hover:bg-amber-400'
-    : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary';
-  const rightActions = (
-    <>
-      {showPublishDay ? (
-        <button
-          type="button"
-          onClick={handlePublishDay}
-          className="w-[140px] h-[40px] flex items-center justify-center gap-1.5 rounded-lg bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 transition-colors text-xs font-semibold"
-        >
-          <UploadCloud className="w-4 h-4" />
-          <span>Publish Day</span>
-        </button>
-      ) : (
-        <div className="w-[140px] h-[40px] invisible" />
-      )}
+  const publishDisabledReason = isManager ? undefined : 'Only managers can publish.';
+  const showContinuousToggle = viewMode === 'day';
+  const rightActions = showContinuousToggle ? (
+    <div className="w-[220px] h-9 rounded-lg border border-theme-primary bg-theme-secondary/80 p-1 grid grid-cols-2 gap-1">
       <button
         type="button"
-        onClick={toggleContinuousDays}
-        className={`w-[160px] h-[40px] rounded-lg text-xs font-semibold transition-colors ${continuousButtonClasses}`}
+        onClick={() => setContinuousDays(false)}
+        className={`h-full rounded-md text-[11px] font-semibold transition-colors ${
+          !continuousDays
+            ? 'bg-amber-500 text-zinc-900'
+            : 'text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
+        }`}
       >
-        {continuousButtonLabel}
+        Single Day
       </button>
-    </>
-  );
+      <button
+        type="button"
+        onClick={() => setContinuousDays(true)}
+        className={`h-full rounded-md text-[11px] font-semibold transition-colors ${
+          continuousDays
+            ? 'bg-amber-500 text-zinc-900'
+            : 'text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
+        }`}
+      >
+        Continuous
+      </button>
+    </div>
+  ) : undefined;
 
   return (
     <div
@@ -2329,29 +2299,33 @@ export function Timeline() {
       className="h-full flex flex-col min-h-0 bg-theme-timeline overflow-hidden relative transition-theme"
     >
       <ScheduleToolbar
-        viewMode="day"
-        selectedDate={continuousDays ? displayedDate : selectedDate}
+        viewMode={viewMode}
+        selectedDate={selectedDate}
         weekStartDay={weekStartDay}
-        isToday={isToday}
-        onToday={handleToday}
         onPrev={() => {
-          const baseDate = continuousDays ? displayedDate : selectedDate;
-          handleGoToDate(addDays(baseDate, -1));
+          handleGoToDate(addDays(selectedDate, -1), { reanchor: true });
         }}
         onNext={() => {
-          const baseDate = continuousDays ? displayedDate : selectedDate;
-          handleGoToDate(addDays(baseDate, 1));
+          handleGoToDate(addDays(selectedDate, 1), { reanchor: true });
         }}
         onPrevJump={() => {
-          const baseDate = continuousDays ? displayedDate : selectedDate;
-          handleGoToDate(addDays(baseDate, -7), { reanchor: true });
+          handleGoToDate(addDays(selectedDate, -7), { reanchor: true });
         }}
         onNextJump={() => {
-          const baseDate = continuousDays ? displayedDate : selectedDate;
-          handleGoToDate(addDays(baseDate, 7), { reanchor: true });
+          handleGoToDate(addDays(selectedDate, 7), { reanchor: true });
         }}
         onSelectDate={(date) => handleGoToDate(date, { reanchor: true })}
+        onViewModeChange={setViewMode}
         rightActions={rightActions}
+        rightActionsWidthClass="w-[240px]"
+        showPublish={isManager}
+        publishDayEnabled={publishDayEnabled}
+        publishWeekEnabled={publishWeekEnabled}
+        onPublishDay={handlePublishDay}
+        onPublishWeek={handlePublishWeek}
+        publishDisabledReason={publishDisabledReason}
+        publishDayDisabledReason={publishDayDisabledReason}
+        publishWeekDisabledReason={publishWeekDisabledReason}
       />
 
       {isDraftMode && (
@@ -2386,8 +2360,8 @@ export function Timeline() {
       >
         {/* Sticky header row: names header + hour header */}
         <div className="sticky top-0 z-50 bg-theme-timeline border-b border-theme-primary flex">
-          <div className="w-36 shrink-0 bg-theme-timeline border-r border-theme-primary h-8 flex items-center justify-center">
-            {statusBadge}
+          <div className={`w-36 shrink-0 border-r border-theme-primary h-8 flex items-center justify-center text-[10px] font-semibold uppercase tracking-wide ${statusTone}`}>
+            {publishStatusLabel}
           </div>
           <div className="flex-1 min-w-0 overflow-x-hidden">
             <div

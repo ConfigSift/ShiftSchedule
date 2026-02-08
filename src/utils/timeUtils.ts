@@ -156,6 +156,34 @@ export function shiftsOverlap(
   return start1 < end2 && end1 > start2;
 }
 
+export function timeRangesOverlap(
+  start1: number,
+  end1: number,
+  start2: number,
+  end2: number,
+  options?: { excludeId?: string; compareId?: string }
+): boolean {
+  const excludeId = options?.excludeId != null ? String(options.excludeId) : null;
+  const compareId = options?.compareId != null ? String(options.compareId) : null;
+  // Avoid self-overlap when editing an existing shift.
+  if (excludeId && compareId && excludeId === compareId) return false;
+  const toRanges = (start: number, end: number) => {
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+    if (start === end) return [];
+    if (end > start) {
+      return [{ start, end }];
+    }
+    return [
+      { start, end: 24 },
+      { start: 0, end },
+    ];
+  };
+
+  const ranges1 = toRanges(start1, end1);
+  const ranges2 = toRanges(start2, end2);
+  return ranges1.some((a) => ranges2.some((b) => a.start < b.end && a.end > b.start));
+}
+
 // Generate unique ID
 export function generateId(prefix: string = 'id'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

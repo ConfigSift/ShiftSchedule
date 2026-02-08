@@ -5,7 +5,7 @@ import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
 import { JOB_OPTIONS, SECTIONS, Section } from '../types';
-import { formatHour } from '../utils/timeUtils';
+import { formatHour, timeRangesOverlap } from '../utils/timeUtils';
 import { getUserRole, isManagerRole } from '../utils/role';
 
 export function AddShiftModal() {
@@ -22,6 +22,7 @@ export function AddShiftModal() {
     showToast,
     hasApprovedTimeOff,
     hasBlockedShiftOnDate,
+    shifts,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
@@ -43,6 +44,24 @@ export function AddShiftModal() {
   const [job, setJob] = useState('');
   const [locationId, setLocationId] = useState('');
   const [showAllJobs, setShowAllJobs] = useState(false);
+
+  const overlapWarning = (() => {
+    if (!employeeId || !date || startHour >= endHour) return null;
+    const excludeId = isEditing && modalData?.id ? String(modalData.id) : null;
+    const conflicts = shifts.filter(
+      (shift) =>
+        shift.employeeId === employeeId &&
+        shift.date === date &&
+        !shift.isBlocked
+    );
+    const hasOverlap = conflicts.some((shift) =>
+      timeRangesOverlap(startHour, endHour, shift.startHour, shift.endHour, {
+        excludeId,
+        compareId: String(shift.id),
+      })
+    );
+    return hasOverlap ? 'Shift overlaps with an existing shift for this employee.' : null;
+  })();
 
   useEffect(() => {
     if (isOpen) {
@@ -86,6 +105,11 @@ export function AddShiftModal() {
 
     if (!job) {
       showToast('Please select a job', 'error');
+      return;
+    }
+
+    if (overlapWarning) {
+      showToast(overlapWarning, 'error');
       return;
     }
 
@@ -323,6 +347,9 @@ export function AddShiftModal() {
         </div>
 
         <div className="text-sm text-theme-tertiary">Duration: {endHour - startHour} hours</div>
+        {overlapWarning && (
+          <p className="text-sm text-red-400">{overlapWarning}</p>
+        )}
 
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">Notes (optional)</label>
@@ -356,7 +383,7 @@ export function AddShiftModal() {
           </button>
           <button
             type="submit"
-            disabled={!isManager || (selectedEmployee && !hasEligibleJobs)}
+            disabled={!isManager || (selectedEmployee && !hasEligibleJobs) || Boolean(overlapWarning)}
             className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:scale-105 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isEditing ? 'Save Changes' : 'Add Shift'}

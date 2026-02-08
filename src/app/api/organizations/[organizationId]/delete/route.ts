@@ -142,7 +142,10 @@ export async function POST(request: NextRequest, ctx: { params: Promise<Params> 
     'shifts',
     'organization_invitations',
     'schedule_view_settings',
+    'business_hour_ranges',
+    'core_hour_ranges',
     'business_hours',
+    'core_hours',
     'locations',
     'organization_memberships',
   ];

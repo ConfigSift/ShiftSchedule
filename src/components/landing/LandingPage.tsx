@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, type FormEvent, type ReactNode } from 'react';
+import { useState, useRef, type ReactNode } from 'react';
 import { motion, useInView } from 'framer-motion';
 import { useThemeStore } from '../../store/themeStore';
 import {
@@ -22,8 +22,6 @@ import {
   BarChart3,
   FileCheck,
   Star,
-  ChevronRight,
-  Clock,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -47,22 +45,48 @@ function Section({ children, className = '', id }: { children: ReactNode; classN
 
 /* ─── Schedule data for mockups ─── */
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const DATES = ['Jan 6', 'Jan 7', 'Jan 8', 'Jan 9', 'Jan 10', 'Jan 11', 'Jan 12'];
+const DATES = ['6', '7', '8', '9', '10', '11', '12'];
 
-const SCHEDULE_DATA = [
-  { name: 'Sarah M.', role: 'Server', color: '#3b82f6', shifts: [{ day: 0, time: '11a-7p' }, { day: 2, time: '4p-11p' }, { day: 4, time: '11a-7p' }, { day: 5, time: '4p-11p' }] },
-  { name: 'James K.', role: 'Server', color: '#3b82f6', shifts: [{ day: 1, time: '11a-7p' }, { day: 3, time: '11a-7p' }, { day: 5, time: '11a-7p' }, { day: 6, time: '4p-11p' }] },
-  { name: 'Maria G.', role: 'Cook', color: '#ef4444', shifts: [{ day: 0, time: '6a-2p' }, { day: 1, time: '6a-2p' }, { day: 2, time: '6a-2p' }, { day: 4, time: '6a-2p' }, { day: 5, time: '6a-2p' }] },
-  { name: 'Tyler R.', role: 'Cook', color: '#ef4444', shifts: [{ day: 1, time: '2p-10p' }, { day: 3, time: '2p-10p' }, { day: 5, time: '2p-10p', draft: true }, { day: 6, time: '2p-10p' }] },
-  { name: 'Ashley W.', role: 'Host', color: '#10b981', shifts: [{ day: 0, time: '4p-10p' }, { day: 2, time: '4p-10p' }, { day: 4, time: '4p-10p' }, { day: 6, time: '4p-10p' }] },
-  { name: 'David L.', role: 'Bartender', color: '#f97316', shifts: [{ day: 1, time: '5p-1a' }, { day: 3, time: '5p-1a' }, { day: 5, time: '5p-1a', draft: true }, { day: 6, time: '5p-1a' }] },
-];
+/* Job colors from jobColors.ts */
+const JOB_STYLES: Record<string, { color: string; bg: string }> = {
+  dishwasher: { color: '#06b6d4', bg: 'rgba(6, 182, 212, 0.18)' },
+  busser: { color: '#a855f7', bg: 'rgba(168, 85, 247, 0.18)' },
+  server: { color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.18)' },
+  cook: { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.18)' },
+  host: { color: '#10b981', bg: 'rgba(16, 185, 129, 0.18)' },
+  bartender: { color: '#f97316', bg: 'rgba(249, 115, 22, 0.18)' },
+  manager: { color: '#84cc16', bg: 'rgba(132, 204, 22, 0.18)' },
+};
 
-const ROLE_GROUPS = [
-  { role: 'Server', color: '#3b82f6', count: 2 },
-  { role: 'Cook', color: '#ef4444', count: 2 },
-  { role: 'Host', color: '#10b981', count: 1 },
-  { role: 'Bartender', color: '#f97316', count: 1 },
+/* Section colors for avatars from types/index.ts SECTIONS */
+const AVATAR_STYLES: Record<string, { color: string; bg: string }> = {
+  kitchen: { color: '#f97316', bg: 'rgba(249, 115, 22, 0.15)' },
+  front: { color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.15)' },
+  bar: { color: '#a855f7', bg: 'rgba(168, 85, 247, 0.15)' },
+  management: { color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)' },
+};
+
+type MockShift = { day: number; time: string; job: string; draft?: boolean };
+
+const MOCK_EMPLOYEES: { name: string; initials: string; jobKey: string; job: string; section: string; shifts: MockShift[] }[] = [
+  { name: 'Alex P.', initials: 'AP', jobKey: 'dishwasher', job: 'Dishwasher', section: 'kitchen',
+    shifts: [{ day: 0, time: '8a-4p', job: 'Dishwasher' }, { day: 1, time: '8a-4p', job: 'Dishwasher' }, { day: 3, time: '8a-4p', job: 'Dishwasher' }, { day: 4, time: '8a-4p', job: 'Dishwasher' }, { day: 5, time: '8a-4p', job: 'Dishwasher' }] },
+  { name: 'Jordan T.', initials: 'JT', jobKey: 'busser', job: 'Busser', section: 'front',
+    shifts: [{ day: 0, time: '4p-10p', job: 'Busser' }, { day: 2, time: '4p-10p', job: 'Busser' }, { day: 4, time: '4p-10p', job: 'Busser' }, { day: 6, time: '11a-7p', job: 'Busser' }] },
+  { name: 'Sarah M.', initials: 'SM', jobKey: 'server', job: 'Server', section: 'front',
+    shifts: [{ day: 0, time: '11a-7p', job: 'Server' }, { day: 2, time: '4p-11p', job: 'Server' }, { day: 4, time: '11a-7p', job: 'Server' }, { day: 5, time: '4p-11p', job: 'Server' }] },
+  { name: 'James K.', initials: 'JK', jobKey: 'server', job: 'Server', section: 'front',
+    shifts: [{ day: 1, time: '11a-7p', job: 'Server' }, { day: 3, time: '11a-7p', job: 'Server' }, { day: 5, time: '11a-7p', job: 'Server' }, { day: 6, time: '4p-11p', job: 'Server' }] },
+  { name: 'Maria G.', initials: 'MG', jobKey: 'cook', job: 'Cook', section: 'kitchen',
+    shifts: [{ day: 0, time: '6a-2p', job: 'Cook' }, { day: 1, time: '6a-2p', job: 'Cook' }, { day: 2, time: '6a-2p', job: 'Cook' }, { day: 4, time: '6a-2p', job: 'Cook' }, { day: 5, time: '6a-2p', job: 'Cook', draft: true }] },
+  { name: 'Tyler R.', initials: 'TR', jobKey: 'cook', job: 'Cook', section: 'kitchen',
+    shifts: [{ day: 1, time: '2p-10p', job: 'Cook' }, { day: 3, time: '2p-10p', job: 'Cook' }, { day: 5, time: '2p-10p', job: 'Cook', draft: true }, { day: 6, time: '2p-10p', job: 'Cook' }] },
+  { name: 'Ashley W.', initials: 'AW', jobKey: 'host', job: 'Host', section: 'front',
+    shifts: [{ day: 0, time: '4p-10p', job: 'Host' }, { day: 2, time: '4p-10p', job: 'Host' }, { day: 4, time: '4p-10p', job: 'Host' }, { day: 6, time: '4p-10p', job: 'Host' }] },
+  { name: 'David L.', initials: 'DL', jobKey: 'bartender', job: 'Bartender', section: 'bar',
+    shifts: [{ day: 1, time: '5p-1a', job: 'Bartender' }, { day: 3, time: '5p-1a', job: 'Bartender' }, { day: 5, time: '5p-1a', job: 'Bartender', draft: true }, { day: 6, time: '5p-1a', job: 'Bartender' }] },
+  { name: 'Chris B.', initials: 'CB', jobKey: 'manager', job: 'Manager', section: 'management',
+    shifts: [{ day: 0, time: '9a-5p', job: 'Manager' }, { day: 2, time: '9a-5p', job: 'Manager' }, { day: 4, time: '9a-5p', job: 'Manager' }] },
 ];
 
 /* ─── Desktop Schedule Mockup ─── */
@@ -82,97 +106,146 @@ function DesktopScheduleMockup() {
       </div>
 
       {/* App header */}
-      <div className="bg-white dark:bg-zinc-900 border-b border-gray-200 dark:border-zinc-700 px-4 py-2.5 flex items-center justify-between">
+      <div className="bg-white dark:bg-zinc-900 border-b border-gray-200 dark:border-zinc-700 px-3 py-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
             <Calendar className="w-3.5 h-3.5 text-zinc-900" />
           </div>
-          <span className="font-semibold text-sm text-gray-900 dark:text-zinc-100">ShiftFlow</span>
-          <div className="flex items-center gap-1 ml-3">
-            <span className="px-2 py-1 rounded-md text-xs bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400">Schedule</span>
-            <span className="px-2 py-1 rounded-md text-xs text-gray-400 dark:text-zinc-500">Staff</span>
-            <span className="px-2 py-1 rounded-md text-xs text-gray-400 dark:text-zinc-500">Requests</span>
+          <span className="font-semibold text-sm text-gray-900 dark:text-zinc-100 hidden sm:inline">ShiftFlow</span>
+          <div className="flex items-center gap-1 ml-2">
+            <span className="px-2 py-1 rounded-md text-[10px] bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400 font-medium">Schedule</span>
+            <span className="px-2 py-1 rounded-md text-[10px] text-gray-400 dark:text-zinc-500 hidden sm:inline">Staff</span>
+            <span className="px-2 py-1 rounded-md text-[10px] text-gray-400 dark:text-zinc-500 hidden sm:inline">Requests</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500 text-zinc-900">+ Add Shift</span>
+        <div className="flex items-center gap-1.5">
+          <span className="px-2 py-1 rounded-lg text-[10px] text-gray-500 dark:text-zinc-400 hidden sm:inline">Shift Exchange</span>
+          <span className="px-2.5 py-1 rounded-lg text-[10px] font-medium bg-amber-500 text-zinc-900">+ Add Shift</span>
         </div>
       </div>
 
-      {/* Week header */}
-      <div className="bg-gray-50 dark:bg-zinc-800/50 border-b border-gray-200 dark:border-zinc-700 px-4 py-2 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-gray-900 dark:text-zinc-100">Jan 6 – 12, 2025</span>
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30">DRAFT</span>
+      {/* Schedule toolbar */}
+      <div className="bg-gray-50 dark:bg-zinc-800/50 border-b border-gray-200 dark:border-zinc-700 px-3 py-1.5 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 h-5 rounded flex items-center justify-center text-gray-400 dark:text-zinc-500 bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-[10px]">&#8249;</div>
+          <span className="text-[11px] font-semibold text-gray-900 dark:text-zinc-100 whitespace-nowrap">Jan 6 &ndash; 12, 2025</span>
+          <div className="w-5 h-5 rounded flex items-center justify-center text-gray-400 dark:text-zinc-500 bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-[10px]">&#8250;</div>
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 hidden sm:inline">Today</span>
         </div>
-        <span className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500 text-zinc-900">Publish Week</span>
+        <div className="flex items-center gap-1.5">
+          <div className="flex bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded overflow-hidden">
+            <span className="px-2 py-0.5 text-[9px] text-gray-400 dark:text-zinc-500">Day</span>
+            <span className="px-2 py-0.5 text-[9px] font-medium bg-amber-500 text-zinc-900">Week</span>
+          </div>
+          <span className="px-1.5 py-0.5 rounded-full text-[8px] font-semibold bg-amber-500/20 text-amber-600 dark:text-amber-400">DRAFT</span>
+          <span className="px-2 py-1 rounded-lg text-[9px] font-semibold bg-amber-500 text-zinc-900 hidden sm:inline">Publish Week</span>
+        </div>
       </div>
 
       <div className="flex">
-        {/* Sidebar: role groups */}
+        {/* Sidebar: employee list with colored initials avatars */}
         <div className="w-28 sm:w-36 shrink-0 border-r border-gray-200 dark:border-zinc-700 bg-gray-50/50 dark:bg-zinc-800/30">
-          {/* empty top-left cell */}
-          <div className="h-8 border-b border-gray-200 dark:border-zinc-700" />
-          {SCHEDULE_DATA.map((emp, i) => (
-            <div key={i} className="h-10 flex items-center gap-1.5 px-2 border-b border-gray-100 dark:border-zinc-800">
-              <div className="w-2 h-2 rounded-full shrink-0" style={{ background: emp.color }} />
-              <span className="text-[11px] text-gray-700 dark:text-zinc-300 truncate">{emp.name}</span>
-            </div>
-          ))}
+          {/* Status header cell (matches real app WeekView) */}
+          <div className="h-[34px] border-b border-gray-200 dark:border-zinc-700 flex items-center justify-center bg-amber-500/15">
+            <span className="text-[9px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">Draft</span>
+          </div>
+          {/* Employee rows */}
+          {MOCK_EMPLOYEES.map((emp, i) => {
+            const avatar = AVATAR_STYLES[emp.section] ?? AVATAR_STYLES.front;
+            return (
+              <div key={i} className="h-11 flex items-center gap-1.5 px-1.5 border-b border-gray-100 dark:border-zinc-800">
+                <div
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-[8px] font-semibold shrink-0"
+                  style={{ backgroundColor: avatar.bg, color: avatar.color }}
+                >
+                  {emp.initials}
+                </div>
+                <span className="text-[10px] text-gray-700 dark:text-zinc-300 truncate leading-tight font-medium">{emp.name}</span>
+              </div>
+            );
+          })}
         </div>
 
         {/* Grid */}
         <div className="flex-1 overflow-hidden">
           {/* Day headers */}
           <div className="grid grid-cols-7 border-b border-gray-200 dark:border-zinc-700">
-            {DAYS.map((day, i) => (
-              <div key={day} className="h-8 flex flex-col items-center justify-center text-center border-r border-gray-100 dark:border-zinc-800 last:border-r-0">
-                <span className="text-[10px] font-medium text-gray-500 dark:text-zinc-400">{day}</span>
-                <span className="text-[9px] text-gray-400 dark:text-zinc-500">{DATES[i]}</span>
-              </div>
-            ))}
+            {DAYS.map((day, i) => {
+              const isWed = i === 2;
+              return (
+                <div key={day} className={`h-[34px] flex flex-col items-center justify-center text-center border-r border-gray-100 dark:border-zinc-800 last:border-r-0 ${isWed ? 'bg-amber-500/10' : ''}`}>
+                  <span className={`text-[9px] font-medium ${isWed ? 'text-amber-500' : 'text-gray-500 dark:text-zinc-400'}`}>{day}</span>
+                  <span className={`text-[10px] font-semibold ${isWed ? 'text-amber-500' : 'text-gray-700 dark:text-zinc-300'}`}>{DATES[i]}</span>
+                </div>
+              );
+            })}
           </div>
 
           {/* Shift rows */}
-          {SCHEDULE_DATA.map((emp, ri) => (
-            <div key={ri} className="grid grid-cols-7 border-b border-gray-100 dark:border-zinc-800">
-              {DAYS.map((_, di) => {
-                const shift = emp.shifts.find(s => s.day === di);
-                return (
-                  <div key={di} className="h-10 p-0.5 border-r border-gray-50 dark:border-zinc-800/50 last:border-r-0">
-                    {shift && (
-                      <div
-                        className={`h-full rounded-md flex items-center justify-center text-white text-[10px] font-medium ${shift.draft ? 'border border-dashed' : ''}`}
-                        style={{
-                          background: shift.draft ? 'transparent' : emp.color + 'CC',
-                          borderColor: shift.draft ? emp.color : undefined,
-                          color: shift.draft ? emp.color : '#fff',
-                        }}
-                      >
-                        {shift.time}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+          {MOCK_EMPLOYEES.map((emp, ri) => {
+            const jobStyle = JOB_STYLES[emp.jobKey] ?? JOB_STYLES.server;
+            return (
+              <div key={ri} className="grid grid-cols-7 border-b border-gray-100 dark:border-zinc-800">
+                {DAYS.map((_, di) => {
+                  const shift = emp.shifts.find(s => s.day === di);
+                  const isWed = di === 2;
+                  return (
+                    <div key={di} className={`h-11 p-0.5 border-r border-gray-50 dark:border-zinc-800/50 last:border-r-0 ${isWed ? 'bg-amber-500/5' : ''}`}>
+                      {shift && (
+                        <div
+                          className={`h-full rounded px-1 py-0.5 flex flex-col justify-center overflow-hidden ${
+                            shift.draft ? 'border border-dashed border-amber-400/60' : ''
+                          }`}
+                          style={{
+                            backgroundColor: jobStyle.bg,
+                            borderLeft: `2px solid ${jobStyle.color}`,
+                            color: jobStyle.color,
+                          }}
+                        >
+                          <span className="text-[8px] sm:text-[9px] font-medium leading-tight truncate">{shift.time}</span>
+                          <span className="text-[7px] sm:text-[8px] leading-tight truncate opacity-70">{shift.job}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* Footer stats */}
-      <div className="bg-gray-50 dark:bg-zinc-800/50 border-t border-gray-200 dark:border-zinc-700 px-4 py-2 flex items-center gap-6 text-[11px]">
-        <div>
-          <span className="text-gray-400 dark:text-zinc-500">Total Hours</span>
-          <span className="ml-1.5 font-semibold text-gray-700 dark:text-zinc-300">184h</span>
+      {/* Footer stats (matches StatsFooter.tsx layout) */}
+      <div className="bg-gray-50 dark:bg-zinc-800/50 border-t border-gray-200 dark:border-zinc-700 px-3 py-1.5 flex items-center justify-between text-[10px]">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1">
+            <span className="text-gray-400 dark:text-zinc-500">Total Hours</span>
+            <span className="font-semibold text-gray-700 dark:text-zinc-300">280h</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-gray-400 dark:text-zinc-500">Staff</span>
+            <span className="font-semibold text-gray-700 dark:text-zinc-300">9/12</span>
+          </div>
         </div>
-        <div>
-          <span className="text-gray-400 dark:text-zinc-500">Staff Working</span>
-          <span className="ml-1.5 font-semibold text-gray-700 dark:text-zinc-300">6</span>
-        </div>
-        <div>
-          <span className="text-gray-400 dark:text-zinc-500">Est. Labor</span>
-          <span className="ml-1.5 font-semibold text-emerald-600 dark:text-emerald-400">$2,760</span>
+        <div className="flex items-center gap-3">
+          {/* Section colored dots (matches real app StatsFooter) */}
+          <div className="hidden sm:flex items-center gap-2">
+            {[
+              { key: 'kitchen', label: 'Kitchen', color: '#f97316' },
+              { key: 'front', label: 'Front', color: '#3b82f6' },
+              { key: 'bar', label: 'Bar', color: '#a855f7' },
+              { key: 'mgmt', label: 'Mgmt', color: '#10b981' },
+            ].map(s => (
+              <div key={s.key} className="flex items-center gap-0.5">
+                <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: s.color }} />
+                <span className="text-[8px] text-gray-400 dark:text-zinc-500">{s.label}</span>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-gray-400 dark:text-zinc-500">Est. Labor</span>
+            <span className="font-semibold text-emerald-600 dark:text-emerald-400">$4,290</span>
+          </div>
         </div>
       </div>
     </div>
@@ -413,58 +486,10 @@ function CompRow({ label, values }: { label: string; values: (string | boolean)[
 export function LandingPage() {
   const { theme, toggleTheme } = useThemeStore();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [waitlistEmail, setWaitlistEmail] = useState('');
-  const [waitlistName, setWaitlistName] = useState('');
-  const [waitlistSize, setWaitlistSize] = useState('');
-  const [heroEmail, setHeroEmail] = useState('');
-  const [submitState, setSubmitState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [heroSubmitState, setHeroSubmitState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
 
   const scrollTo = (id: string) => {
     setMobileMenuOpen(false);
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  const handleHeroSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!heroEmail) return;
-    setHeroSubmitState('loading');
-    try {
-      const res = await fetch('/api/waitlist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: heroEmail }),
-      });
-      if (!res.ok) throw new Error();
-      setHeroSubmitState('success');
-      setHeroEmail('');
-    } catch {
-      setHeroSubmitState('error');
-    }
-  };
-
-  const handleWaitlistSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!waitlistEmail) return;
-    setSubmitState('loading');
-    try {
-      const res = await fetch('/api/waitlist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: waitlistEmail,
-          restaurant_name: waitlistName || undefined,
-          employee_count: waitlistSize ? parseInt(waitlistSize) : undefined,
-        }),
-      });
-      if (!res.ok) throw new Error();
-      setSubmitState('success');
-      setWaitlistEmail('');
-      setWaitlistName('');
-      setWaitlistSize('');
-    } catch {
-      setSubmitState('error');
-    }
   };
 
   const navLinks = [
@@ -515,12 +540,12 @@ export function LandingPage() {
             >
               Sign In
             </Link>
-            <button
-              onClick={() => scrollTo('waitlist')}
+            <Link
+              href="/login"
               className="hidden sm:inline-flex px-4 py-2 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors shadow-sm"
             >
               Get Started Free
-            </button>
+            </Link>
 
             {/* Mobile hamburger */}
             <button
@@ -558,12 +583,12 @@ export function LandingPage() {
                 >
                   Sign In
                 </Link>
-                <button
-                  onClick={() => scrollTo('waitlist')}
-                  className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors"
+                <Link
+                  href="/login"
+                  className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
                 >
                   Get Started Free
-                </button>
+                </Link>
               </div>
             </div>
           </motion.div>
@@ -571,58 +596,30 @@ export function LandingPage() {
       </nav>
 
       {/* ─── S2: Hero ─── */}
-      <Section className="pt-28 sm:pt-36 pb-16 sm:pb-24 px-4">
+      <Section className="pt-24 sm:pt-28 pb-10 sm:pb-14 px-4">
         <div className="max-w-7xl mx-auto">
-          <div className="text-center max-w-3xl mx-auto mb-12">
+          <div className="text-center max-w-3xl mx-auto mb-8">
             <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-gray-900 dark:text-zinc-100 mb-6">
               Restaurant Scheduling That{' '}
               <span className="bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent">
                 Actually Works
               </span>
             </h1>
-            <p className="text-lg sm:text-xl text-gray-500 dark:text-zinc-400 mb-8 max-w-2xl mx-auto">
+            <p className="text-lg sm:text-xl text-gray-500 dark:text-zinc-400 max-w-2xl mx-auto">
               The only scheduling tool with a built-in shift marketplace that solves call-offs in minutes.
               Replace your $180/month tool with something your staff will actually use.
-            </p>
-
-            {/* Hero email form */}
-            <form onSubmit={handleHeroSubmit} className="flex flex-col sm:flex-row gap-3 max-w-md mx-auto mb-4">
-              <input
-                type="email"
-                value={heroEmail}
-                onChange={e => setHeroEmail(e.target.value)}
-                placeholder="Enter your work email"
-                required
-                className="flex-1 px-4 py-3 rounded-xl border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-gray-900 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
-              />
-              <button
-                type="submit"
-                disabled={heroSubmitState === 'loading'}
-                className="px-6 py-3 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 disabled:opacity-50 transition-colors shadow-sm whitespace-nowrap"
-              >
-                {heroSubmitState === 'loading' ? 'Joining...' : heroSubmitState === 'success' ? 'You\'re In!' : 'Get Early Access'}
-              </button>
-            </form>
-            {heroSubmitState === 'success' && (
-              <p className="text-sm text-emerald-600 dark:text-emerald-400">Welcome aboard! We&apos;ll be in touch soon.</p>
-            )}
-            {heroSubmitState === 'error' && (
-              <p className="text-sm text-red-500">Something went wrong. Please try again.</p>
-            )}
-            <p className="text-xs text-gray-400 dark:text-zinc-500 mt-3">
-              No credit card required &middot; Free forever plan &middot; Setup in 5 minutes
             </p>
           </div>
 
           {/* Desktop mockup */}
-          <div className="max-w-4xl mx-auto mb-16">
+          <div className="max-w-4xl mx-auto mb-10">
             <div className="transform perspective-[2000px] rotate-x-1">
               <DesktopScheduleMockup />
             </div>
           </div>
 
           {/* Phone mockups */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-8 sm:gap-12">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-6 sm:gap-10">
             <PhoneMockup />
             <PhoneMockupExchange />
           </div>
@@ -630,9 +627,9 @@ export function LandingPage() {
       </Section>
 
       {/* ─── S3: Pain Points ─── */}
-      <Section id="pain-points" className="py-16 sm:py-24 px-4 bg-gray-50 dark:bg-zinc-900/50">
+      <Section id="pain-points" className="py-10 sm:py-16 px-4 bg-gray-50 dark:bg-zinc-900/50">
         <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-12">
+          <div className="text-center mb-8">
             <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
               Sound Familiar?
             </h2>
@@ -672,9 +669,9 @@ export function LandingPage() {
       </Section>
 
       {/* ─── S4: How the Shift Marketplace Works ─── */}
-      <Section id="marketplace" className="py-16 sm:py-24 px-4">
+      <Section id="marketplace" className="py-10 sm:py-16 px-4">
         <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-12">
+          <div className="text-center mb-8">
             <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
               How the Shift Marketplace Works
             </h2>
@@ -734,9 +731,9 @@ export function LandingPage() {
       </Section>
 
       {/* ─── S5: Features ─── */}
-      <Section id="features" className="py-16 sm:py-24 px-4 bg-gray-50 dark:bg-zinc-900/50">
+      <Section id="features" className="py-10 sm:py-16 px-4 bg-gray-50 dark:bg-zinc-900/50">
         <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-12">
+          <div className="text-center mb-8">
             <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
               Everything You Need to Run Your Schedule
             </h2>
@@ -759,8 +756,8 @@ export function LandingPage() {
       </Section>
 
       {/* ─── S6: Mobile Experience ─── */}
-      <Section className="py-16 sm:py-24 px-4">
-        <div className="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <Section className="py-10 sm:py-16 px-4">
+        <div className="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-8">
           <div className="lg:w-1/2 text-center lg:text-left">
             <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
               Your Staff Will Actually{' '}
@@ -792,9 +789,9 @@ export function LandingPage() {
       </Section>
 
       {/* ─── S7: Competitive Comparison ─── */}
-      <Section className="py-16 sm:py-24 px-4 bg-gray-50 dark:bg-zinc-900/50">
+      <Section className="py-10 sm:py-16 px-4 bg-gray-50 dark:bg-zinc-900/50">
         <div className="max-w-4xl mx-auto">
-          <div className="text-center mb-12">
+          <div className="text-center mb-8">
             <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
               How We Compare
             </h2>
@@ -830,9 +827,9 @@ export function LandingPage() {
       </Section>
 
       {/* ─── S8: Pricing ─── */}
-      <Section id="pricing" className="py-16 sm:py-24 px-4">
+      <Section id="pricing" className="py-10 sm:py-16 px-4">
         <div className="max-w-4xl mx-auto">
-          <div className="text-center mb-12">
+          <div className="text-center mb-8">
             <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
               Simple, Honest Pricing
             </h2>
@@ -864,12 +861,12 @@ export function LandingPage() {
                   </li>
                 ))}
               </ul>
-              <button
-                onClick={() => scrollTo('waitlist')}
-                className="w-full py-2.5 rounded-xl text-sm font-semibold border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+              <Link
+                href="/login"
+                className="block w-full py-2.5 rounded-xl text-sm font-semibold border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-center"
               >
                 Get Started Free
-              </button>
+              </Link>
             </div>
 
             {/* Pro */}
@@ -898,21 +895,21 @@ export function LandingPage() {
                   </li>
                 ))}
               </ul>
-              <button
-                onClick={() => scrollTo('waitlist')}
-                className="w-full py-2.5 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors"
+              <Link
+                href="/login"
+                className="block w-full py-2.5 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
               >
                 Get Started
-              </button>
+              </Link>
             </div>
           </div>
         </div>
       </Section>
 
       {/* ─── S9: Testimonials ─── */}
-      <Section id="testimonials" className="py-16 sm:py-24 px-4 bg-gray-50 dark:bg-zinc-900/50">
+      <Section id="testimonials" className="py-10 sm:py-16 px-4 bg-gray-50 dark:bg-zinc-900/50">
         <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-12">
+          <div className="text-center mb-8">
             <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
               What Restaurant Teams Are Saying
             </h2>
@@ -960,76 +957,10 @@ export function LandingPage() {
         </div>
       </Section>
 
-      {/* ─── S10: Waitlist CTA ─── */}
-      <Section id="waitlist" className="py-16 sm:py-24 px-4">
-        <div className="max-w-2xl mx-auto">
-          <div className="bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/20 dark:to-orange-950/20 rounded-3xl border border-amber-200/50 dark:border-amber-500/10 p-8 sm:p-12 text-center">
-            {submitState === 'success' ? (
-              <motion.div
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ type: 'spring', bounce: 0.4 }}
-              >
-                <div className="w-16 h-16 rounded-full bg-emerald-100 dark:bg-emerald-500/20 flex items-center justify-center mx-auto mb-4">
-                  <Check className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
-                </div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-zinc-100 mb-2">You&apos;re on the list!</h2>
-                <p className="text-gray-500 dark:text-zinc-400">We&apos;ll reach out soon with early access. Thank you for joining ShiftFlow.</p>
-              </motion.div>
-            ) : (
-              <>
-                <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
-                  Ready to Fix Your Scheduling?
-                </h2>
-                <p className="text-gray-500 dark:text-zinc-400 mb-8 max-w-md mx-auto">
-                  Join the waitlist and be the first to try ShiftFlow. Early adopters get free access forever.
-                </p>
-
-                <form onSubmit={handleWaitlistSubmit} className="space-y-3 max-w-sm mx-auto">
-                  <input
-                    type="email"
-                    value={waitlistEmail}
-                    onChange={e => setWaitlistEmail(e.target.value)}
-                    placeholder="Work email"
-                    required
-                    className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-gray-900 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
-                  />
-                  <input
-                    type="text"
-                    value={waitlistName}
-                    onChange={e => setWaitlistName(e.target.value)}
-                    placeholder="Restaurant name (optional)"
-                    className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-gray-900 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
-                  />
-                  <input
-                    type="number"
-                    value={waitlistSize}
-                    onChange={e => setWaitlistSize(e.target.value)}
-                    placeholder="Number of employees (optional)"
-                    min="1"
-                    className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-gray-900 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
-                  />
-                  <button
-                    type="submit"
-                    disabled={submitState === 'loading'}
-                    className="w-full py-3 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 disabled:opacity-50 transition-colors shadow-sm"
-                  >
-                    {submitState === 'loading' ? 'Joining...' : 'Join the Waitlist'}
-                  </button>
-                  {submitState === 'error' && (
-                    <p className="text-sm text-red-500">Something went wrong. Please try again.</p>
-                  )}
-                </form>
-              </>
-            )}
-          </div>
-        </div>
-      </Section>
-
-      {/* ─── S11: Footer ─── */}
-      <footer className="border-t border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 py-12 px-4">
+      {/* ─── Footer ─── */}
+      <footer className="border-t border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 py-8 px-4">
         <div className="max-w-5xl mx-auto">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-10">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8">
             {/* Brand */}
             <div className="col-span-2 md:col-span-1">
               <div className="flex items-center gap-2 mb-3">

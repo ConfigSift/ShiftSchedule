@@ -16,6 +16,7 @@ import {
   LogOut,
   CalendarOff,
   ArrowLeftRight,
+  BarChart3,
   Users,
   Clock,
   ClipboardList,
@@ -45,6 +46,7 @@ export function Header({ minimal = false }: HeaderProps) {
     getPendingTimeOffRequests,
     getPendingBlockedDayRequests,
     scheduleMode,
+    showToast,
   } = useScheduleStore();
 
   const { currentUser, signOut, accessibleRestaurants, pendingInvitations, activeRestaurantId } = useAuthStore();
@@ -57,10 +59,13 @@ export function Header({ minimal = false }: HeaderProps) {
     router.push('/login');
   };
 
+  const handleReportsClick = () => {
+    showToast('Reports coming soon', 'success');
+  };
+
   const pendingRequests = getPendingTimeOffRequests();
   const pendingBlockedRequests = getPendingBlockedDayRequests();
   const pendingReviewCount = pendingRequests.length + pendingBlockedRequests.length;
-  const hasSingleRestaurant = accessibleRestaurants.length === 1;
   // Always allow access to Restaurants/Site Manager for signed-in users
   const showRestaurantsLink = Boolean(currentUser);
   const activeRestaurantName =
@@ -136,7 +141,7 @@ export function Header({ minimal = false }: HeaderProps) {
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 h-14 sm:h-16 bg-theme-secondary border-b border-theme-primary transition-theme">
-      <div className="h-full px-2 sm:px-4 lg:px-6 flex items-center justify-between gap-2 sm:gap-4 relative">
+      <div className="h-full px-2 sm:px-4 lg:px-6 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4 relative">
         {/* Left: Logo + Mobile sidebar toggle + Primary nav */}
         <div className="flex items-center gap-1 sm:gap-2 min-w-0">
           {/* Mobile sidebar toggle - only on dashboard */}
@@ -189,31 +194,19 @@ export function Header({ minimal = false }: HeaderProps) {
             </nav>
           )}
 
+        </div>
+
+        {/* Center: Restaurant name */}
+        <div className="flex items-center justify-center min-w-0">
           {!minimal && activeRestaurantName && (
-            <span className="hidden md:inline-flex items-center text-xs text-theme-muted ml-2">
-              Restaurant: <span className="ml-1 text-theme-primary font-medium">{activeRestaurantName}</span>
-              {hasSingleRestaurant && (
-                <Link
-                  href="/restaurants"
-                  className="ml-2 text-[11px] font-semibold text-amber-500 hover:text-amber-400 transition-colors"
-                >
-                  Manage
-                </Link>
-              )}
+            <span className="text-sm sm:text-base md:text-lg font-semibold text-theme-primary truncate max-w-[50vw] sm:max-w-[40vw]">
+              {activeRestaurantName}
             </span>
           )}
         </div>
 
-        {showEmployeeMobileHeader && (
-          <div className="md:hidden absolute left-1/2 -translate-x-1/2 min-w-0 max-w-[50%] text-center">
-            <span className="text-sm text-theme-secondary truncate block">
-              {activeRestaurantName ?? ''}
-            </span>
-          </div>
-        )}
-
         {/* Right: Actions + More menu */}
-        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-2 min-w-0 w-full justify-end">
           {/* Add Shift - hidden in minimal mode */}
           {!minimal && isManagerRole(currentRole) && (
             <button
@@ -238,14 +231,14 @@ export function Header({ minimal = false }: HeaderProps) {
             </button>
           )}
 
-          {/* My Profile - visible on larger screens */}
+          {/* Reports - placeholder action */}
           <button
-            onClick={openProfileModal}
+            onClick={handleReportsClick}
             className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
-            aria-label="My Profile"
+            aria-label="Reports"
           >
-            <User className="w-4 h-4" />
-            <span className="hidden lg:inline">My Profile</span>
+            <BarChart3 className="w-4 h-4" />
+            <span className="hidden lg:inline">Reports</span>
           </button>
 
           {/* More menu */}
@@ -286,22 +279,13 @@ export function Header({ minimal = false }: HeaderProps) {
                         </span>
                       )}
                     </Link>
-
-                    <button
-                      onClick={() => { openProfileModal(); setMoreMenuOpen(false); }}
-                      className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                    >
-                      <User className="w-4 h-4" />
-                      My Profile
-                    </button>
                   </div>
                 )}
 
-                {/* Profile button in minimal mode for mobile */}
-                {minimal && (
+                {currentUser && (
                   <button
                     onClick={() => { openProfileModal(); setMoreMenuOpen(false); }}
-                    className="sm:hidden flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                    className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
                   >
                     <User className="w-4 h-4" />
                     My Profile

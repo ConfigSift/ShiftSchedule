@@ -161,6 +161,17 @@ export interface BusinessHour {
   openTime?: string;
   closeTime?: string;
   enabled: boolean;
+  sortOrder?: number;
+}
+
+export interface CoreHour {
+  id: string;
+  organizationId: string;
+  dayOfWeek: number;
+  openTime?: string;
+  closeTime?: string;
+  enabled: boolean;
+  sortOrder?: number;
 }
 
 export type ScheduleHourMode = 'business' | 'full24' | 'custom';

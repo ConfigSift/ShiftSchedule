@@ -4,9 +4,23 @@ import { useMemo } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { SECTIONS, Section } from '../types';
-import { Clock, Users, DollarSign } from 'lucide-react';
+import { Clock, Users, DollarSign, Percent } from 'lucide-react';
 import { getWeekDates, dateToString } from '../utils/timeUtils';
 import { getUserRole, isManagerRole } from '../utils/role';
+
+function parseTimeToDecimal(value?: string | null): number {
+  if (!value) return 0;
+  const text = String(value);
+  if (text.includes(':')) {
+    const [hours, minutes = '0'] = text.split(':');
+    const hour = Number(hours);
+    const minute = Number(minutes);
+    if (Number.isNaN(hour) || Number.isNaN(minute)) return 0;
+    return hour + minute / 60;
+  }
+  const asNumber = Number(text);
+  return Number.isNaN(asNumber) ? 0 : asNumber;
+}
 
 export function StatsFooter() {
   const {
@@ -15,7 +29,9 @@ export function StatsFooter() {
     selectedEmployeeIds,
     shifts,      // Subscribe directly to shifts for reactivity
     employees,   // Subscribe directly to employees for reactivity
+    coreHours,
     scheduleViewSettings,
+    getShiftsForRestaurant,
   } = useScheduleStore();
   const { activeRestaurantId, currentUser } = useAuthStore();
 
@@ -25,8 +41,8 @@ export function StatsFooter() {
     [employees, activeRestaurantId]
   );
   const scopedShifts = useMemo(() =>
-    activeRestaurantId ? shifts.filter((s) => s.restaurantId === activeRestaurantId) : [],
-    [shifts, activeRestaurantId]
+    activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : [],
+    [activeRestaurantId, shifts, getShiftsForRestaurant]
   );
   const activeEmployees = useMemo(() => 
     scopedEmployees.filter((e) => e.isActive),
@@ -137,6 +153,80 @@ export function StatsFooter() {
     return { estimatedCost: total, missingPayCount: missing };
   }, [relevantShifts, scopedEmployees]);
 
+  const coveragePercent = useMemo(() => {
+    if (viewMode === 'month') {
+      return null;
+    }
+    if (!coreHours || coreHours.length === 0) {
+      return null;
+    }
+
+    const coreByDay = new Map<number, Array<{ start: number; end: number }>>();
+    coreHours.forEach((row) => {
+      if (!row.enabled || !row.openTime || !row.closeTime) return;
+      const start = parseTimeToDecimal(row.openTime);
+      const end = parseTimeToDecimal(row.closeTime);
+      if (end <= start) return;
+      if (!coreByDay.has(row.dayOfWeek)) {
+        coreByDay.set(row.dayOfWeek, []);
+      }
+      coreByDay.get(row.dayOfWeek)!.push({ start, end });
+    });
+    if (coreByDay.size === 0) {
+      return null;
+    }
+
+    const mergeRanges = (ranges: Array<{ start: number; end: number }>) => {
+      const sorted = [...ranges].sort((a, b) => a.start - b.start);
+      const merged: Array<{ start: number; end: number }> = [];
+      sorted.forEach((range) => {
+        const last = merged[merged.length - 1];
+        if (!last || range.start > last.end) {
+          merged.push({ ...range });
+          return;
+        }
+        last.end = Math.max(last.end, range.end);
+      });
+      return merged;
+    };
+
+    const shiftsByDate = new Map<string, typeof relevantShifts>();
+    relevantShifts.forEach((shift) => {
+      if (!shiftsByDate.has(shift.date)) {
+        shiftsByDate.set(shift.date, []);
+      }
+      shiftsByDate.get(shift.date)!.push(shift);
+    });
+
+    const datesToCheck = viewMode === 'week' ? weekDates : [selectedDate];
+    let totalCore = 0;
+    let covered = 0;
+
+    datesToCheck.forEach((date) => {
+      const dayRanges = coreByDay.get(date.getDay());
+      if (!dayRanges || dayRanges.length === 0) return;
+      const mergedRanges = mergeRanges(dayRanges);
+      const dateKey = dateToString(date);
+      const shiftsForDate = shiftsByDate.get(dateKey) ?? [];
+
+      mergedRanges.forEach((range) => {
+        totalCore += range.end - range.start;
+        shiftsForDate.forEach((shift) => {
+          const overlap = Math.max(
+            0,
+            Math.min(shift.endHour, range.end) - Math.max(shift.startHour, range.start)
+          );
+          covered += overlap;
+        });
+      });
+    });
+
+    if (totalCore <= 0) {
+      return null;
+    }
+    return (covered / totalCore) * 100;
+  }, [coreHours, relevantShifts, selectedDate, viewMode, weekDates]);
+
   return (
     <footer className="fixed bottom-0 left-0 right-0 h-12 sm:h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-3 sm:px-6 gap-3 sm:gap-8 shrink-0 transition-theme z-40">
       {/* Hours - always visible */}
@@ -159,6 +249,19 @@ export function StatsFooter() {
           <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">Staff</p>
           <p className="text-xs sm:text-sm font-semibold text-theme-primary">
             {workingCount}/{activeEmployees.length}
+          </p>
+        </div>
+      </div>
+
+      {/* Coverage - core hours */}
+      <div className="flex items-center gap-2">
+        <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
+          <Percent className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" />
+        </div>
+        <div>
+          <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">Coverage</p>
+          <p className="text-xs sm:text-sm font-semibold text-theme-primary">
+            {coveragePercent === null ? '—' : `${coveragePercent.toFixed(1)}%`}
           </p>
         </div>
       </div>

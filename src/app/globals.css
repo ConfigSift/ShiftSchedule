@@ -145,4 +145,57 @@
   .safe-top {
     padding-top: env(safe-area-inset-top, 0);
   }
+
+  .btn-primary-orange {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border-radius: 10px;
+    border: 1px solid rgba(245, 158, 11, 0.9);
+    background-color: rgba(245, 158, 11, 0.95);
+    color: #18181b;
+    font-weight: 600;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .btn-primary-orange:hover {
+    background-color: rgba(245, 158, 11, 0.85);
+    border-color: rgba(245, 158, 11, 0.85);
+  }
+
+  .btn-primary-orange:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.35);
+  }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border-radius: 10px;
+    border: 1px solid var(--border-primary);
+    background-color: color-mix(in srgb, var(--bg-tertiary) 60%, transparent);
+    color: var(--text-secondary);
+    font-weight: 600;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .btn-secondary:hover {
+    background-color: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+    color: var(--text-primary);
+  }
+
+  .btn-secondary:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.3);
+  }
+
+  .range-selected-orange {
+    background-color: rgba(245, 158, 11, 0.35);
+    border: 1px solid rgba(245, 158, 11, 0.65);
+    box-shadow: 0 6px 12px rgba(245, 158, 11, 0.18);
+  }
+
 }

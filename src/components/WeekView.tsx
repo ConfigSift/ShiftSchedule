@@ -3,8 +3,8 @@
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { SECTIONS } from '../types';
-import { getWeekDates, dateToString, isSameDay, formatHour, shiftsOverlap } from '../utils/timeUtils';
-import { Palmtree, ArrowLeftRight, UploadCloud } from 'lucide-react';
+import { getWeekDates, getWeekStart, dateToString, isSameDay, formatHour, shiftsOverlap } from '../utils/timeUtils';
+import { Palmtree, ArrowLeftRight } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
@@ -14,10 +14,20 @@ import { apiFetch } from '../lib/apiClient';
 // Compact sizing - pixels per day column
 const PX_PER_DAY = 100;
 
+function formatPublishWeekLabel(start: Date, end: Date): string {
+  const startMonthDay = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endMonthDay = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const startYear = start.getFullYear();
+  const endYear = end.getFullYear();
+  if (startYear !== endYear) {
+    return `${startMonthDay}, ${startYear} – ${endMonthDay}, ${endYear}`;
+  }
+  return `${startMonthDay} – ${endMonthDay}, ${startYear}`;
+}
+
 export function WeekView() {
   const {
     selectedDate,
-    goToToday,
     goToPrevious,
     goToNext,
     getFilteredEmployeesForRestaurant,
@@ -50,6 +60,10 @@ export function WeekView() {
   const weekDates = getWeekDates(selectedDate, weekStartDay);
   const weekStartYmd = useMemo(() => dateToString(weekDates[0]), [weekDates]);
   const weekEndYmd = useMemo(() => dateToString(weekDates[6]), [weekDates]);
+  const publishWeekLabel = useMemo(
+    () => formatPublishWeekLabel(weekDates[0], weekDates[6]),
+    [weekDates]
+  );
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const locationMap = useMemo(
@@ -72,14 +86,7 @@ export function WeekView() {
     [scopedShifts, weekEndYmd, weekStartYmd]
   );
   const publishStatusLabel = hasDraftInWeek ? 'DRAFT' : 'PUBLISHED';
-  const publishStatusTone = hasDraftInWeek
-    ? 'bg-amber-500/15 text-amber-500 border-amber-500/40'
-    : 'bg-emerald-500/15 text-emerald-500 border-emerald-500/40';
-  const statusBadge = (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border shrink-0 ${publishStatusTone}`}>
-      {publishStatusLabel}
-    </span>
-  );
+  const statusTone = hasDraftInWeek ? 'bg-amber-500 text-zinc-900' : 'bg-emerald-500 text-white';
   const isDraftMode = scheduleMode === 'draft';
   const draftHelperText = 'Changes are not visible to staff until published.';
   const draftBadge = (
@@ -87,7 +94,13 @@ export function WeekView() {
       DRAFT MODE
     </span>
   );
-  const showPublishWeek = isManager && hasDraftInWeek;
+  const isPastWeek = weekEndYmd < todayStr;
+  const publishWeekEnabled = isManager && hasDraftInWeek && !isPastWeek;
+  const publishWeekDisabledReason = isPastWeek
+    ? "Past schedules can't be published."
+    : !hasDraftInWeek
+    ? 'No draft changes'
+    : undefined;
   const showCopyDraftWeek = isManager && isDraftMode && weekShiftCount === 0;
 
   // Refs for scroll syncing
@@ -114,11 +127,18 @@ export function WeekView() {
     setViewMode('day');
   };
 
-  const handleToday = useCallback(() => goToToday(), [goToToday]);
   const handlePrevious = useCallback(() => goToPrevious(), [goToPrevious]);
   const handleNext = useCallback(() => goToNext(), [goToNext]);
-  const handlePrevJump = useCallback(() => goToPrevious(), [goToPrevious]);
-  const handleNextJump = useCallback(() => goToNext(), [goToNext]);
+  const handlePrevJump = useCallback(() => {
+    const weekStart = getWeekStart(selectedDate, weekStartDay);
+    weekStart.setDate(weekStart.getDate() - 28);
+    setSelectedDate(weekStart);
+  }, [selectedDate, setSelectedDate, weekStartDay]);
+  const handleNextJump = useCallback(() => {
+    const weekStart = getWeekStart(selectedDate, weekStartDay);
+    weekStart.setDate(weekStart.getDate() + 28);
+    setSelectedDate(weekStart);
+  }, [selectedDate, setSelectedDate, weekStartDay]);
   const handleSelectDate = useCallback((date: Date) => {
     const normalized = new Date(date);
     normalized.setHours(0, 0, 0, 0);
@@ -136,8 +156,8 @@ export function WeekView() {
       return;
     }
     await loadRestaurantData(activeRestaurantId);
-    showToast('Published week.', 'success');
-  }, [activeRestaurantId, loadRestaurantData, publishDraftRange, showToast, weekEndYmd, weekStartYmd]);
+    showToast(`Published week ${publishWeekLabel}.`, 'success');
+  }, [activeRestaurantId, loadRestaurantData, publishDraftRange, publishWeekLabel, showToast, weekEndYmd, weekStartYmd]);
 
   const handleCreateDraft = useCallback(async () => {
     if (!activeRestaurantId) {
@@ -173,22 +193,7 @@ export function WeekView() {
     showToast('Draft schedule created.', 'success');
   }, [activeRestaurantId, loadRestaurantData, selectAllEmployeesForRestaurant, showToast, weekEndYmd, weekStartYmd]);
 
-  const rightActions = (
-    <>
-      {showPublishWeek ? (
-        <button
-          type="button"
-          onClick={handlePublishWeek}
-          className="w-[140px] h-[40px] flex items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-xs sm:text-sm font-semibold"
-        >
-          <UploadCloud className="w-4 h-4" />
-          <span>Publish Week</span>
-        </button>
-      ) : (
-        <div className="w-[140px] h-[40px] invisible" />
-      )}
-    </>
-  );
+  const publishDisabledReason = isManager ? undefined : 'Only managers can publish.';
 
   const handleShiftClick = (shift: typeof scopedShifts[0], e: React.MouseEvent) => {
     e.stopPropagation();
@@ -343,46 +348,51 @@ export function WeekView() {
         viewMode="week"
         selectedDate={selectedDate}
         weekStartDay={weekStartDay}
-        isToday={isToday}
-        onToday={handleToday}
         onPrev={handlePrevious}
         onNext={handleNext}
         onPrevJump={handlePrevJump}
         onNextJump={handleNextJump}
         onSelectDate={handleSelectDate}
-        rightActions={rightActions}
+        onViewModeChange={setViewMode}
+        showPublish={isManager}
+        publishWeekEnabled={publishWeekEnabled}
+        onPublishWeek={handlePublishWeek}
+        publishDisabledReason={publishDisabledReason}
+        publishWeekDisabledReason={publishWeekDisabledReason}
       />
 
-      <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
-        <div className="flex items-center justify-between gap-4 min-w-max">
-          <div className={`flex items-center gap-2 ${isDraftMode ? '' : 'invisible'}`}>
-            {draftBadge}
-            <span className="text-[11px] text-theme-muted whitespace-nowrap">{draftHelperText}</span>
-          </div>
+      {isDraftMode && (
+        <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
+          <div className="flex items-center justify-between gap-4 min-w-max">
+            <div className="flex items-center gap-2">
+              {draftBadge}
+              <span className="text-[11px] text-theme-muted whitespace-nowrap">{draftHelperText}</span>
+            </div>
 
-          <div className="w-[300px] flex items-center justify-end">
-            {showCopyDraftWeek ? (
-              <button
-                type="button"
-                onClick={handleCreateDraft}
-                className="w-[300px] h-[40px] flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs sm:text-sm font-medium"
-              >
-                <ArrowLeftRight className="w-4 h-4" />
-                <span className="truncate">Copy last published week into draft</span>
-              </button>
-            ) : (
-              <div className="w-[300px] h-[40px] invisible" />
-            )}
+            <div className="w-[300px] flex items-center justify-end">
+              {showCopyDraftWeek ? (
+                <button
+                  type="button"
+                  onClick={handleCreateDraft}
+                  className="w-[300px] h-[40px] flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs sm:text-sm font-medium"
+                >
+                  <ArrowLeftRight className="w-4 h-4" />
+                  <span className="truncate">Copy last published week into draft</span>
+                </button>
+              ) : (
+                <div className="w-[300px] h-[40px] invisible" />
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Fixed Employee Names Column - compact */}
         <div className="w-36 shrink-0 flex flex-col bg-theme-timeline z-20 border-r border-theme-primary">
           {/* Header spacer */}
-          <div className="h-10 border-b border-theme-primary shrink-0 flex items-center justify-center">
-            {statusBadge}
+          <div className={`h-10 border-b border-theme-primary shrink-0 flex items-center justify-center text-[10px] font-semibold uppercase tracking-wide ${statusTone}`}>
+            {publishStatusLabel}
           </div>
 
           {/* Employee names list - synced scroll */}

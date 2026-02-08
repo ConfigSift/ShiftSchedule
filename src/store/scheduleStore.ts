@@ -8,6 +8,7 @@ import {
   BlockedDayRequest,
   BlockedDayStatus,
   BusinessHour,
+  CoreHour,
   Location,
   DropShiftRequest,
   ChatMessage,
@@ -18,7 +19,7 @@ import {
   ScheduleHourMode,
 } from '../types';
 import { STORAGE_KEYS, saveToStorage, loadFromStorage } from '../utils/storage';
-import { generateId, shiftsOverlap, getWeekStart, getWeekRange } from '../utils/timeUtils';
+import { generateId, shiftsOverlap, timeRangesOverlap, getWeekStart, getWeekRange } from '../utils/timeUtils';
 import { supabase } from '../lib/supabase/client';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { normalizeUserRow } from '../utils/userMapper';
@@ -154,6 +155,7 @@ interface ScheduleState {
   timeOffRequests: TimeOffRequest[];
   blockedDayRequests: BlockedDayRequest[];
   businessHours: BusinessHour[];
+  coreHours: CoreHour[];
   scheduleViewSettings: ScheduleViewSettings | null;
   locations: Location[];
   dropRequests: DropShiftRequest[];
@@ -161,6 +163,7 @@ interface ScheduleState {
 
   selectedDate: Date;
   viewMode: ViewMode;
+  continuousDays: boolean;
   scheduleMode: ScheduleMode;
   selectedSections: string[];
   selectedEmployeeIds: string[];
@@ -179,8 +182,14 @@ interface ScheduleState {
 
   hydrate: () => void;
   loadRestaurantData: (restaurantId: string | null) => Promise<void>;
+  loadCoreHours: (restaurantId: string | null) => Promise<void>;
+  saveCoreHours: (payload: {
+    organizationId: string;
+    hours: Array<{ dayOfWeek: number; openTime?: string | null; closeTime?: string | null; enabled: boolean }>;
+  }) => Promise<{ success: boolean; error?: string }>;
   setSelectedDate: (date: Date) => void;
   setViewMode: (mode: ViewMode) => void;
+  setContinuousDays: (enabled: boolean) => void;
   setScheduleMode: (mode: ScheduleMode) => void;
   toggleSection: (section: string) => void;
   setSectionSelectedForRestaurant: (section: string, selected: boolean, restaurantId: string | null) => void;
@@ -347,6 +356,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   timeOffRequests: [],
   blockedDayRequests: [],
   businessHours: [],
+  coreHours: [],
   scheduleViewSettings: null,
   locations: [],
   dropRequests: [],
@@ -354,6 +364,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
   selectedDate: new Date(),
   viewMode: 'day',
+  continuousDays: false,
   scheduleMode: 'published',
   selectedSections: ['kitchen', 'front', 'bar', 'management'],
   selectedEmployeeIds: [],
@@ -378,6 +389,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       timeOffRequests: [],
       blockedDayRequests: [],
       businessHours: [],
+      coreHours: [],
       scheduleViewSettings: null,
       dropRequests,
       chatMessages,
@@ -395,6 +407,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
+        coreHours: [],
         scheduleViewSettings: null,
         locations: [],
         shiftLoadCounts: { total: 0, visible: 0 },
@@ -426,6 +439,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
+        coreHours: [],
         scheduleViewSettings: null,
         locations: [],
         shiftLoadCounts: { total: 0, visible: 0 },
@@ -502,6 +516,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
+        coreHours: [],
         scheduleViewSettings: null,
         locations,
         shiftLoadCounts: { total: 0, visible: 0 },
@@ -641,7 +656,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         }));
 
     const { data: businessData, error: businessError } = (await (supabase as any)
-      .from('business_hours')
+      .from('business_hour_ranges')
       .select('*')
       .eq('organization_id', restaurantId)) as {
         data: Array<Record<string, any>> | null;
@@ -650,14 +665,47 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
     const businessHours: BusinessHour[] = businessError
       ? []
-      : (businessData || []).map((row) => ({
-          id: row.id,
-          organizationId: row.organization_id,
-          dayOfWeek: Number(row.day_of_week ?? 0),
-          openTime: row.open_time ?? undefined,
-          closeTime: row.close_time ?? undefined,
-          enabled: Boolean(row.enabled),
-        }));
+      : (businessData || [])
+          .map((row) => ({
+            id: row.id,
+            organizationId: row.organization_id,
+            dayOfWeek: Number(row.day_of_week ?? 0),
+            openTime: row.open_time ?? undefined,
+            closeTime: row.close_time ?? undefined,
+            enabled: Boolean(row.enabled),
+            sortOrder: row.sort_order != null ? Number(row.sort_order) : undefined,
+          }))
+          .sort((a, b) =>
+            a.dayOfWeek === b.dayOfWeek
+              ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+              : a.dayOfWeek - b.dayOfWeek
+          );
+
+    const { data: coreData, error: coreError } = (await (supabase as any)
+      .from('core_hour_ranges')
+      .select('*')
+      .eq('organization_id', restaurantId)) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+
+    const coreHours: CoreHour[] = coreError
+      ? []
+      : (coreData || [])
+          .map((row) => ({
+            id: row.id,
+            organizationId: row.organization_id,
+            dayOfWeek: Number(row.day_of_week ?? 0),
+            openTime: row.open_time ?? undefined,
+            closeTime: row.close_time ?? undefined,
+            enabled: Boolean(row.enabled),
+            sortOrder: row.sort_order != null ? Number(row.sort_order) : undefined,
+          }))
+          .sort((a, b) =>
+            a.dayOfWeek === b.dayOfWeek
+              ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+              : a.dayOfWeek - b.dayOfWeek
+          );
 
     // Load schedule view settings
     const { data: settingsData, error: settingsError } = (await (supabase as any)
@@ -694,6 +742,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       timeOffRequests,
       blockedDayRequests,
       businessHours,
+      coreHours,
       scheduleViewSettings,
       locations,
       shiftLoadCounts: {
@@ -701,6 +750,53 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         visible: shifts.length,
       },
     });
+  },
+  loadCoreHours: async (restaurantId) => {
+    if (!restaurantId) {
+      set({ coreHours: [] });
+      return;
+    }
+    const { data, error } = (await (supabase as any)
+      .from('core_hour_ranges')
+      .select('*')
+      .eq('organization_id', restaurantId)) as {
+        data: Array<Record<string, any>> | null;
+        error: { message: string } | null;
+      };
+    if (error) {
+      set({ coreHours: [] });
+      return;
+    }
+    const coreHours: CoreHour[] = (data || [])
+      .map((row) => ({
+        id: row.id,
+        organizationId: row.organization_id,
+        dayOfWeek: Number(row.day_of_week ?? 0),
+        openTime: row.open_time ?? undefined,
+        closeTime: row.close_time ?? undefined,
+        enabled: Boolean(row.enabled),
+        sortOrder: row.sort_order != null ? Number(row.sort_order) : undefined,
+      }))
+      .sort((a, b) =>
+        a.dayOfWeek === b.dayOfWeek
+          ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+          : a.dayOfWeek - b.dayOfWeek
+      );
+    set({ coreHours });
+  },
+  saveCoreHours: async (payload) => {
+    if (!payload.organizationId) {
+      return { success: false, error: 'organizationId is required.' };
+    }
+    const result = await apiFetch('/api/core-hours/save', {
+      method: 'POST',
+      json: payload,
+    });
+    if (!result.ok) {
+      return { success: false, error: result.error ?? 'Unable to save core hours.' };
+    }
+    await get().loadCoreHours(payload.organizationId);
+    return { success: true };
   },
 
   setSelectedDate: (date) => set((state) => {
@@ -720,6 +816,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     };
   }),
   setViewMode: (mode) => set({ viewMode: mode }),
+  setContinuousDays: (enabled) => set({ continuousDays: enabled }),
   setScheduleMode: (mode) => set({ scheduleMode: mode }),
 
   toggleSection: (section) => set((state) => {
@@ -890,52 +987,36 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     );
 
     for (const existing of existingShifts) {
-      if (shiftsOverlap(shift.startHour, shift.endHour, existing.startHour, existing.endHour)) {
+      if (timeRangesOverlap(shift.startHour, shift.endHour, existing.startHour, existing.endHour)) {
         return { success: false, error: 'Shift overlaps with existing shift' };
       }
     }
 
     const safeJob = shift.job;
     const shiftDate = shiftDateValue;
-    const startTimeValue = shift.startHour as unknown;
-    const endTimeValue = shift.endHour as unknown;
-    const startTime =
-      startTimeValue instanceof Date ? toTimeHMS(startTimeValue) : formatTimeFromDecimal(shift.startHour);
-    const endTime =
-      endTimeValue instanceof Date ? toTimeHMS(endTimeValue) : formatTimeFromDecimal(shift.endHour);
-    if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
-      console.debug('[shift-insert]', {
-        shift_date: shiftDate,
-        start_time: startTime,
-        end_time: endTime,
-        user_id: shift.employeeId,
-        job: safeJob,
-      });
-    }
     const shouldDraft = state.scheduleMode === 'draft' || isManagerRole(currentUser?.role);
     const nextScheduleState = shouldDraft ? 'draft' : 'published';
-    const { data, error } = await (supabase as any)
-      .from('shifts')
-      .insert({
-        organization_id: restaurantId,
-        user_id: shift.employeeId,
-        shift_date: shiftDate,
-        start_time: startTime,
-        end_time: endTime,
-        notes: shift.notes ?? null,
-        is_blocked: false,
-        schedule_state: nextScheduleState,
-        job: safeJob,
-        location_id: shift.locationId ?? null,
-      })
-      .select('*')
-      .single();
 
-    if (error || !data) {
-      return { success: false, error: error?.message ?? 'Failed to add shift' };
+    const result = await apiFetch<{ shift: Record<string, any> }>('/api/shifts', {
+      method: 'POST',
+      json: {
+        organizationId: restaurantId,
+        employeeId: shift.employeeId,
+        date: shiftDate,
+        startHour: shift.startHour,
+        endHour: shift.endHour,
+        notes: shift.notes ?? null,
+        job: safeJob,
+        locationId: shift.locationId ?? null,
+        scheduleState: nextScheduleState,
+      },
+    });
+
+    if (!result.ok || !result.data?.shift) {
+      return { success: false, error: result.error ?? 'Failed to add shift' };
     }
 
+    const data = result.data.shift;
     const newShift: Shift = {
       id: data.id,
       employeeId: data.user_id,
@@ -952,7 +1033,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       scheduleState: data.schedule_state === 'draft' ? 'draft' : 'published',
     };
 
-    // Immutable update: create new array with the new shift
     set({ shifts: [...state.shifts, newShift] });
     return { success: true };
   },
@@ -984,25 +1064,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       if (!shift) return { success: false, error: 'Shift not found' };
       if (shift.isBlocked) return { success: false, error: 'Blocked entries cannot be edited here' };
 
-      const shouldCloneToDraft =
-        isManagerRole(currentUser?.role) &&
-        shift.scheduleState === 'published';
-
-    const draftMatch = shouldCloneToDraft
-      ? state.shifts.find(
-          (s) =>
-            s.scheduleState === 'draft' &&
-            s.employeeId === shift.employeeId &&
-            s.date === shift.date &&
-            Math.abs(s.startHour - shift.startHour) < 0.001 &&
-            Math.abs(s.endHour - shift.endHour) < 0.001 &&
-            (s.locationId ?? null) === (shift.locationId ?? null)
-        )
-      : undefined;
-
     const updateId = `${id}-${Date.now()}`;
-    const baseShift = draftMatch ?? shift;
-    const updatedShift = { ...baseShift, ...updates };
+    const updatedShift = { ...shift, ...updates };
     if (DEBUG_SHIFT_SAVE) {
       console.log('SHIFT_SAVE', {
         stage: 'input',
@@ -1047,17 +1110,22 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return { success: false, error: 'This employee is blocked out on that date' };
     }
 
-    const overlapExcludeId = draftMatch ? draftMatch.id : id;
+    const excludeId = String(id);
     const existingShifts = state.shifts.filter(
       (s) =>
-        s.id !== overlapExcludeId &&
+        s.id !== id &&
         s.employeeId === updatedShift.employeeId &&
         s.date === updatedShift.date &&
         !s.isBlocked
     );
 
     for (const existing of existingShifts) {
-      if (shiftsOverlap(updatedShift.startHour, updatedShift.endHour, existing.startHour, existing.endHour)) {
+      if (
+        timeRangesOverlap(updatedShift.startHour, updatedShift.endHour, existing.startHour, existing.endHour, {
+          excludeId,
+          compareId: String(existing.id),
+        })
+      ) {
         return { success: false, error: 'Shift overlaps with existing shift' };
       }
     }
@@ -1066,6 +1134,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return { success: false, error: 'Job is required for this shift' };
     }
     const safeJob = updatedShift.job;
+    const nextScheduleState = shift.scheduleState === 'published' ? 'draft' : shift.scheduleState;
     const payload = {
         organization_id: updatedShift.restaurantId,
         user_id: updatedShift.employeeId,
@@ -1086,51 +1155,27 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       });
     }
 
-    if (shouldCloneToDraft && !draftMatch) {
-      const { data: insertedRow, error: insertError } = await (supabase as any)
-        .from('shifts')
-        .insert({
-          ...payload,
-          schedule_state: 'draft',
-        })
-        .select('*')
-        .single();
+    const result = await apiFetch<{ shift: Record<string, any> }>('/api/shifts', {
+      method: 'POST',
+      json: {
+        id,
+        organizationId: updatedShift.restaurantId,
+        employeeId: updatedShift.employeeId,
+        date: updatedShift.date,
+        startHour: updatedShift.startHour,
+        endHour: updatedShift.endHour,
+        notes: updatedShift.notes ?? null,
+        job: safeJob,
+        locationId: updatedShift.locationId ?? null,
+        scheduleState: nextScheduleState,
+      },
+    });
 
-      if (insertError || !insertedRow) {
-        return { success: false, error: insertError?.message ?? 'Failed to create draft shift' };
-      }
-
-      const newShift: Shift = {
-        id: insertedRow.id,
-        employeeId: insertedRow.user_id,
-        restaurantId: insertedRow.organization_id,
-        date: insertedRow.shift_date,
-        startHour: parseTimeToDecimal(insertedRow.start_time),
-        endHour: parseTimeToDecimal(insertedRow.end_time),
-        notes: insertedRow.notes ?? undefined,
-        isBlocked: Boolean(insertedRow.is_blocked),
-        job: isValidJob(insertedRow.job) ? insertedRow.job : undefined,
-        locationId: insertedRow.location_id ?? null,
-        payRate: insertedRow.pay_rate != null ? Number(insertedRow.pay_rate) : undefined,
-        paySource: insertedRow.pay_source ?? undefined,
-        scheduleState: insertedRow.schedule_state === 'draft' ? 'draft' : 'published',
-      };
-
-      set({ shifts: [...state.shifts, newShift] });
-      return { success: true };
+    if (!result.ok || !result.data?.shift) {
+      return { success: false, error: result.error ?? 'Failed to update shift' };
     }
 
-    const targetId = draftMatch ? draftMatch.id : id;
-    const { data: updatedRow, error } = await (supabase as any)
-      .from('shifts')
-      .update(payload)
-      .eq('id', targetId)
-      .select('*')
-      .single();
-
-    if (error) {
-      return { success: false, error: error.message };
-    }
+    const updatedRow = result.data.shift;
 
     if (DEBUG_SHIFT_SAVE) {
       console.log('SHIFT_SAVE', {
@@ -1158,7 +1203,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     };
 
     // Immutable update: create new array with the updated shift
-    const newShifts = state.shifts.map((s) => (s.id === targetId ? finalShift : s));
+    const newShifts = state.shifts.map((s) => (s.id === id ? finalShift : s));
     set({ shifts: newShifts });
 
     if (DEBUG_SHIFT_SAVE) {
@@ -2291,10 +2336,14 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       case 'business': {
         // Find business hours for the given day or use a reasonable default
         const day = dayOfWeek ?? new Date().getDay();
-        const hoursRow = state.businessHours.find((h) => h.dayOfWeek === day && h.enabled);
-        if (hoursRow?.openTime && hoursRow?.closeTime) {
-          const openHour = parseTimeToDecimal(hoursRow.openTime);
-          const closeHour = parseTimeToDecimal(hoursRow.closeTime);
+        const dayRanges = state.businessHours.filter(
+          (h) => h.dayOfWeek === day && h.enabled && h.openTime && h.closeTime
+        );
+        if (dayRanges.length > 0) {
+          const starts = dayRanges.map((h) => parseTimeToDecimal(h.openTime));
+          const ends = dayRanges.map((h) => parseTimeToDecimal(h.closeTime));
+          const openHour = Math.min(...starts);
+          const closeHour = Math.max(...ends);
           if (closeHour > openHour) {
             // Add padding of 3 hours before and after
             return {
@@ -2305,10 +2354,12 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         }
         // Fallback if no valid business hours for that day
         // Find any enabled business hours to use as a guide
-        const anyHours = state.businessHours.find((h) => h.enabled && h.openTime && h.closeTime);
-        if (anyHours?.openTime && anyHours?.closeTime) {
-          const openHour = parseTimeToDecimal(anyHours.openTime);
-          const closeHour = parseTimeToDecimal(anyHours.closeTime);
+        const anyRanges = state.businessHours.filter((h) => h.enabled && h.openTime && h.closeTime);
+        if (anyRanges.length > 0) {
+          const starts = anyRanges.map((h) => parseTimeToDecimal(h.openTime));
+          const ends = anyRanges.map((h) => parseTimeToDecimal(h.closeTime));
+          const openHour = Math.min(...starts);
+          const closeHour = Math.max(...ends);
           if (closeHour > openHour) {
             return {
               startHour: Math.max(0, Math.floor(openHour) - 3),
