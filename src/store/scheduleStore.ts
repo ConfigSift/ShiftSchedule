@@ -147,6 +147,7 @@ type ModalType =
   | 'timeOffReview'
   | 'dropShift'
   | 'copySchedule'
+  | 'reports'
   | null;
 
 interface ScheduleState {

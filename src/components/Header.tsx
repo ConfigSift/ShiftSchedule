@@ -46,7 +46,8 @@ export function Header({ minimal = false }: HeaderProps) {
     getPendingTimeOffRequests,
     getPendingBlockedDayRequests,
     scheduleMode,
-    showToast,
+    selectedDate,
+    viewMode,
   } = useScheduleStore();
 
   const { currentUser, signOut, accessibleRestaurants, pendingInvitations, activeRestaurantId } = useAuthStore();
@@ -60,7 +61,9 @@ export function Header({ minimal = false }: HeaderProps) {
   };
 
   const handleReportsClick = () => {
-    showToast('Reports coming soon', 'success');
+    const view = viewMode === 'week' || viewMode === 'month' ? 'weekly' : 'roster';
+    const date = toYMD(selectedDate);
+    router.push(`/reports?view=${view}&date=${date}`);
   };
 
   const pendingRequests = getPendingTimeOffRequests();
@@ -138,6 +141,13 @@ export function Header({ minimal = false }: HeaderProps) {
     pathname === '/chat';
   const isEmployee = currentRole === 'EMPLOYEE';
   const showEmployeeMobileHeader = isEmployee && isEmployeeNavPage && !minimal;
+
+  function toYMD(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 h-14 sm:h-16 bg-theme-secondary border-b border-theme-primary transition-theme">

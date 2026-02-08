@@ -339,6 +339,8 @@ export function Timeline() {
     return order;
   }, [scopedEmployees]);
 
+  const dateString = toDateString(selectedDate);
+
   const groupedRows = useMemo(() => {
     if (filteredEmployees.length === 0) return [];
     const rangeStart = toDateString(rangeStartDate);
@@ -350,6 +352,7 @@ export function Timeline() {
 
     const filteredIds = new Set(filteredEmployees.map((employee) => employee.id));
     const earliestByEmployee = new Map<string, { date: string; startHour: number; job: string }>();
+    const earliestStartByEmployee = new Map<string, number>();
 
     scopedShifts.forEach((shift) => {
       if (shift.isBlocked) return;
@@ -376,6 +379,18 @@ export function Timeline() {
       }
     });
 
+    // Sort rows within each job by earliest start time on the selected day.
+    scopedShifts.forEach((shift) => {
+      if (shift.isBlocked) return;
+      if (!filteredIds.has(shift.employeeId)) return;
+      if (shift.date !== dateString) return;
+      const minutes = shift.startHour * 60;
+      const existing = earliestStartByEmployee.get(shift.employeeId);
+      if (!Number.isFinite(existing) || minutes < (existing ?? Infinity)) {
+        earliestStartByEmployee.set(shift.employeeId, minutes);
+      }
+    });
+
     const groups = new Map<string, typeof filteredEmployees>();
     const assignToGroup = (job: string, employee: (typeof filteredEmployees)[number]) => {
       if (!groups.has(job)) groups.set(job, []);
@@ -386,6 +401,21 @@ export function Timeline() {
       const earliest = earliestByEmployee.get(employee.id);
       const preferredJob = earliest?.job && jobOrder.includes(earliest.job) ? earliest.job : 'Unassigned';
       assignToGroup(preferredJob, employee);
+    });
+
+    groups.forEach((list) => {
+      list.sort((a, b) => {
+        const aStart = earliestStartByEmployee.get(a.id);
+        const bStart = earliestStartByEmployee.get(b.id);
+        const aHas = Number.isFinite(aStart);
+        const bHas = Number.isFinite(bStart);
+        if (aHas && bHas && aStart !== bStart) return (aStart ?? 0) - (bStart ?? 0);
+        if (aHas && !bHas) return -1;
+        if (!aHas && bHas) return 1;
+        const nameCompare = a.name.localeCompare(b.name);
+        if (nameCompare !== 0) return nameCompare;
+        return a.id.localeCompare(b.id);
+      });
     });
 
     const rows: Array<
@@ -407,7 +437,7 @@ export function Timeline() {
     }
 
     return rows;
-  }, [filteredEmployees, scopedShifts, jobOrder, rangeStartDate, rangeEndDate]);
+  }, [filteredEmployees, scopedShifts, jobOrder, rangeStartDate, rangeEndDate, dateString]);
 
   // Fit timeline grid width to available space
   useLayoutEffect(() => {
@@ -454,8 +484,6 @@ export function Timeline() {
   const pxPerHour = continuousDays ? DEFAULT_PX_PER_HOUR : gridViewportWidth / totalHoursForScale;
   const singleDayHours = Array.from({ length: TOTAL_HOURS }, (_, i) => HOURS_START + i);
   const singleDayGridWidth = TOTAL_HOURS * pxPerHour;
-  const dateString = toDateString(selectedDate);
-
   // Continuous mode values
   const continuousGridWidth = CONTINUOUS_TOTAL_HOURS * pxPerHour;
 
