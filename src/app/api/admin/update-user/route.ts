@@ -23,6 +23,20 @@ type UpdatePayload = {
   jobPay?: Record<string, number>;
 };
 
+function isEmployeeNumberConflict(error: { code?: string | null; message?: string | null; details?: string | null }) {
+  const code = error.code ?? '';
+  const message = (error.message ?? '').toLowerCase();
+  const details = (error.details ?? '').toLowerCase();
+  const combined = `${message} ${details}`;
+  if (code === '23505') {
+    return combined.includes('users_org_employee_number_unique');
+  }
+  if (combined.includes('duplicate key value') && combined.includes('users_org_employee_number_unique')) {
+    return true;
+  }
+  return false;
+}
+
 export async function POST(request: NextRequest) {
   const payload = (await request.json()) as UpdatePayload;
   const allowAdminCreation = process.env.ENABLE_ADMIN_CREATION === 'true';
@@ -425,6 +439,19 @@ export async function POST(request: NextRequest) {
     .eq('auth_user_id', targetAuthUserId);
 
   if (updateResult.error) {
+    if (isEmployeeNumberConflict(updateResult.error)) {
+      return applySupabaseCookies(
+        NextResponse.json(
+          {
+            code: 'EMPLOYEE_ID_TAKEN',
+            field: 'employeeNumber',
+            message: 'Employee ID already exists. Please choose a different ID.',
+          },
+          { status: 409 }
+        ),
+        response
+      );
+    }
     const message = updateResult.error.message?.toLowerCase() ?? '';
     if (message.includes('full_name') || message.includes('hourly_pay')) {
       const safeHourlyPay = message.includes('hourly_pay') ? undefined : hourlyPayValue;
@@ -445,6 +472,19 @@ export async function POST(request: NextRequest) {
         .eq('organization_id', payload.organizationId)
         .eq('auth_user_id', targetAuthUserId);
       if (legacyResult.error) {
+        if (isEmployeeNumberConflict(legacyResult.error)) {
+          return applySupabaseCookies(
+            NextResponse.json(
+              {
+                code: 'EMPLOYEE_ID_TAKEN',
+                field: 'employeeNumber',
+                message: 'Employee ID already exists. Please choose a different ID.',
+              },
+              { status: 409 }
+            ),
+            response
+          );
+        }
         return applySupabaseCookies(
           NextResponse.json({ error: legacyResult.error.message }, { status: 400 }),
           response

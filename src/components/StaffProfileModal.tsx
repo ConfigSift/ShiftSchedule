@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import { JOB_OPTIONS } from '../types';
 import { normalizeJobs } from '../utils/jobs';
@@ -53,6 +53,7 @@ export function StaffProfileModal({
   const [email, setEmail] = useState('');
   const [emailError, setEmailError] = useState('');
   const [employeeNumber, setEmployeeNumber] = useState('');
+  const [employeeNumberError, setEmployeeNumberError] = useState('');
   const [phone, setPhone] = useState('');
   const [accountType, setAccountType] = useState('EMPLOYEE');
   const [jobs, setJobs] = useState<string[]>([]);
@@ -64,6 +65,7 @@ export function StaffProfileModal({
   const [initializedKey, setInitializedKey] = useState<string | null>(null);
   const [workedRoles, setWorkedRoles] = useState<Array<{ job: string; lastDate: string }>>([]);
   const [workedRolesLoading, setWorkedRolesLoading] = useState(false);
+  const employeeNumberRef = useRef<HTMLInputElement | null>(null);
 
   // Create a stable key that changes when user ID or jobPay data changes
   // This ensures re-initialization when saved data differs from local state
@@ -84,6 +86,7 @@ export function StaffProfileModal({
     setEmployeeNumber(
       user.employeeNumber ? String(user.employeeNumber).padStart(4, '0') : ''
     );
+    setEmployeeNumberError('');
     setAccountType(getUserRole(user.accountType));
     const normalizedJobs = normalizeJobs(user.jobs);
     setJobs(normalizedJobs);
@@ -113,6 +116,8 @@ export function StaffProfileModal({
   useEffect(() => {
     if (!isOpen) {
       setInitializedKey(null);
+      setModalError('');
+      setEmployeeNumberError('');
     }
   }, [isOpen]);
 
@@ -341,6 +346,11 @@ export function StaffProfileModal({
         } else if (result.status === 403) {
           const message = 'You dont have permission for that action.';
           onError(message);
+        } else if (result.status === 409 && result.code === 'EMPLOYEE_ID_TAKEN') {
+          const message = result.error || 'Employee ID already exists. Please choose a different ID.';
+          setModalError(message);
+          setEmployeeNumberError(message);
+          employeeNumberRef.current?.focus();
         } else if (result.code === 'JOB_IN_USE' || result.code === 'JOB_REMOVAL_BLOCKED') {
           // Show job removal error inside modal and highlight blocked jobs
           const payload = (result.data as any) ?? {};
@@ -412,6 +422,13 @@ export function StaffProfileModal({
           </div>
         )}
 
+        {/* Modal-local error banner */}
+        {modalError && (
+          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <p className="text-sm text-red-400">{modalError}</p>
+          </div>
+        )}
+
         <div>
           <label className="text-sm text-theme-secondary">Full name</label>
           <input
@@ -446,7 +463,12 @@ export function StaffProfileModal({
             inputMode="numeric"
             maxLength={4}
             value={employeeNumber}
-            onChange={(e) => setEmployeeNumber(e.target.value.replace(/\D/g, ''))}
+            ref={employeeNumberRef}
+            onChange={(e) => {
+              setEmployeeNumber(e.target.value.replace(/\D/g, ''));
+              if (employeeNumberError) setEmployeeNumberError('');
+              if (modalError) setModalError('');
+            }}
             onBlur={() => {
               if (employeeNumber.trim() && /^\d{1,4}$/.test(employeeNumber.trim())) {
                 const padded = employeeNumber.trim().padStart(4, '0');
@@ -454,8 +476,13 @@ export function StaffProfileModal({
               }
             }}
             disabled={!canEdit}
-            className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
+            className={`w-full mt-1 px-3 py-2 bg-theme-tertiary border rounded-lg text-theme-primary disabled:opacity-60 ${
+              employeeNumberError ? 'border-red-500' : 'border-theme-primary'
+            }`}
           />
+          {employeeNumberError && (
+            <p className="text-xs text-red-400 mt-1">{employeeNumberError}</p>
+          )}
         </div>
 
         <div>
@@ -557,13 +584,6 @@ export function StaffProfileModal({
                 </ul>
               )}
             </div>
-          </div>
-        )}
-
-        {/* Modal-local error banner */}
-        {modalError && (
-          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <p className="text-sm text-red-400">{modalError}</p>
           </div>
         )}
 

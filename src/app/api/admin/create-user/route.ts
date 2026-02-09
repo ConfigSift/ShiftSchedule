@@ -31,6 +31,20 @@ type CreateResponse = {
   error?: string;
 };
 
+function isEmployeeNumberConflict(error: { code?: string | null; message?: string | null; details?: string | null }) {
+  const code = error.code ?? '';
+  const message = (error.message ?? '').toLowerCase();
+  const details = (error.details ?? '').toLowerCase();
+  const combined = `${message} ${details}`;
+  if (code === '23505') {
+    return combined.includes('users_org_employee_number_unique');
+  }
+  if (combined.includes('duplicate key value') && combined.includes('users_org_employee_number_unique')) {
+    return true;
+  }
+  return false;
+}
+
 function sanitizeJobs(jobs: string[]) {
   return normalizeJobs(jobs);
 }
@@ -422,6 +436,22 @@ export async function POST(request: NextRequest) {
     const insertResult = await supabaseAdmin.from('users').insert(insertPayload);
 
     if (insertResult.error) {
+      if (isEmployeeNumberConflict(insertResult.error)) {
+        if (createdAuthUser) {
+          await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+        }
+        return toResponse(
+          {
+            created: false,
+            invited: false,
+            already_member: false,
+            code: 'EMPLOYEE_ID_TAKEN',
+            field: 'employeeNumber',
+            message: 'Employee ID already exists. Please choose a different ID.',
+          } as any,
+          409
+        );
+      }
       const message = insertResult.error.message?.toLowerCase() ?? '';
       if (message.includes('hourly_pay')) {
         const { hourly_pay, ...withoutPay } = insertPayload;
@@ -461,10 +491,42 @@ export async function POST(request: NextRequest) {
         }
         const legacyResult = await supabaseAdmin.from('users').insert(legacyPayload);
         if (legacyResult.error) {
+          if (isEmployeeNumberConflict(legacyResult.error)) {
+            if (createdAuthUser) {
+              await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+            }
+            return toResponse(
+              {
+                created: false,
+                invited: false,
+                already_member: false,
+                code: 'EMPLOYEE_ID_TAKEN',
+                field: 'employeeNumber',
+                message: 'Employee ID already exists. Please choose a different ID.',
+              } as any,
+              409
+            );
+          }
           if (legacyResult.error.message?.toLowerCase().includes('hourly_pay')) {
             const { hourly_pay, ...legacyNoPay } = legacyPayload;
             const secondLegacy = await supabaseAdmin.from('users').insert(legacyNoPay);
             if (secondLegacy.error) {
+              if (isEmployeeNumberConflict(secondLegacy.error)) {
+                if (createdAuthUser) {
+                  await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+                }
+                return toResponse(
+                  {
+                    created: false,
+                    invited: false,
+                    already_member: false,
+                    code: 'EMPLOYEE_ID_TAKEN',
+                    field: 'employeeNumber',
+                    message: 'Employee ID already exists. Please choose a different ID.',
+                  } as any,
+                  409
+                );
+              }
               if (createdAuthUser) {
                 await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
               }
