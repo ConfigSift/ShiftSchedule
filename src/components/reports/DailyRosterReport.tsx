@@ -11,8 +11,8 @@ import {
   formatTimeLabel,
   getJobColorClasses,
   getJobColorKey,
+  compareJobs,
 } from './report-utils';
-import { JOB_OPTIONS } from '../../types';
 import { ReportHeader } from './ReportHeader';
 
 // ---------------------------------------------------------------------------
@@ -67,21 +67,11 @@ function buildRosterGroups(
     entries.sort((a, b) => a.shift.startHour - b.shift.startHour || a.employee.name.localeCompare(b.employee.name))
   );
 
-  // Build result in JOB_OPTIONS order
   const result: RosterGroup[] = [];
-  const jobList: string[] = [...JOB_OPTIONS];
-
-  for (const job of jobList) {
+  const jobList = Array.from(groupMap.keys()).sort(compareJobs);
+  jobList.forEach((job) => {
     const entries = groupMap.get(job);
-    if (!entries || entries.length === 0) continue;
-    const colors = getJobColorClasses(job);
-    result.push({ job, color: colors.color, bgColor: colors.bgColor, entries });
-    groupMap.delete(job);
-  }
-
-  // Remaining (custom jobs / Unassigned)
-  groupMap.forEach((entries, job) => {
-    if (entries.length === 0) return;
+    if (!entries || entries.length === 0) return;
     const colors = getJobColorClasses(job);
     result.push({ job, color: colors.color, bgColor: colors.bgColor, entries });
   });

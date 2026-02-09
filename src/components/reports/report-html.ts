@@ -1,5 +1,4 @@
 import type { Employee, Shift } from '../../types';
-import { JOB_OPTIONS } from '../../types';
 import {
   calculateDailyStats,
   calculateWeeklyHours,
@@ -10,6 +9,7 @@ import {
   formatReportDate,
   formatReportTimestamp,
   formatReportWeekRange,
+  compareJobs,
   getJobColorKey,
   getJobColorClasses,
 } from './report-utils';
@@ -36,13 +36,13 @@ function renderHeaderHTML({ restaurantName, title, dateLabel }: ReportHeaderInpu
   `;
 }
 
-function renderStatsBar(items: Array<{ label: string; value: string; accent?: boolean }>): string {
+function renderStatsBar(items: Array<{ label: string; value: string; accent?: boolean; className?: string }>): string {
   return `
     <div class="stats-bar">
       ${items
         .map(
           (item) => `
-            <div class="stat-item">
+            <div class="stat-item${item.className ? ` ${item.className}` : ''}">
               <span class="stat-label">${escapeHTML(item.label)}</span>
               <span class="stat-value${item.accent ? ' stat-accent' : ''}">${escapeHTML(item.value)}</span>
             </div>
@@ -144,17 +144,12 @@ export function generateDailyRosterHTML(
     );
 
     const result: Array<{ job: string; key: string; entries: typeof groupMap extends Map<any, infer T> ? T : never }> = [];
-    const jobList: string[] = [...JOB_OPTIONS];
+    const jobList = Array.from(groupMap.keys()).sort(compareJobs);
     for (const job of jobList) {
       const entries = groupMap.get(job);
       if (!entries || entries.length === 0) continue;
       result.push({ job, key: getJobColorKey(job), entries });
-      groupMap.delete(job);
     }
-    groupMap.forEach((entries, job) => {
-      if (!entries.length) return;
-      result.push({ job, key: getJobColorKey(job), entries });
-    });
 
     return result;
   };
@@ -174,7 +169,7 @@ export function generateDailyRosterHTML(
   ];
 
   return `
-    <div class="report-page report-roster-root">
+    <div class="report-page report-roster-root report-print">
       ${renderHeaderHTML({
         restaurantName,
         title: 'Daily Roster',
@@ -186,7 +181,7 @@ export function generateDailyRosterHTML(
           { label: 'AM', value: String(stats.amCount) },
           { label: 'PM', value: String(stats.pmCount) },
           ...(stats.doublesCount > 0 ? [{ label: 'Doubles', value: String(stats.doublesCount), accent: true }] : []),
-          { label: 'Total Hours', value: `${Math.round(totalHours * 10) / 10}h` },
+          { label: 'Total Hours', value: `${Math.round(totalHours * 10) / 10}h`, className: 'print-hide-total-hours' },
           ...(stats.estLaborCost > 0
             ? [{ label: 'Est. Labor', value: `$${stats.estLaborCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}` }]
             : []),
@@ -340,17 +335,12 @@ export function generateDailyTimelineHTML(
   groupMap.forEach((rows) => rows.sort((a, b) => a.employee.name.localeCompare(b.employee.name)));
 
   const groups: Array<{ job: string; key: string; rows: Array<{ employee: Employee; shifts: Shift[] }> }> = [];
-  const jobList: string[] = [...JOB_OPTIONS];
+  const jobList = Array.from(groupMap.keys()).sort(compareJobs);
   for (const job of jobList) {
     const rows = groupMap.get(job);
     if (!rows || rows.length === 0) continue;
     groups.push({ job, key: getJobColorKey(job), rows });
-    groupMap.delete(job);
   }
-  groupMap.forEach((rows, job) => {
-    if (!rows.length) return;
-    groups.push({ job, key: getJobColorKey(job), rows });
-  });
 
   const legendItems = [
     { label: 'AM shift', className: 'am-dot' },
@@ -374,7 +364,7 @@ export function generateDailyTimelineHTML(
           { label: 'AM', value: String(stats.amCount) },
           { label: 'PM', value: String(stats.pmCount) },
           ...(stats.doublesCount > 0 ? [{ label: 'Doubles', value: String(stats.doublesCount), accent: true }] : []),
-          { label: 'Total Hours', value: `${Math.round(totalHours * 10) / 10}h` },
+          { label: 'Total Hours', value: `${Math.round(totalHours * 10) / 10}h`, className: 'print-hide-total-hours' },
           ...(stats.estLaborCost > 0
             ? [{ label: 'Est. Labor', value: `$${stats.estLaborCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}` }]
             : []),
@@ -544,17 +534,12 @@ export function generateWeeklyScheduleHTML(
   groupMap.forEach((rows) => rows.sort((a, b) => a.employee.name.localeCompare(b.employee.name)));
 
   const groups: Array<{ job: string; key: string; rows: Array<{ employee: Employee; shiftsByDay: Map<string, Shift[]>; totalHours: number }> }> = [];
-  const jobList: string[] = [...JOB_OPTIONS];
+  const jobList = Array.from(groupMap.keys()).sort(compareJobs);
   for (const job of jobList) {
     const rows = groupMap.get(job);
     if (!rows || rows.length === 0) continue;
     groups.push({ job, key: getJobColorKey(job), rows });
-    groupMap.delete(job);
   }
-  groupMap.forEach((rows, job) => {
-    if (!rows.length) return;
-    groups.push({ job, key: getJobColorKey(job), rows });
-  });
 
   const legendItems = [
     { label: 'AM shift', className: 'am-dot' },
@@ -573,7 +558,7 @@ export function generateWeeklyScheduleHTML(
       ${renderStatsBar(
         [
           { label: 'Staff', value: String(totalStaff) },
-          { label: 'Total Hours', value: `${Math.round(totalLaborHours * 10) / 10}h` },
+          { label: 'Total Hours', value: `${Math.round(totalLaborHours * 10) / 10}h`, className: 'print-hide-total-hours' },
           ...(estLaborCost > 0 ? [{ label: 'Est. Labor', value: `$${estLaborCost.toLocaleString()}` }] : []),
         ]
       )}

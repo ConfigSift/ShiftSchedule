@@ -2,7 +2,6 @@
 
 import { useMemo } from 'react';
 import type { Employee, Shift } from '../../types';
-import { JOB_OPTIONS } from '../../types';
 import {
   classifyShift,
   calculateWeeklyHours,
@@ -11,6 +10,7 @@ import {
   formatHourForReport,
   getJobColorClasses,
   getJobColorKey,
+  compareJobs,
 } from './report-utils';
 import { ReportHeader } from './ReportHeader';
 
@@ -105,21 +105,11 @@ function buildWeeklyGroups(
   // Sort rows within groups alphabetically
   groupMap.forEach((rows) => rows.sort((a, b) => a.employee.name.localeCompare(b.employee.name)));
 
-  // Build result in JOB_OPTIONS order
   const result: WeeklyGroup[] = [];
-  const jobList: string[] = [...JOB_OPTIONS];
-
-  for (const job of jobList) {
+  const jobList = Array.from(groupMap.keys()).sort(compareJobs);
+  jobList.forEach((job) => {
     const rows = groupMap.get(job);
-    if (!rows || rows.length === 0) continue;
-    const colors = getJobColorClasses(job);
-    result.push({ job, color: colors.color, bgColor: colors.bgColor, rows });
-    groupMap.delete(job);
-  }
-
-  // Remaining (custom/Unassigned)
-  groupMap.forEach((rows, job) => {
-    if (rows.length === 0) return;
+    if (!rows || rows.length === 0) return;
     const colors = getJobColorClasses(job);
     result.push({ job, color: colors.color, bgColor: colors.bgColor, rows });
   });

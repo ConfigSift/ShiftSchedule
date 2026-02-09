@@ -1,13 +1,13 @@
 'use client';
 
 import type { Employee, Shift } from '../../types';
-import { JOB_OPTIONS } from '../../types';
 import {
   calculateDailyStats,
   formatReportDate,
   formatReportTimestamp,
   formatHourForReport,
   getJobColorClasses,
+  compareJobs,
 } from './report-utils';
 import { ReportHeader } from './ReportHeader';
 
@@ -103,21 +103,11 @@ function buildTimelineGroups(
     })
   );
 
-  // Build result in JOB_OPTIONS order
   const result: TimelineGroup[] = [];
-  const jobList: string[] = [...JOB_OPTIONS];
-
-  for (const job of jobList) {
+  const jobList = Array.from(groupMap.keys()).sort(compareJobs);
+  jobList.forEach((job) => {
     const rows = groupMap.get(job);
-    if (!rows || rows.length === 0) continue;
-    const colors = getJobColorClasses(job);
-    result.push({ job, color: colors.color, bgColor: colors.bgColor, rows });
-    groupMap.delete(job);
-  }
-
-  // Remaining (custom/Unassigned)
-  groupMap.forEach((rows, job) => {
-    if (rows.length === 0) return;
+    if (!rows || rows.length === 0) return;
     const colors = getJobColorClasses(job);
     result.push({ job, color: colors.color, bgColor: colors.bgColor, rows });
   });

@@ -36,8 +36,8 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      font-size: 11px;
-      line-height: 1.4;
+      font-size: 10.5px;
+      line-height: 1.35;
       color: #18181b;
       background: #fff;
       -webkit-print-color-adjust: exact;
@@ -53,7 +53,7 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
     .report-page {
       max-width: 1100px;
       margin: 0 auto;
-      padding: 20px 24px;
+      padding: 16px 20px;
     }
 
     /* Header */
@@ -61,19 +61,19 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      border-bottom: 2px solid #18181b;
-      padding-bottom: 10px;
-      margin-bottom: 12px;
+      border-bottom: 1px solid #d4d4d8;
+      padding-bottom: 8px;
+      margin-bottom: 10px;
     }
 
     .report-header-left h1 {
-      font-size: 18px;
+      font-size: 16px;
       font-weight: 700;
       line-height: 1.2;
     }
 
     .report-title {
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.5px;
@@ -81,7 +81,7 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
     }
 
     .report-header-left .report-date {
-      font-size: 13px;
+      font-size: 11px;
       color: #52525b;
       margin-top: 2px;
     }
@@ -125,12 +125,12 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
     /* Stats bar */
     .stats-bar {
       display: flex;
-      gap: 16px;
-      padding: 8px 12px;
+      gap: 12px;
+      padding: 6px 10px;
       background: #f4f4f5;
       border-radius: 6px;
-      margin-bottom: 16px;
-      font-size: 11px;
+      margin-bottom: 12px;
+      font-size: 10px;
     }
 
     .stat-item {
@@ -183,11 +183,11 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
       display: flex;
       align-items: center;
       gap: 6px;
-      padding: 4px 8px;
-      margin-top: 8px;
-      margin-bottom: 4px;
+      padding: 3px 6px;
+      margin-top: 6px;
+      margin-bottom: 3px;
       border-radius: 3px;
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.5px;
@@ -206,9 +206,9 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
       grid-template-columns: 1fr auto auto;
       gap: 8px;
       align-items: center;
-      padding: 3px 8px;
-      border-bottom: 1px solid #f4f4f5;
-      font-size: 11px;
+      padding: 2px 6px;
+      border-bottom: 1px solid #f8fafc;
+      font-size: 10px;
     }
 
     .employee-row:last-child {
@@ -227,6 +227,10 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
     .employee-time {
       font-weight: 500;
       white-space: nowrap;
+    }
+
+    .report-roster-root .employee-row {
+      grid-template-columns: 1fr 120px 90px;
     }
 
     .double-star {
@@ -499,6 +503,7 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
       body { font-size: 10px; }
       .report-page { padding: 0; max-width: none; }
       .no-print { display: none !important; }
+      .print-hide-total-hours { display: none !important; }
 
       /* Prevent row breaks */
       .employee-row,

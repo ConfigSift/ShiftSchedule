@@ -8,6 +8,7 @@ import { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } fr
 import { Palmtree, ArrowLeftRight } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { getJobColorClasses } from '../lib/jobColors';
+import { compareJobs } from '../utils/jobOrder';
 import { ScheduleToolbar } from './ScheduleToolbar';
 
 // Compact timeline sizing - pixels per hour
@@ -326,17 +327,14 @@ export function Timeline() {
   );
 
   const jobOrder = useMemo(() => {
-    const order: string[] = [];
+    const uniqueJobs = new Set<string>();
     scopedEmployees.forEach((employee) => {
       if (!employee.isActive) return;
-      const jobs = employee.jobs ?? [];
-      jobs.forEach((job) => {
-        if (!order.includes(job)) {
-          order.push(job);
-        }
+      (employee.jobs ?? []).forEach((job) => {
+        if (job) uniqueJobs.add(job);
       });
     });
-    return order;
+    return Array.from(uniqueJobs).sort(compareJobs);
   }, [scopedEmployees]);
 
   const dateString = toDateString(selectedDate);

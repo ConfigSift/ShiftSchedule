@@ -301,6 +301,8 @@ export function formatReportWeekRange(startDate: Date, endDate: Date): string {
   return `${startStr} \u2013 ${endStr}, ${year}`;
 }
 
+export { compareJobs, getJobRank } from '../../utils/jobOrder';
+
 /** Format a decimal hour (e.g. 9.5) as "9:30a" style for reports. */
 export function formatHourForReport(hour: number, options?: { isEnd?: boolean }): string {
   const isEnd = options?.isEnd ?? false;
