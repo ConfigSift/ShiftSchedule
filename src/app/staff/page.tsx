@@ -66,8 +66,17 @@ export default function StaffPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [formState, setFormState] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
-  const [invitationMode, setInvitationMode] = useState(false);
-  const [invitationModalOpen, setInvitationModalOpen] = useState(false);
+  const [modalError, setModalError] = useState('');
+  const [emailCheck, setEmailCheck] = useState({
+    status: 'idle' as 'idle' | 'checking' | 'ready' | 'invalid' | 'error',
+    existsInAuth: false,
+    existsInOrg: false,
+    hasPendingInvite: false,
+    alreadyMember: false,
+    hasMembershipInThisOrg: false,
+    hasMembershipInOtherOrg: false,
+  });
+  
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [resetTarget, setResetTarget] = useState<OrgUser | null>(null);
   const [resetPasscode, setResetPasscode] = useState('');
@@ -96,6 +105,9 @@ export default function StaffPage() {
     if (!isManager) return false;
     return user.accountType !== 'ADMIN';
   };
+
+  const isUuid = (value: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
   const accountTypeOptions = useMemo(() => {
     if (isAdmin) {
@@ -193,17 +205,122 @@ export default function StaffPage() {
     }
   }, [activeRestaurantId, isInitialized, currentUser]);
 
+  useEffect(() => {
+    if (!modalOpen || !activeRestaurantId) return;
+    const rawEmail = formState.email.trim().toLowerCase();
+    if (!rawEmail) {
+      setEmailCheck({
+        status: 'idle',
+        existsInAuth: false,
+        existsInOrg: false,
+        hasPendingInvite: false,
+        alreadyMember: false,
+        hasMembershipInThisOrg: false,
+        hasMembershipInOtherOrg: false,
+      });
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(rawEmail)) {
+      setEmailCheck({
+        status: 'invalid',
+        existsInAuth: false,
+        existsInOrg: false,
+        hasPendingInvite: false,
+        alreadyMember: false,
+        hasMembershipInThisOrg: false,
+        hasMembershipInOtherOrg: false,
+      });
+      return;
+    }
+
+    let cancelled = false;
+    setEmailCheck((prev) => ({
+      ...prev,
+      status: 'checking',
+      existsInAuth: false,
+      existsInOrg: false,
+      hasPendingInvite: false,
+      alreadyMember: false,
+      hasMembershipInThisOrg: false,
+      hasMembershipInOtherOrg: false,
+    }));
+    const handle = setTimeout(async () => {
+      const result = await apiFetch(
+        `/api/admin/check-email?organizationId=${encodeURIComponent(activeRestaurantId)}&email=${encodeURIComponent(
+          rawEmail
+        )}`,
+        { method: 'GET', skipAuthDebug: true }
+      );
+      if (cancelled) return;
+      if (!result.ok) {
+        setEmailCheck({
+          status: 'error',
+          existsInAuth: false,
+          existsInOrg: false,
+          hasPendingInvite: false,
+          alreadyMember: false,
+          hasMembershipInThisOrg: false,
+          hasMembershipInOtherOrg: false,
+        });
+        return;
+      }
+      const data = (result.data ?? {}) as Record<string, unknown>;
+      const existsInAuth = Boolean(data.existsInAuth ?? data.authExists);
+      const existsInOrg = Boolean(data.existsInOrg);
+      const hasPendingInvite = Boolean(data.hasPendingInvite);
+      const hasMembershipInThisOrg = Boolean(data.hasMembershipInThisOrg);
+      const hasMembershipInOtherOrg = Boolean(data.hasMembershipInOtherOrg);
+      const alreadyMember = Boolean(data.alreadyMember ?? hasMembershipInThisOrg);
+      setEmailCheck({
+        status: 'ready',
+        existsInAuth,
+        existsInOrg,
+        hasPendingInvite,
+        alreadyMember,
+        hasMembershipInThisOrg,
+        hasMembershipInOtherOrg,
+      });
+      if (existsInAuth && formState.passcode) {
+        setFormState((prev) => ({ ...prev, passcode: '' }));
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [formState.email, activeRestaurantId, modalOpen]);
+
   const openAddModal = () => {
     setFormState(EMPTY_FORM);
-    setInvitationMode(false);
+    setEmailCheck({
+      status: 'idle',
+      existsInAuth: false,
+      existsInOrg: false,
+      hasPendingInvite: false,
+      alreadyMember: false,
+      hasMembershipInThisOrg: false,
+      hasMembershipInOtherOrg: false,
+    });
+    setModalError('');
     setModalOpen(true);
   };
 
   const closeModal = () => {
     setModalOpen(false);
     setFormState(EMPTY_FORM);
+    setEmailCheck({
+      status: 'idle',
+      existsInAuth: false,
+      existsInOrg: false,
+      hasPendingInvite: false,
+      alreadyMember: false,
+      hasMembershipInThisOrg: false,
+      hasMembershipInOtherOrg: false,
+    });
+    setModalError('');
     setError('');
-    setInvitationMode(false);
   };
 
   const openResetModal = (user: OrgUser) => {
@@ -247,31 +364,7 @@ export default function StaffPage() {
     setProfileMode(null);
   };
 
-  const handleEmailBlur = async () => {
-    if (!activeRestaurantId) return;
-    const normalizedEmail = formState.email.trim().toLowerCase();
-    if (!normalizedEmail) {
-      setInvitationMode(false);
-      return;
-    }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(normalizedEmail)) {
-      setInvitationMode(false);
-      return;
-    }
-    const result = await apiFetch(
-      `/api/admin/check-email?organization_id=${encodeURIComponent(activeRestaurantId)}&email=${encodeURIComponent(normalizedEmail)}`
-    );
-    if (!result.ok) {
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.log('[check-email] status', result.status, 'error', result.error);
-      }
-      setInvitationMode(false);
-      return;
-    }
-    setInvitationMode(Boolean(result.data?.exists));
-  };
+  
 
   // Handle profile save: update users array with returned user
   const handleProfileSaved = async (updatedUser?: OrgUser) => {
@@ -313,39 +406,59 @@ export default function StaffPage() {
   const handleSave = async () => {
     if (!activeRestaurantId) return;
     setError('');
+    setModalError('');
     setSuccessMessage('');
     setAuthBanner(null);
     const missingFields: string[] = [];
     if (!formState.fullName.trim()) missingFields.push('Full name');
     if (!formState.email.trim()) missingFields.push('Email');
     if (!formState.employeeNumber.trim()) missingFields.push('Employee number');
-    if (!invitationMode && !formState.passcode.trim()) missingFields.push('PIN');
+    const requiresPin = !emailCheck.existsInAuth;
+    if (requiresPin && !formState.passcode.trim()) missingFields.push('PIN');
     if (missingFields.length > 0) {
-      setError(`Missing required fields: ${missingFields.join(', ')}.`);
+      setModalError(`Missing required fields: ${missingFields.join(', ')}.`);
       return;
     }
 
-    if (!invitationMode && !/^\d{4}$/.test(formState.passcode)) {
-      setError('PIN must be exactly 4 digits.');
+    if (emailCheck.status === 'checking') {
+      setModalError('Checking email. Please wait a moment.');
+      return;
+    }
+    if (emailCheck.status === 'invalid') {
+      setModalError('Please enter a valid email address.');
+      return;
+    }
+
+    if (emailCheck.existsInOrg) {
+      setModalError('Email is already used by another employee in this restaurant.');
+      return;
+    }
+    if (emailCheck.alreadyMember) {
+      setModalError('User already belongs to this restaurant.');
+      return;
+    }
+
+    if (requiresPin && !/^\d{6}$/.test(formState.passcode)) {
+      setModalError('PIN must be exactly 6 digits.');
       return;
     }
 
     if (!/^\d{4}$/.test(formState.employeeNumber.trim())) {
-      setError('Employee number must be 4 digits.');
+      setModalError('Employee number must be 4 digits.');
       return;
     }
     if (formState.employeeNumber.trim() === '0000') {
-      setError('Employee number 0000 is not allowed.');
+      setModalError('Employee number 0000 is not allowed.');
       return;
     }
 
     if (!accountTypeOptions.includes(formState.accountType)) {
-      setError('Invalid account type selection.');
+      setModalError('Invalid account type selection.');
       return;
     }
 
     if (['EMPLOYEE', 'MANAGER'].includes(formState.accountType) && formState.jobs.length === 0) {
-      setError('Managers and employees must have at least one job.');
+      setModalError('Managers and employees must have at least one job.');
       return;
     }
 
@@ -355,7 +468,7 @@ export default function StaffPage() {
       if (rawValue === undefined || rawValue === '') continue;
       const parsed = parseFloat(rawValue);
       if (!Number.isFinite(parsed) || parsed < 0) {
-        setError(`Invalid hourly pay for ${job}.`);
+        setModalError(`Invalid hourly pay for ${job}.`);
         return;
       }
       jobPayPayload[job] = Math.round(parsed * 100) / 100;
@@ -368,7 +481,7 @@ export default function StaffPage() {
     setSubmitting(true);
 
     try {
-      const pinToSend = invitationMode ? '1111' : formState.passcode;
+      const pinToSend = requiresPin ? formState.passcode : '';
       const normalizedEmail = formState.email.trim().toLowerCase();
       const result = await apiFetch('/api/admin/create-user', {
         method: 'POST',
@@ -380,7 +493,7 @@ export default function StaffPage() {
           employeeNumber: Number(formState.employeeNumber),
           accountType: formState.accountType,
           jobs: formState.jobs,
-          pinCode: pinToSend,
+          ...(pinToSend ? { pinCode: pinToSend } : {}),
           hourlyPay: avgHourlyPay,
           jobPay: jobPayPayload,
         },
@@ -391,26 +504,73 @@ export default function StaffPage() {
         responseData && typeof responseData === 'object'
           ? (responseData as Record<string, unknown>)
           : null;
-      const created = Boolean(responseObject?.created);
-      const invited = Boolean(responseObject?.invited);
-      const alreadyMember = Boolean(
-        (responseObject as Record<string, unknown> | null)?.already_member
-        ?? (responseObject as Record<string, unknown> | null)?.alreadyMember
-      );
-      const isSuccess = created || invited || alreadyMember;
+      const action =
+        typeof responseObject?.action === 'string' ? String(responseObject.action) : '';
+      const created =
+        action === 'CREATED'
+        || action === 'ADDED_EXISTING_AUTH'
+        || Boolean(responseObject?.created);
+      const invited =
+        action === 'INVITED'
+        || Boolean(responseObject?.invited);
+      const alreadyMember =
+        action === 'ALREADY_MEMBER'
+        || Boolean(
+          (responseObject as Record<string, unknown> | null)?.already_member
+          ?? (responseObject as Record<string, unknown> | null)?.alreadyMember
+        );
+      const alreadySent = Boolean(responseObject?.alreadySent);
+      const isSuccess = created || alreadyMember || invited;
 
       if (!result.ok || !isSuccess) {
         if (process.env.NODE_ENV !== 'production') {
           // eslint-disable-next-line no-console
           console.log('[create-user] status', result.status, 'error', result.error, 'data', result.data);
         }
+        if (result.status === 409 && result.code === 'EMPLOYEE_ID_TAKEN') {
+          setModalError('Employee ID already exists. Please choose a different one.');
+          setSubmitting(false);
+          return;
+        }
+        if (result.status === 409 && result.code === 'EMAIL_TAKEN_ORG') {
+          setModalError('Email is already used by another employee in this restaurant.');
+          setSubmitting(false);
+          return;
+        }
+        if (result.status === 409 && result.code === 'EMAIL_TAKEN_AUTH') {
+          setModalError('Email is already used by another account.');
+          setSubmitting(false);
+          return;
+        }
+        if (result.status === 409 && result.code === 'INVITE_ALREADY_SENT') {
+          setModalError('Invite already sent for this email.');
+          setSubmitting(false);
+          return;
+        }
+        if (result.status === 409 && result.code === 'ALREADY_MEMBER') {
+          setModalError('User already belongs to this restaurant.');
+          setSubmitting(false);
+          return;
+        }
+        if (result.status === 422 && result.code === 'INVALID_UUID') {
+          setModalError(result.error || 'Invalid organization id.');
+          setSubmitting(false);
+          return;
+        }
         const errorFromJson =
           responseObject && typeof responseObject.error === 'string' ? responseObject.error : '';
+        const errorObject =
+          responseObject && typeof responseObject.error === 'object' && responseObject.error
+            ? responseObject.error as Record<string, any>
+            : null;
         const rawText = (result.rawText ?? '').trim();
+        const details = errorObject?.details ? ` ${String(errorObject.details)}` : '';
+        const hint = errorObject?.hint ? ` ${String(errorObject.hint)}` : '';
         const baseMessage =
           errorFromJson
+          || (errorObject?.message ? `${String(errorObject.message)}${details}${hint}` : '')
           || rawText
-          || result.error
+          || (typeof result.error === 'string' ? result.error : '')
           || 'Unexpected response from server.';
         const trimmed = baseMessage.length > 300 ? `${baseMessage.slice(0, 300)}...` : baseMessage;
         const prefix = result.ok ? 'Unexpected response from server' : 'Request failed';
@@ -418,8 +578,9 @@ export default function StaffPage() {
 
         if (result.status === 401) {
           handleAuthExpired(message);
+          setModalError(message);
         } else {
-          setError(message);
+          setModalError(message);
           if (result.status === 403) {
             showToast(message, 'error');
           }
@@ -435,11 +596,11 @@ export default function StaffPage() {
       }
 
       if (created) {
-        setSuccessMessage('Employee created.');
+        const msg = action === 'ADDED_EXISTING_AUTH' ? 'Employee added.' : 'Employee created.';
+        setSuccessMessage(msg);
         closeModal();
       } else if (invited) {
-        setSuccessMessage('Invitation sent.');
-        setInvitationModalOpen(true);
+        setSuccessMessage(alreadySent ? 'Invite already sent.' : 'Invite sent.');
         closeModal();
       } else if (alreadyMember) {
         const hasUser = refreshedUsers.some(
@@ -465,6 +626,10 @@ export default function StaffPage() {
 
   const handleDelete = async (user: OrgUser) => {
     if (!activeRestaurantId) return;
+    if (!user?.id || !isUuid(user.id)) {
+      setError('Unable to delete: missing or invalid user id.');
+      return;
+    }
     if (user.authUserId && user.authUserId === currentUser?.authUserId) {
       setError("You can't delete your own account.");
       return;
@@ -542,8 +707,8 @@ export default function StaffPage() {
     setSuccessMessage('');
     setAuthBanner(null);
 
-    const normalizedPin = resetPasscode.replace(/\D/g, '').slice(0, 4);
-    const normalizedConfirm = resetConfirm.replace(/\D/g, '').slice(0, 4);
+    const normalizedPin = resetPasscode.replace(/\D/g, '').slice(0, 6);
+    const normalizedConfirm = resetConfirm.replace(/\D/g, '').slice(0, 6);
 
     if (normalizedPin !== resetPasscode) {
       setResetPasscode(normalizedPin);
@@ -552,13 +717,13 @@ export default function StaffPage() {
       setResetConfirm(normalizedConfirm);
     }
 
-    if (!/^\d{4}$/.test(normalizedPin)) {
-      setError('PIN must be exactly 4 digits.');
+    if (!/^\d{6}$/.test(normalizedPin)) {
+      setError('PIN must be exactly 6 digits.');
       return;
     }
 
-    if (normalizedPin === '0000') {
-      setError('PIN cannot be 0000.');
+    if (normalizedPin === '000000') {
+      setError('PIN cannot be 000000.');
       return;
     }
 
@@ -580,6 +745,7 @@ export default function StaffPage() {
       }
       const payload = {
         userId: resetTarget.id,
+        organizationId: activeRestaurantId,
         pinCode: normalizedPin,
       };
       if (process.env.NODE_ENV !== 'production') {
@@ -628,7 +794,16 @@ export default function StaffPage() {
   // Must be called before any early returns
   const filteredUsers = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    const combined: StaffRow[] = [...users, ...invites];
+    const staffEmails = new Set(
+      users
+        .map((user) => String(user.email ?? '').trim().toLowerCase())
+        .filter((email) => email.length > 0)
+    );
+    const filteredInvites = invites.filter((invite) => {
+      const email = String(invite.email ?? '').trim().toLowerCase();
+      return !staffEmails.has(email);
+    });
+    const combined: StaffRow[] = [...users, ...filteredInvites];
     if (!term) return combined;
     return combined.filter((row) => {
       if (isInviteRow(row)) {
@@ -640,6 +815,10 @@ export default function StaffPage() {
       return parts.some((part) => part.includes(term));
     });
   }, [users, invites, searchTerm]);
+
+  const authExists = emailCheck.existsInAuth;
+  const inviteOnly = authExists && emailCheck.hasMembershipInOtherOrg;
+  const addDirect = authExists && !emailCheck.hasMembershipInOtherOrg;
 
   if (!isInitialized || !currentUser || !activeRestaurantId) {
     return (
@@ -850,13 +1029,21 @@ export default function StaffPage() {
             <h2 className="text-lg font-semibold text-theme-primary shrink-0">
               Add User
             </h2>
+            {modalError && (
+              <div className="mt-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <p className="text-sm text-red-400 whitespace-pre-wrap">{modalError}</p>
+              </div>
+            )}
             <div className="space-y-3 overflow-y-auto pr-1 mt-4 flex-1">
               <div>
                 <label className="text-sm text-theme-secondary">Full name</label>
                 <input
                   type="text"
                   value={formState.fullName}
-                  onChange={(e) => setFormState((prev) => ({ ...prev, fullName: e.target.value }))}
+                  onChange={(e) => {
+                    if (modalError) setModalError('');
+                    setFormState((prev) => ({ ...prev, fullName: e.target.value }));
+                  }}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 />
               </div>
@@ -866,12 +1053,32 @@ export default function StaffPage() {
                   type="email"
                   value={formState.email}
                   onChange={(e) => {
+                    if (modalError) setModalError('');
                     setFormState((prev) => ({ ...prev, email: e.target.value }));
-                    setInvitationMode(false);
                   }}
-                  onBlur={handleEmailBlur}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
                 />
+                {emailCheck.status === 'checking' && (
+                  <p className="text-xs text-theme-muted mt-1">Checking email...</p>
+                )}
+                {emailCheck.status === 'invalid' && (
+                  <p className="text-xs text-red-400 mt-1">Enter a valid email.</p>
+                )}
+                {emailCheck.existsInOrg && (
+                  <p className="text-xs text-red-400 mt-1">
+                    Email already used in this restaurant.
+                  </p>
+                )}
+                {emailCheck.hasPendingInvite && (
+                  <p className="text-xs text-amber-400 mt-1">
+                    Invite already sent for this email.
+                  </p>
+                )}
+                {emailCheck.alreadyMember && (
+                  <p className="text-xs text-amber-400 mt-1">
+                    User already belongs to this restaurant.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="text-sm text-theme-secondary">Employee # (4 digits)</label>
@@ -894,7 +1101,10 @@ export default function StaffPage() {
                 <input
                   type="tel"
                   value={formState.phone}
-                  onChange={(e) => setFormState((prev) => ({ ...prev, phone: e.target.value }))}
+                  onChange={(e) => {
+                    if (modalError) setModalError('');
+                    setFormState((prev) => ({ ...prev, phone: e.target.value }));
+                  }}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 />
               </div>
@@ -964,24 +1174,29 @@ export default function StaffPage() {
                 </div>
               )}
               <div>
-                <label className="text-sm text-theme-secondary">PIN (4 digits)</label>
+                <label className="text-sm text-theme-secondary">PIN (6 digits)</label>
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={4}
+                  maxLength={6}
                   value={formState.passcode}
                   onChange={(e) =>
                     setFormState((prev) => ({
                       ...prev,
-                      passcode: e.target.value.replace(/\D/g, ''),
+                      passcode: e.target.value.replace(/\D/g, '').slice(0, 6),
                     }))
                   }
-                  disabled={invitationMode}
+                  disabled={authExists}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
                 />
-                {invitationMode && (
-                  <p className="text-xs text-theme-muted mt-2">
-                    This employee already has an account. PIN cannot be set here.
+                {inviteOnly && (
+                  <p className="text-xs text-theme-muted mt-1">
+                    This employee already has an account in another restaurant. An invitation will be sent.
+                  </p>
+                )}
+                {addDirect && (
+                  <p className="text-xs text-theme-muted mt-1">
+                    This employee already has an account. They will be added directly. PIN cannot be set here.
                   </p>
                 )}
               </div>
@@ -1001,7 +1216,7 @@ export default function StaffPage() {
                 disabled={submitting}
                 className="px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors disabled:opacity-50"
               >
-                {submitting ? 'Saving...' : invitationMode ? 'Send Invitation' : 'Create User'}
+                {submitting ? 'Saving...' : 'Create User'}
               </button>
             </div>
           </div>
@@ -1022,30 +1237,6 @@ export default function StaffPage() {
         onAuthError={handleAuthExpired}
       />
 
-      {invitationModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setInvitationModalOpen(false)}
-          />
-          <div className="relative w-full max-w-md bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-theme-primary">Employee already exists</h2>
-            <p className="text-sm text-theme-tertiary">
-              This email already has an account. An invitation has been sent to join this restaurant. Their existing PIN will be used.
-            </p>
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setInvitationModalOpen(false)}
-                className="px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors"
-              >
-                OK
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {resetModalOpen && resetTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={closeResetModal} />
@@ -1060,9 +1251,9 @@ export default function StaffPage() {
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={4}
+                  maxLength={6}
                   value={resetPasscode}
-                  onChange={(e) => setResetPasscode(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  onChange={(e) => setResetPasscode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 />
               </div>
@@ -1071,9 +1262,9 @@ export default function StaffPage() {
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={4}
+                  maxLength={6}
                   value={resetConfirm}
-                  onChange={(e) => setResetConfirm(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  onChange={(e) => setResetConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
                 />
               </div>
@@ -1090,7 +1281,7 @@ export default function StaffPage() {
               <button
                 type="button"
                 onClick={handleResetPasscode}
-                disabled={!/^\d{4}$/.test(resetPasscode) || resetPasscode === '0000' || resetPasscode !== resetConfirm || submitting}
+                disabled={!/^\d{6}$/.test(resetPasscode) || resetPasscode === '000000' || resetPasscode !== resetConfirm || submitting}
                 className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
               >
                 {submitting ? 'Updating...' : 'Update PIN'}

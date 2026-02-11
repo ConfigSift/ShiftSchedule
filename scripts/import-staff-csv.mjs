@@ -251,7 +251,6 @@ async function main() {
       role: accountType,
       jobs,
       job_pay: {},
-      pin_code: '111111',
     };
 
     preview.push(userPayload);

@@ -7,6 +7,7 @@
     "build": "next build",
     "build:ci": "npm run typecheck && next build",
     "start": "next start",
+    "test": "tsx --test tests/*.test.*",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "seed:admin": "tsx scripts/seed-admin.ts",

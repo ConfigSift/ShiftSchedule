@@ -6,7 +6,8 @@ import { CalendarClock, HandHeart, RefreshCw } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { apiFetch } from '../../lib/apiClient';
-import { formatDateLong, formatHour } from '../../utils/timeUtils';
+import { getJobColorClasses } from '../../lib/jobColors';
+import { formatDateLong, formatHour, formatShiftDuration } from '../../utils/timeUtils';
 import { Toast } from '../../components/Toast';
 
 type ExchangeShift = {
@@ -373,33 +374,45 @@ export default function ShiftExchangePage() {
             ) : myShifts.length === 0 ? (
               <p className="text-theme-muted">No upcoming shifts assigned.</p>
             ) : (
-              <div className="space-y-3">
+              <div className="grid gap-4 sm:grid-cols-2">
                 {myShifts.map((shift) => {
                   const openRequest = openRequestsByShiftId.get(shift.id);
                   const locationName = shift.locationId ? locationMap.get(shift.locationId) : null;
                   const dropKey = `shift:${shift.id}`;
                   const isDropping = submittingById[dropKey] === 'DROP';
+                  const roleConfig = getJobColorClasses(shift.job ?? undefined);
+                  const roleLabel = shift.job || roleConfig.label;
+                  const timeLabel = `${formatHour(shift.startHour)} – ${formatHour(shift.endHour)}`;
+                  const durationLabel = formatShiftDuration(shift.startHour, shift.endHour);
+
                   return (
                     <div
                       key={shift.id}
-                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-theme-tertiary border border-theme-primary rounded-xl p-4"
+                      className="rounded-3xl border border-theme-primary/40 bg-theme-secondary/95 p-5 shadow-[0_16px_40px_rgba(0,0,0,0.25)]"
                     >
-                      <div>
-                        <p className="text-theme-primary font-medium">
-                          {formatDateLong(shift.date)} · {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-lg font-semibold text-theme-primary">
+                          {formatDateLong(shift.date)}
                         </p>
-                        <p className="text-xs text-theme-muted">
-                          {shift.job || 'No job'}
-                          {locationName ? ` · ${locationName}` : ''}
-                        </p>
+                        <span
+                          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${roleConfig.borderClass} ${roleConfig.accentClass} ${roleConfig.textClass}`}
+                        >
+                          {roleLabel}
+                        </span>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <p className="mt-2 text-sm text-theme-muted">
+                        {timeLabel} · {durationLabel}
+                      </p>
+                      {locationName && (
+                        <p className="mt-1 text-xs text-theme-tertiary">{locationName}</p>
+                      )}
+                      <div className="mt-4">
                         {openRequest ? (
                           <button
                             type="button"
                             onClick={() => handleCancel(shift.id)}
                             disabled={Boolean(submittingById[`shift:${shift.id}`])}
-                            className="px-3 py-1.5 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors text-xs disabled:opacity-50"
+                            className="w-full rounded-2xl bg-red-500/15 py-3 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25 disabled:opacity-50"
                           >
                             {submittingById[`shift:${shift.id}`] === 'CANCEL' ? 'Canceling...' : 'Cancel Drop'}
                           </button>
@@ -408,7 +421,7 @@ export default function ShiftExchangePage() {
                             type="button"
                             onClick={() => handleDrop(shift.id)}
                             disabled={isDropping}
-                            className="px-3 py-1.5 rounded-md bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 transition-colors text-xs disabled:opacity-50"
+                            className="w-full rounded-2xl bg-amber-500 py-3 text-sm font-semibold text-zinc-900 transition-colors hover:bg-amber-400 disabled:opacity-50"
                           >
                             {isDropping ? 'Dropping...' : 'Drop Shift'}
                           </button>
@@ -430,36 +443,53 @@ export default function ShiftExchangePage() {
             ) : openRequests.length === 0 ? (
               <p className="text-theme-muted">No open requests right now.</p>
             ) : (
-              <div className="space-y-3">
+              <div className="grid gap-4 sm:grid-cols-2">
                 {openRequests.map((request) => {
                   const shift = request.shift;
                   if (!shift) return null;
                   const locationName = shift.locationId ? locationMap.get(shift.locationId) : null;
                   const pickupKey = `shift:${shift.id}`;
                   const isPickingUp = submittingById[pickupKey] === 'PICKUP';
+                  const roleConfig = getJobColorClasses(shift.job ?? undefined);
+                  const roleLabel = shift.job || roleConfig.label;
+                  const timeLabel = `${formatHour(shift.startHour)} – ${formatHour(shift.endHour)}`;
+                  const durationLabel = formatShiftDuration(shift.startHour, shift.endHour);
+                  const requesterLabel = request.requesterName || shift.employeeName;
+
                   return (
                     <div
                       key={request.id}
-                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-theme-tertiary border border-theme-primary rounded-xl p-4"
+                      className="rounded-3xl border border-theme-primary/40 bg-theme-secondary/95 p-5 shadow-[0_16px_40px_rgba(0,0,0,0.25)]"
                     >
-                      <div>
-                        <p className="text-theme-primary font-medium">
-                          {formatDateLong(shift.date)} · {formatHour(shift.startHour)} - {formatHour(shift.endHour)}
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-lg font-semibold text-theme-primary">
+                          {formatDateLong(shift.date)}
                         </p>
-                        <p className="text-xs text-theme-muted">
-                          From {request.requesterName || shift.employeeName}
-                          {shift.job ? ` · ${shift.job}` : ''}
+                        <span
+                          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${roleConfig.borderClass} ${roleConfig.accentClass} ${roleConfig.textClass}`}
+                        >
+                          {roleLabel}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm text-theme-muted">
+                        {timeLabel} · {durationLabel}
+                      </p>
+                      {(requesterLabel || locationName) && (
+                        <p className="mt-1 text-xs text-theme-tertiary">
+                          {requesterLabel ? `From ${requesterLabel}` : 'From teammate'}
                           {locationName ? ` · ${locationName}` : ''}
                         </p>
+                      )}
+                      <div className="mt-4">
+                        <button
+                          type="button"
+                          onClick={() => handlePickup(shift.id)}
+                          disabled={isPickingUp}
+                          className="w-full rounded-2xl bg-emerald-500 py-3 text-sm font-semibold text-zinc-900 transition-colors hover:bg-emerald-400 disabled:opacity-50"
+                        >
+                          {isPickingUp ? 'Picking up...' : 'Pick Up'}
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handlePickup(shift.id)}
-                        disabled={isPickingUp}
-                        className="px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors text-xs disabled:opacity-50"
-                      >
-                        {isPickingUp ? 'Picking up...' : 'Pick Up'}
-                      </button>
                     </div>
                   );
                 })}

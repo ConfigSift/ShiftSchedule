@@ -1,22 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
-import { jsonError } from '@/lib/apiResponses';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const isUuid = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
 async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | null> {
-  const { data: userRow, error: userErr } = await supabaseAdmin
-    .from('users')
-    .select('auth_user_id, real_email')
-    .eq('real_email', normalizedEmail)
-    .maybeSingle();
-  if (!userErr && userRow?.auth_user_id) {
-    return userRow.auth_user_id;
+  const adminAuth: any = supabaseAdmin.auth.admin;
+  if (typeof adminAuth.getUserByEmail === 'function') {
+    const { data, error } = await adminAuth.getUserByEmail(normalizedEmail);
+    if (!error && data?.user?.id) return data.user.id;
   }
 
-  const adminAuth: any = supabaseAdmin.auth.admin;
   if (typeof adminAuth.listUsers !== 'function') {
     return null;
   }
@@ -29,15 +27,9 @@ async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | 
       return null;
     }
     const users = listData?.users ?? [];
-    const match = users.find(
-      (user: any) => String(user.email ?? '').toLowerCase() === normalizedEmail
-    );
-    if (match?.id) {
-      return match.id;
-    }
-    if (users.length < perPage) {
-      break;
-    }
+    const match = users.find((user: any) => String(user.email ?? '').toLowerCase() === normalizedEmail);
+    if (match?.id) return match.id;
+    if (users.length < perPage) break;
     page += 1;
   }
 
@@ -47,14 +39,19 @@ async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const rawEmail = String(searchParams.get('email') ?? '').trim().toLowerCase();
-    const organizationId = String(searchParams.get('organization_id') ?? '').trim();
+    const organizationId = String(searchParams.get('organizationId') ?? searchParams.get('organization_id') ?? '').trim();
+    const email = String(searchParams.get('email') ?? '').trim().toLowerCase();
 
-    if (!organizationId) {
-      return NextResponse.json({ error: 'Organization is required.' }, { status: 400 });
+    if (!organizationId || !email) {
+      return NextResponse.json({ error: 'organizationId and email are required.' }, { status: 400 });
     }
-    if (!rawEmail) {
-      return NextResponse.json({ error: 'Email is required.' }, { status: 400 });
+    if (!isUuid(organizationId)) {
+      return NextResponse.json({ error: 'Invalid organizationId.', code: 'INVALID_UUID' }, { status: 422 });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return NextResponse.json({ error: 'Invalid email.' }, { status: 400 });
     }
 
     const { supabase, response } = createSupabaseRouteClient(req);
@@ -65,7 +62,7 @@ export async function GET(req: NextRequest) {
         process.env.NODE_ENV === 'production'
           ? 'Not signed in. Please sign out/in again.'
           : authError?.message || 'Unauthorized.';
-      return applySupabaseCookies(jsonError(message, 401), response);
+      return applySupabaseCookies(NextResponse.json({ error: message }, { status: 401 }), response);
     }
 
     const { data: requesterMembership, error: requesterMembershipError } = await supabase
@@ -76,17 +73,73 @@ export async function GET(req: NextRequest) {
       .maybeSingle();
 
     if (requesterMembershipError || !requesterMembership) {
-      return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
+      return applySupabaseCookies(NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 }), response);
     }
 
     const requesterRole = String(requesterMembership.role ?? '').trim().toLowerCase();
     if (requesterRole !== 'admin' && requesterRole !== 'manager') {
-      return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
+      return applySupabaseCookies(NextResponse.json({ error: 'Insufficient permissions.' }, { status: 403 }), response);
     }
 
-    const authUserId = await findAuthUserIdByEmail(rawEmail);
+    const existingAuthUserId = await findAuthUserIdByEmail(email);
+    let membershipOrgIds: string[] = [];
+    let hasMembershipInThisOrg = false;
+    let hasMembershipInOtherOrg = false;
+
+    if (existingAuthUserId) {
+      const { data: membershipRows, error: membershipRowsError } = await supabaseAdmin
+        .from('organization_memberships')
+        .select('organization_id')
+        .eq('auth_user_id', existingAuthUserId);
+      if (membershipRowsError) {
+        return applySupabaseCookies(
+          NextResponse.json({ error: membershipRowsError.message }, { status: 400 }),
+          response
+        );
+      }
+      membershipOrgIds = (membershipRows ?? []).map((row: any) => String(row.organization_id));
+      hasMembershipInThisOrg = membershipOrgIds.includes(organizationId);
+      hasMembershipInOtherOrg = membershipOrgIds.some((id) => id !== organizationId);
+    }
+
+    const { data: existingEmailRows, error: existingEmailError } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .or(`real_email.eq.${email},email.eq.${email}`)
+      .limit(1);
+
+    if (existingEmailError) {
+      return applySupabaseCookies(NextResponse.json({ error: existingEmailError.message }, { status: 400 }), response);
+    }
+
+    const { data: pendingInviteRows, error: pendingInviteError } = await supabaseAdmin
+      .from('organization_invitations')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .eq('email', email)
+      .eq('status', 'pending')
+      .limit(1);
+
+    if (pendingInviteError) {
+      return applySupabaseCookies(NextResponse.json({ error: pendingInviteError.message }, { status: 400 }), response);
+    }
+
+    const alreadyMember = hasMembershipInThisOrg;
+
     return applySupabaseCookies(
-      NextResponse.json({ exists: Boolean(authUserId) }),
+      NextResponse.json({
+        email,
+        authExists: Boolean(existingAuthUserId),
+        authUserId: existingAuthUserId,
+        hasMembershipInThisOrg,
+        hasMembershipInOtherOrg,
+        membershipOrgIds,
+        existsInAuth: Boolean(existingAuthUserId),
+        existsInOrg: (existingEmailRows ?? []).length > 0,
+        hasPendingInvite: (pendingInviteRows ?? []).length > 0,
+        alreadyMember: alreadyMember || (existingEmailRows ?? []).length > 0,
+      }),
       response
     );
   } catch (e: any) {

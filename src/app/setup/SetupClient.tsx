@@ -9,7 +9,7 @@ import { useAuthStore } from '../../store/authStore';
 import { getUserRole, isManagerRole } from '../../utils/role';
 import { supabase } from '../../lib/supabase/client';
 import { splitFullName } from '../../utils/userMapper';
-import { isFourDigitPin, pinToAuthPassword } from '../../utils/pinAuth';
+import { normalizePin } from '../../utils/pinNormalize';
 
 export default function SetupClient() {
   const router = useRouter();
@@ -21,8 +21,8 @@ export default function SetupClient() {
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [restaurantName, setRestaurantName] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [pin, setPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [createdRestaurantCode, setCreatedRestaurantCode] = useState<string | null>(null);
@@ -85,17 +85,20 @@ export default function SetupClient() {
       return;
     }
 
-    if (!password) {
+    if (!pin) {
       setError('PIN is required');
       return;
     }
 
-    if (!isFourDigitPin(password)) {
-      setError('PIN must be exactly 4 digits');
+    let normalizedPin: string;
+    try {
+      normalizedPin = normalizePin(pin);
+    } catch {
+      setError('PIN must be exactly 6 digits');
       return;
     }
 
-    if (password !== confirmPassword) {
+    if (pin !== confirmPin) {
       setError('PINs do not match');
       return;
     }
@@ -105,7 +108,7 @@ export default function SetupClient() {
     try {
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: email.trim().toLowerCase(),
-        password: pinToAuthPassword(password),
+        password: normalizedPin,
       });
 
       if (authError) {
@@ -340,18 +343,18 @@ export default function SetupClient() {
 
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                PIN
+                PIN (6 digits)
               </label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={4}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value.replace(/\D/g, ''))}
+                  maxLength={6}
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value.replace(/\\D/g, '').slice(0, 6))}
                   className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder="******"
+                  placeholder="123456"
                   required
                 />
               </div>
@@ -366,11 +369,11 @@ export default function SetupClient() {
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={4}
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value.replace(/\D/g, ''))}
+                  maxLength={6}
+                  value={confirmPin}
+                  onChange={(e) => setConfirmPin(e.target.value.replace(/\\D/g, '').slice(0, 6))}
                   className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder="******"
+                  placeholder="123456"
                   required
                 />
               </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { normalizeUserRow } from '@/utils/userMapper';
+import { getUserRole } from '@/utils/role';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -33,6 +34,23 @@ export async function GET(request: NextRequest) {
     let role: string | null = null;
     let userRowFound = false;
     if (user?.id) {
+      const { data: memberships, error: membershipError } = await supabase
+        .from('organization_memberships')
+        .select('organization_id, role')
+        .eq('auth_user_id', user.id);
+
+      if (!membershipError && memberships && memberships.length > 0) {
+        organizationId = memberships[0].organization_id ?? null;
+        const ranked = memberships
+          .map((row) => getUserRole(row.role))
+          .sort((a, b) => {
+            const rank = (value: string) =>
+              value === 'ADMIN' ? 3 : value === 'MANAGER' ? 2 : 1;
+            return rank(b) - rank(a);
+          });
+        role = ranked[0] ?? null;
+      }
+
       const { data: row, error: userError } = await supabase
         .from('users')
         .select('*')
@@ -40,8 +58,8 @@ export async function GET(request: NextRequest) {
         .maybeSingle();
       if (!userError && row) {
         const normalized = normalizeUserRow(row);
-        organizationId = normalized.organizationId ?? null;
-        role = normalized.role ?? null;
+        organizationId = organizationId ?? normalized.organizationId ?? null;
+        role = role ?? normalized.role ?? null;
         userRowFound = true;
       }
     }

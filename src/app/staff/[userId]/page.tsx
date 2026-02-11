@@ -194,8 +194,9 @@ export default function StaffProfilePage() {
     }
 
     setSaving(true);
+    let emailPendingNotice = false;
     try {
-      if (isSelf) {
+      if (isSelf && !isAdmin) {
         const result = await updateProfile({
           fullName: fullName.trim(),
           phone: phone.trim() || null,
@@ -206,9 +207,13 @@ export default function StaffProfilePage() {
           setSaving(false);
           return;
         }
+        emailPendingNotice = Boolean(result.emailPending);
         if (currentRole === 'EMPLOYEE') {
           await loadUser();
-          showToast('Profile updated', 'success');
+          showToast(
+            emailPendingNotice ? 'Check your email to confirm this change.' : 'Profile updated',
+            'success'
+          );
           setSaving(false);
           return;
         }
@@ -237,6 +242,7 @@ export default function StaffProfilePage() {
           userId: user.id,
           organizationId: activeRestaurantId,
           fullName: fullName.trim(),
+          email: isAdmin && isSelf ? email.trim() : undefined,
           phone: phone.trim() || '',
           employeeNumber: employeeNumber.trim() ? Number(employeeNumber) : undefined,
           accountType: canEditAccountType ? accountType : undefined,
@@ -256,6 +262,20 @@ export default function StaffProfilePage() {
           const message = 'You dont have permission for that action.';
           setError(message);
           showToast(message, 'error');
+        } else if (result.status === 409 && result.code === 'EMPLOYEE_ID_TAKEN') {
+          setError('Employee ID already exists. Please choose a different one.');
+        } else if (result.status === 409 && result.code === 'EMAIL_TAKEN_ORG') {
+          setError('Email is already used by another employee in this restaurant.');
+        } else if (result.status === 409 && result.code === 'EMAIL_TAKEN_AUTH') {
+          setError('Email is already used by another account.');
+        } else if (result.status === 409 && result.code === 'MISSING_AUTH_ID') {
+          setError(
+            result.error || 'User has no auth identity. Ask an admin to re-link this user.'
+          );
+        } else if (result.status === 404 && result.code === 'TARGET_NOT_FOUND') {
+          setError('Target user not found.');
+        } else if (result.status === 422 && result.code === 'INVALID_UUID') {
+          setError(result.error || 'Invalid identifier for this user.');
         } else {
           setError(result.error || 'Unable to update profile.');
         }
@@ -264,7 +284,10 @@ export default function StaffProfilePage() {
       }
 
       await loadUser();
-      showToast('Profile updated', 'success');
+      showToast(
+        emailPendingNotice ? 'Check your email to confirm this change.' : 'Profile updated',
+        'success'
+      );
     } catch {
       setError('Request failed. Please try again.');
     } finally {

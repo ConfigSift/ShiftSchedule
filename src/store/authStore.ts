@@ -34,7 +34,7 @@ interface AuthState {
   clearActiveOrganization: () => void;
   refreshProfile: () => Promise<void>;
   refreshInvitations: () => Promise<void>;
-  updateProfile: (data: { fullName: string; phone?: string | null; email?: string | null }) => Promise<{ success: boolean; error?: string }>;
+  updateProfile: (data: { fullName: string; phone?: string | null; email?: string | null }) => Promise<{ success: boolean; error?: string; emailPending?: boolean }>;
 }
 
 /** Fetches pending invitations for the current user */
@@ -193,9 +193,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const activeProfile =
         profiles.find((profile) => profile.organizationId === activeRestaurantId) ?? primaryProfile;
+      const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
+      const resolvedActiveProfile = activeProfile
+        ? {
+            ...activeProfile,
+            role: getUserRole(activeMembership?.role ?? activeProfile.role),
+          }
+        : activeProfile;
 
       set({
-        currentUser: activeProfile,
+        currentUser: resolvedActiveProfile,
         userProfiles: profiles,
         accessibleRestaurants,
         pendingInvitations: invitations,
@@ -274,8 +281,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     const activeProfile =
       profiles.find((profile) => profile.organizationId === activeRestaurantId) ?? primaryProfile;
+    const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
+    const resolvedActiveProfile = activeProfile
+      ? {
+          ...activeProfile,
+          role: getUserRole(activeMembership?.role ?? activeProfile.role),
+        }
+      : activeProfile;
     set({
-      currentUser: activeProfile,
+      currentUser: resolvedActiveProfile,
       userProfiles: profiles,
       accessibleRestaurants,
       pendingInvitations: invitations,
@@ -330,12 +344,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateProfile: async (data) => {
     const current = get().currentUser;
     if (!current) return { success: false, error: 'No user session.' };
+    const normalizedEmail = data.email ? data.email.trim() : '';
+    const previousEmail = String(current.email ?? '').trim().toLowerCase();
+    const emailChanged =
+      normalizedEmail !== '' && normalizedEmail.toLowerCase() !== previousEmail;
     const result = await apiFetch('/api/me/update-profile', {
       method: 'POST',
       json: {
         fullName: data.fullName,
         phone: data.phone ?? '',
-        email: data.email ?? null,
+        ...(emailChanged ? {} : { email: data.email ?? null }),
       },
     });
     if (!result.ok) {
@@ -345,6 +363,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       };
     }
     await get().refreshProfile();
-    return { success: true };
+    return { success: true, emailPending: false };
   },
 }));

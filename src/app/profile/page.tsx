@@ -139,7 +139,10 @@ export default function ProfilePage() {
       showToast(result.error || 'Unable to update profile', 'error');
       return;
     }
-    showToast('Profile updated', 'success');
+    showToast(
+      result.emailPending ? 'Check your email to confirm this change.' : 'Profile updated',
+      'success'
+    );
     setHasChanges(false);
   };
 

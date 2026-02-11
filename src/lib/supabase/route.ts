@@ -15,8 +15,20 @@ export function createSupabaseRouteClient(req: NextRequest): SupabaseRouteClient
   }
 
   const response = NextResponse.next();
+  const authHeader = req.headers.get('authorization') ?? '';
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  const bearerToken = bearerMatch?.[1]?.trim() || null;
 
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+    ...(bearerToken
+      ? {
+          global: {
+            headers: {
+              Authorization: `Bearer ${bearerToken}`,
+            },
+          },
+        }
+      : {}),
     cookies: {
       getAll() {
         return req.cookies.getAll();
@@ -28,6 +40,11 @@ export function createSupabaseRouteClient(req: NextRequest): SupabaseRouteClient
       },
     },
   });
+
+  if (bearerToken) {
+    const originalGetUser = supabase.auth.getUser.bind(supabase.auth);
+    supabase.auth.getUser = ((jwt?: string) => originalGetUser(jwt ?? bearerToken)) as typeof supabase.auth.getUser;
+  }
 
   return { supabase, response };
 }

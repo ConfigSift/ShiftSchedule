@@ -52,6 +52,7 @@ export function StaffProfileModal({
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [emailError, setEmailError] = useState('');
+  
   const [employeeNumber, setEmployeeNumber] = useState('');
   const [employeeNumberError, setEmployeeNumberError] = useState('');
   const [phone, setPhone] = useState('');
@@ -65,7 +66,12 @@ export function StaffProfileModal({
   const [initializedKey, setInitializedKey] = useState<string | null>(null);
   const [workedRoles, setWorkedRoles] = useState<Array<{ job: string; lastDate: string }>>([]);
   const [workedRolesLoading, setWorkedRolesLoading] = useState(false);
+  const [pinCode, setPinCode] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [pinSuccess, setPinSuccess] = useState('');
+  const [pinSubmitting, setPinSubmitting] = useState(false);
   const employeeNumberRef = useRef<HTMLInputElement | null>(null);
+  const pinInputRef = useRef<HTMLInputElement | null>(null);
 
   // Create a stable key that changes when user ID or jobPay data changes
   // This ensures re-initialization when saved data differs from local state
@@ -103,6 +109,9 @@ export function StaffProfileModal({
     setJobPayErrors({});
     setModalError('');
     setBlockedJobs([]);
+    setPinCode('');
+    setPinError('');
+    setPinSuccess('');
     setInitializedKey(userDataKey);
     if (process.env.NODE_ENV !== 'production') {
       // eslint-disable-next-line no-console
@@ -118,6 +127,9 @@ export function StaffProfileModal({
       setInitializedKey(null);
       setModalError('');
       setEmployeeNumberError('');
+      setPinCode('');
+      setPinError('');
+      setPinSuccess('');
     }
   }, [isOpen]);
 
@@ -170,8 +182,8 @@ export function StaffProfileModal({
   const showAdminFields = isManager || isAdmin;
   // Manager/Admin can edit others; employees can only edit their own profile
   const canEdit = mode === 'edit' && (isManager || isSelf) && !(targetIsAdmin && !isAdmin);
-  // Email can be edited by managers/admins for anyone, or by the user themselves
-  const canEditEmail = mode === 'edit' && (isManager || isSelf) && !(targetIsAdmin && !isAdmin);
+  // Email can be edited by admins for anyone, or by the user themselves
+  const canEditEmail = mode === 'edit' && isAdmin && !(targetIsAdmin && !isAdmin);
   const canEditAccountType =
     canEdit && (isAdmin || isManager) && !isSelf && !(targetIsAdmin && !isAdmin);
   const requiresJobs = accountType === 'EMPLOYEE' || accountType === 'MANAGER';
@@ -198,6 +210,9 @@ export function StaffProfileModal({
     // Clear error when user types
     if (emailError) {
       setEmailError('');
+    }
+    if (modalError) {
+      setModalError('');
     }
   };
 
@@ -288,6 +303,11 @@ export function StaffProfileModal({
     if (canEditEmail && !validateEmail(email)) {
       return;
     }
+    const normalizedEmail = email.trim();
+    const previousEmail = String(user?.email ?? '').trim().toLowerCase();
+    const emailChanged =
+      normalizedEmail !== '' && normalizedEmail.toLowerCase() !== previousEmail;
+    const shouldSendEmailToServer = canEditEmail && emailChanged;
     if (requiresJobs && jobs.length === 0) {
       onError('At least one job is required for employees.');
       return;
@@ -329,7 +349,7 @@ export function StaffProfileModal({
           userId: user.id,
           organizationId,
           fullName: fullName.trim(),
-          email: canEditEmail ? email.trim() : undefined,
+          email: shouldSendEmailToServer ? normalizedEmail : undefined,
           phone: phone.trim() || '',
           employeeNumber: employeeNumber.trim() ? Number(employeeNumber) : undefined,
           accountType: canEditAccountType ? accountType : undefined,
@@ -347,10 +367,27 @@ export function StaffProfileModal({
           const message = 'You dont have permission for that action.';
           onError(message);
         } else if (result.status === 409 && result.code === 'EMPLOYEE_ID_TAKEN') {
-          const message = result.error || 'Employee ID already exists. Please choose a different ID.';
+          const message = 'Employee ID already exists. Please choose a different one.';
           setModalError(message);
           setEmployeeNumberError(message);
           employeeNumberRef.current?.focus();
+        } else if (
+          result.status === 409 &&
+          (result.code === 'EMAIL_TAKEN_ORG' || result.code === 'EMAIL_TAKEN_AUTH')
+        ) {
+          const message = result.error || 'Email is already used by another account.';
+          setModalError(message);
+          setEmailError(message);
+        } else if (result.status === 409 && result.code === 'MISSING_AUTH_ID') {
+          const message =
+            result.error || 'User has no auth identity. Ask an admin to re-link this user.';
+          setModalError(message);
+        } else if (result.status === 404 && result.code === 'TARGET_NOT_FOUND') {
+          const message = result.error || 'Target user not found.';
+          setModalError(message);
+        } else if (result.status === 422 && result.code === 'INVALID_UUID') {
+          const message = result.error || 'Invalid identifier for this user.';
+          setModalError(message);
         } else if (result.code === 'JOB_IN_USE' || result.code === 'JOB_REMOVAL_BLOCKED') {
           // Show job removal error inside modal and highlight blocked jobs
           const payload = (result.data as any) ?? {};
@@ -366,7 +403,9 @@ export function StaffProfileModal({
           setBlockedJobs(Array.isArray(blocked) ? blocked : []);
         } else if (result.code === 'EMAIL_TAKEN') {
           // Show email error inside modal
-          setModalError(result.error || 'This email is already in use.');
+          const message = result.error || 'This email is already in use.';
+          setModalError(message);
+          setEmailError(message);
         } else {
           onError(result.error || 'Unable to update profile.');
         }
@@ -398,6 +437,57 @@ export function StaffProfileModal({
       onError('Request failed. Please try again.');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handlePinUpdate = async () => {
+    if (!showAdminFields || !user) return;
+    const trimmed = pinCode.trim();
+    setPinError('');
+    setPinSuccess('');
+    if (!/^\d{6}$/.test(trimmed) || trimmed === '000000') {
+      setPinError('PIN must be 6 digits.');
+      pinInputRef.current?.focus();
+      return;
+    }
+    setPinSubmitting(true);
+    const pinUrl = '/api/admin/set-passcode';
+    try {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[StaffProfileModal] Update PIN ->', pinUrl);
+        // eslint-disable-next-line no-console
+        console.log('[reset-pin] payload', { userId: user.id, organizationId });
+      }
+      const result = await apiFetch(pinUrl, {
+        method: 'POST',
+        json: {
+          userId: user.id,
+          organizationId,
+          pinCode: trimmed,
+        },
+      });
+      if (!result.ok) {
+        if (result.status === 401) {
+          setPinError('Not logged in / session missing.');
+        } else if (result.status === 404) {
+          setPinError(`Endpoint not found (client routing bug): ${pinUrl}`);
+        } else {
+          setPinError(result.error || 'Unable to update PIN.');
+        }
+        return;
+      }
+      const updatedFlag = result.data?.authPasswordUpdated;
+      if (process.env.NODE_ENV !== 'production' && typeof updatedFlag === 'boolean') {
+        setPinSuccess(`PIN updated (auth password ${updatedFlag ? 'updated' : 'skipped'})`);
+      } else {
+        setPinSuccess('PIN updated');
+      }
+      setPinCode('');
+    } catch {
+      setPinError('Unable to update PIN.');
+    } finally {
+      setPinSubmitting(false);
     }
   };
 
@@ -495,6 +585,40 @@ export function StaffProfileModal({
             className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
           />
         </div>
+
+        {showAdminFields && (
+          <div>
+            <label className="text-sm text-theme-secondary">Set new PIN (6 digits)</label>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                ref={pinInputRef}
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                value={pinCode}
+                onChange={(e) => {
+                  setPinCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                  if (pinError) setPinError('');
+                  if (pinSuccess) setPinSuccess('');
+                }}
+                disabled={!canEdit}
+                className={`flex-1 px-3 py-2 bg-theme-tertiary border rounded-lg text-theme-primary disabled:opacity-60 ${
+                  pinError ? 'border-red-500' : 'border-theme-primary'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={handlePinUpdate}
+                disabled={!canEdit || pinSubmitting}
+                className="px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
+              >
+                {pinSubmitting ? 'Saving...' : 'Update PIN'}
+              </button>
+            </div>
+            {pinError && <p className="text-xs text-red-400 mt-1">{pinError}</p>}
+            {pinSuccess && <p className="text-xs text-emerald-400 mt-1">{pinSuccess}</p>}
+          </div>
+        )}
 
         {showAdminFields && (
           <div>

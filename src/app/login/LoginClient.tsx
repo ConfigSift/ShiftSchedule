@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { Calendar, Lock, Mail } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase/client';
-import { deriveAuthPasswordFromPin, isValidPin } from '../../utils/pin';
 
 type LoginClientProps = {
   notice?: string | null;
@@ -19,6 +18,11 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
   const [email, setEmail] = useState('');
   const [passcode, setPasscode] = useState('');
   const [error, setError] = useState('');
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryEmail, setRecoveryEmail] = useState('');
+  const [recoveryMessage, setRecoveryMessage] = useState('');
+  const [recoveryError, setRecoveryError] = useState('');
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [hasManagers, setHasManagers] = useState<boolean | null>(null);
 
@@ -67,7 +71,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
     }
   }, [currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
 
-  const isPasscodeValid = isValidPin(passcode) || passcode.length >= 6;
+  const isPasscodeValid = /^\d{6}$/.test(passcode);
   const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const canSubmit = isPasscodeValid && isEmailValid && !loading;
 
@@ -79,17 +83,14 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
     try {
       const loginEmail = email.trim().toLowerCase();
 
-      const authPassword = isValidPin(passcode) ? deriveAuthPasswordFromPin(passcode) : passcode;
+      const authPassword = passcode;
+      if (!/^\d{6}$/.test(authPassword)) {
+        setError('Enter a 6-digit PIN.');
+        return;
+      }
       if (process.env.NODE_ENV !== 'production') {
         // eslint-disable-next-line no-console
-        console.debug(
-          '[login] email=',
-          loginEmail,
-          'pwLen=',
-          authPassword.length,
-          'pwPrefix=',
-          authPassword.slice(0, 4)
-        );
+        console.debug('[login] mode=PIN', 'pwLen=', authPassword.length);
       }
       const { error: authError } = await supabase.auth.signInWithPassword({
         email: loginEmail,
@@ -97,7 +98,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
       });
 
       if (authError) {
-        setError(authError.message || 'Invalid email or PIN.');
+        setError('Invalid login credentials.');
         setPasscode('');
         return;
       }
@@ -150,6 +151,33 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
       setError('Login failed.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRecovery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecoveryError('');
+    setRecoveryMessage('');
+    const targetEmail = recoveryEmail.trim().toLowerCase();
+    if (!targetEmail) {
+      setRecoveryError('Enter your email to receive a recovery link.');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(targetEmail)) {
+      setRecoveryError('Enter a valid email address.');
+      return;
+    }
+    setRecoveryLoading(true);
+    try {
+      await supabase.auth.resetPasswordForEmail(targetEmail, {
+        redirectTo: `${window.location.origin}/reset-passcode`,
+      });
+      setRecoveryMessage('If an account exists, you will receive a recovery email shortly.');
+    } catch {
+      setRecoveryError('Unable to send recovery email. Please try again.');
+    } finally {
+      setRecoveryLoading(false);
     }
   };
 
@@ -220,22 +248,37 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
 
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                PIN or Password
+                PIN
               </label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
                 <input
                   type="password"
-                  maxLength={64}
+                  inputMode="numeric"
+                  maxLength={6}
                   value={passcode}
-                  onChange={(e) => setPasscode(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    const sanitized = next.replace(/\D/g, '').slice(0, 6);
+                    if (process.env.NODE_ENV !== 'production') {
+                      // eslint-disable-next-line no-console
+                      console.log('[login] input', {
+                        mode: 'pin',
+                        rawLength: next.length,
+                        nextLength: sanitized.length,
+                      });
+                    }
+                    setPasscode(sanitized);
+                  }}
                   className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder="******"
+                  placeholder="123456"
                   required
                 />
               </div>
               {!isPasscodeValid && passcode.length > 0 && (
-                <p className="text-xs text-red-400 mt-1">Enter a 4-digit PIN or a 6+ character password.</p>
+                <p className="text-xs text-red-400 mt-1">
+                  Enter a 6-digit PIN.
+                </p>
               )}
             </div>
 
@@ -249,6 +292,48 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
               {loading ? 'Signing in...' : 'Sign In'}
             </button>
           </form>
+
+          <div className="mt-4 text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setRecoveryOpen((prev) => !prev);
+                setRecoveryError('');
+                setRecoveryMessage('');
+                setRecoveryEmail(email.trim());
+              }}
+              className="text-xs text-theme-muted hover:text-theme-primary"
+            >
+              Forgot PIN?
+            </button>
+          </div>
+
+          {recoveryOpen && (
+            <div className="mt-4 border-t border-theme-primary pt-4 space-y-3">
+              <p className="text-xs text-theme-muted">
+                Enter your email and we will send a PIN reset link.
+              </p>
+              <form onSubmit={handleRecovery} className="space-y-3">
+                <input
+                  type="email"
+                  value={recoveryEmail}
+                  onChange={(e) => setRecoveryEmail(e.target.value)}
+                  className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+                  placeholder="you@restaurant.com"
+                  required
+                />
+                {recoveryError && <p className="text-xs text-red-400">{recoveryError}</p>}
+                {recoveryMessage && <p className="text-xs text-emerald-400">{recoveryMessage}</p>}
+                <button
+                  type="submit"
+                  disabled={recoveryLoading}
+                  className="w-full py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
+                >
+                  {recoveryLoading ? 'Sending...' : 'Send recovery link'}
+                </button>
+              </form>
+            </div>
+          )}
 
         </div>
       </div>

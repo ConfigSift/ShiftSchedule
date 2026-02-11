@@ -12,11 +12,20 @@ type DeletePayload = {
   organizationId: string;
 };
 
+const isUuid = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
 export async function POST(request: NextRequest) {
   const payload = (await request.json()) as DeletePayload;
 
   if (!payload.userId || !payload.organizationId) {
     return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
+  }
+  if (!isUuid(payload.userId) || !isUuid(payload.organizationId)) {
+    return NextResponse.json(
+      { error: 'Invalid userId or organizationId.', code: 'INVALID_UUID' },
+      { status: 422 }
+    );
   }
 
   const { supabase, response } = createSupabaseRouteClient(request);
@@ -76,8 +85,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const targetRole = target.role;
-  if (requesterRole === 'MANAGER' && targetRole === 'ADMIN') {
+  let targetMembershipRole = String(target.role ?? '').toUpperCase();
+  if (target.authUserId) {
+    const { data: targetMembership } = await supabaseAdmin
+      .from('organization_memberships')
+      .select('role')
+      .eq('organization_id', payload.organizationId)
+      .eq('auth_user_id', target.authUserId)
+      .maybeSingle();
+    if (targetMembership?.role) {
+      targetMembershipRole = String(targetMembership.role ?? '').toUpperCase();
+    }
+  }
+
+  if (requesterRole === 'MANAGER' && targetMembershipRole === 'ADMIN') {
     return applySupabaseCookies(
       NextResponse.json({ error: "You don't have permission for that action." }, { status: 403 }),
       response
@@ -85,24 +106,61 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { error: membershipDeleteError } = await supabaseAdmin
-      .from('organization_memberships')
+    // Remove org-scoped data for this staff record
+    await supabaseAdmin
+      .from('shifts')
       .delete()
       .eq('organization_id', payload.organizationId)
-      .eq('auth_user_id', target.authUserId ?? '');
+      .eq('user_id', target.id);
 
-    if (membershipDeleteError) {
-      return applySupabaseCookies(
-        NextResponse.json({ error: membershipDeleteError.message }, { status: 400 }),
-        response
+    await supabaseAdmin
+      .from('time_off_requests')
+      .delete()
+      .eq('organization_id', payload.organizationId)
+      .or(
+        [
+          `user_id.eq.${target.id}`,
+          `requester_user_id.eq.${target.id}`,
+          target.authUserId ? `auth_user_id.eq.${target.authUserId}` : '',
+          target.authUserId ? `requester_auth_user_id.eq.${target.authUserId}` : '',
+        ]
+          .filter(Boolean)
+          .join(',')
       );
+
+    await supabaseAdmin
+      .from('blocked_day_requests')
+      .delete()
+      .eq('organization_id', payload.organizationId)
+      .or(
+        [
+          `user_id.eq.${target.id}`,
+          target.authUserId ? `requested_by_auth_user_id.eq.${target.authUserId}` : '',
+        ]
+          .filter(Boolean)
+          .join(',')
+      );
+
+    if (target.authUserId) {
+      const { error: membershipDeleteError } = await supabaseAdmin
+        .from('organization_memberships')
+        .delete()
+        .eq('organization_id', payload.organizationId)
+        .eq('auth_user_id', target.authUserId);
+
+      if (membershipDeleteError) {
+        return applySupabaseCookies(
+          NextResponse.json({ error: membershipDeleteError.message }, { status: 400 }),
+          response
+        );
+      }
     }
 
     const { error: deleteError } = await supabaseAdmin
       .from('users')
       .delete()
       .eq('organization_id', payload.organizationId)
-      .eq('auth_user_id', target.authUserId ?? '');
+      .eq('id', target.id);
 
     if (deleteError) {
       return applySupabaseCookies(

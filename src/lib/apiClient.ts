@@ -12,6 +12,39 @@ type ApiFetchOptions = RequestInit & {
   skipAuthDebug?: boolean;
 };
 
+function normalizeApiUrl(input: string) {
+  const trimmed = input.trim();
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('//')) {
+    return trimmed;
+  }
+
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  let normalized = trimmed;
+  const isDev = process.env.NODE_ENV !== 'production';
+  if (normalized.startsWith('/api/')) {
+    return normalized;
+  }
+
+  if (normalized.startsWith('api/')) {
+    const fixed = `/${normalized}`;
+    if (isDev) {
+      // eslint-disable-next-line no-console
+      console.warn('[apiFetch] Normalized API path to include leading "/":', input, '->', fixed);
+    }
+    return fixed;
+  }
+
+  const fixed = normalized.startsWith('/') ? `/api${normalized}` : `/api/${normalized}`;
+  if (isDev) {
+    // eslint-disable-next-line no-console
+    console.warn('[apiFetch] Normalized API path to include "/api/":', input, '->', fixed);
+  }
+  return fixed;
+}
+
 async function parseJsonSafe(response: Response) {
   const text = await response.text();
   if (!text) {
@@ -27,6 +60,7 @@ async function parseJsonSafe(response: Response) {
 export async function apiFetch<T = any>(url: string, options: ApiFetchOptions = {}): Promise<ApiResult<T>> {
   const { json, skipAuthDebug, headers, ...rest } = options;
   const mergedHeaders = new Headers(headers);
+  const requestUrl = normalizeApiUrl(url);
 
   let body = rest.body;
   if (json !== undefined) {
@@ -38,7 +72,7 @@ export async function apiFetch<T = any>(url: string, options: ApiFetchOptions = 
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(requestUrl, {
       ...rest,
       headers: mergedHeaders,
       body,

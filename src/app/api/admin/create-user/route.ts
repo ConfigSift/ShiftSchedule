@@ -5,7 +5,7 @@ import { getUserRole } from '@/utils/role';
 import { normalizeJobs } from '@/utils/jobs';
 import { splitFullName } from '@/utils/userMapper';
 import { normalizeEmployeeNumber, validateEmployeeNumber } from '@/utils/employeeAuth';
-import { deriveAuthPasswordFromPin, isValidPin } from '@/utils/pin';
+import { normalizePin } from '@/utils/pinNormalize';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -28,7 +28,19 @@ type CreateResponse = {
   created: boolean;
   invited: boolean;
   already_member: boolean;
+  alreadySent?: boolean;
+  reactivated?: boolean;
+  action?: 'CREATED' | 'ADDED_EXISTING_AUTH' | 'INVITED' | 'ALREADY_MEMBER';
   error?: string;
+  code?: string;
+  message?: string;
+};
+
+type PostgrestErrorShape = {
+  message?: string | null;
+  details?: string | null;
+  hint?: string | null;
+  code?: string | null;
 };
 
 function isEmployeeNumberConflict(error: { code?: string | null; message?: string | null; details?: string | null }) {
@@ -36,13 +48,30 @@ function isEmployeeNumberConflict(error: { code?: string | null; message?: strin
   const message = (error.message ?? '').toLowerCase();
   const details = (error.details ?? '').toLowerCase();
   const combined = `${message} ${details}`;
-  if (code === '23505') {
+  if (code === '23505' || code === 'P2002') {
     return combined.includes('users_org_employee_number_unique');
   }
   if (combined.includes('duplicate key value') && combined.includes('users_org_employee_number_unique')) {
     return true;
   }
+  if (combined.includes('p2002') && combined.includes('employee_number')) {
+    return true;
+  }
   return false;
+}
+
+function isRealEmailConflict(error: { code?: string | null; message?: string | null; details?: string | null }) {
+  const code = error.code ?? '';
+  const message = (error.message ?? '').toLowerCase();
+  const details = (error.details ?? '').toLowerCase();
+  const combined = `${message} ${details}`;
+  if (code === '23505' || code === 'P2002') {
+    return combined.includes('users_org_real_email_unique') || (combined.includes('real_email') && combined.includes('organization_id'));
+  }
+  if (combined.includes('duplicate key value') && combined.includes('real_email')) {
+    return true;
+  }
+  return combined.includes('users_org_real_email_unique');
 }
 
 function sanitizeJobs(jobs: string[]) {
@@ -50,17 +79,12 @@ function sanitizeJobs(jobs: string[]) {
 }
 
 async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | null> {
-  const { data: userRow, error: userErr } = await supabaseAdmin
-    .from('users')
-    .select('auth_user_id')
-    .or(`real_email.ilike.${normalizedEmail},email.ilike.${normalizedEmail}`)
-    .limit(1)
-    .maybeSingle();
-  if (!userErr && userRow?.auth_user_id) {
-    return userRow.auth_user_id;
+  const adminAuth: any = supabaseAdmin.auth.admin;
+  if (typeof adminAuth.getUserByEmail === 'function') {
+    const { data, error } = await adminAuth.getUserByEmail(normalizedEmail);
+    if (!error && data?.user?.id) return data.user.id;
   }
 
-  const adminAuth: any = supabaseAdmin.auth.admin;
   if (typeof adminAuth.listUsers !== 'function') {
     return null;
   }
@@ -75,19 +99,39 @@ async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | 
       return null;
     }
     const users = listData?.users ?? [];
-    const match = users.find(
-      (user: any) => String(user.email ?? '').toLowerCase() === normalizedEmail
-    );
-    if (match?.id) {
-      return match.id;
-    }
-    if (users.length < perPage) {
-      break;
-    }
+    const match = users.find((user: any) => String(user.email ?? '').toLowerCase() === normalizedEmail);
+    if (match?.id) return match.id;
+    if (users.length < perPage) break;
     page += 1;
   }
 
   return null;
+}
+
+async function getInvitationColumns(): Promise<Set<string>> {
+  const { data, error } = await supabaseAdmin
+    .from('information_schema.columns')
+    .select('column_name')
+    .eq('table_schema', 'public')
+    .eq('table_name', 'organization_invitations');
+  if (error || !data) {
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.warn('[create-user] unable to inspect organization_invitations columns', error?.message);
+    }
+    return new Set();
+  }
+  return new Set(data.map((row: { column_name: string }) => row.column_name));
+}
+
+function toPostgrestErrorShape(error: PostgrestErrorShape | null | undefined) {
+  if (!error) return undefined;
+  return {
+    message: error.message ?? 'Unknown error.',
+    details: error.details ?? null,
+    hint: error.hint ?? null,
+    code: error.code ?? null,
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -97,14 +141,21 @@ export async function POST(request: NextRequest) {
   );
   const respond = (res: NextResponse) => (hasRefreshToken ? applySupabaseCookies(res, response) : res);
   const toResponse = (payload: CreateResponse, status = 200) => {
-    const { error, ...rest } = payload;
-    const responseBody = error ? { ...rest, error } : rest;
+    const { error, message, code, ...rest } = payload;
+    const responseBody: Record<string, unknown> = { ...rest };
+    if (error) responseBody.error = error;
+    if (message) responseBody.message = message;
+    if (code) responseBody.code = code;
     return respond(NextResponse.json(responseBody, { status }));
   };
+  const toPostgrestErrorResponse = (error: PostgrestErrorShape | null | undefined, status = 400) =>
+    respond(NextResponse.json({ error: toPostgrestErrorShape(error) }, { status }));
 
   try {
     const payload = (await request.json()) as CreatePayload;
     const allowAdminCreation = process.env.ENABLE_ADMIN_CREATION === 'true';
+    const isUuid = (value: string) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
     if (!payload.organizationId || !payload.fullName || !payload.email) {
       return toResponse(
@@ -112,14 +163,17 @@ export async function POST(request: NextRequest) {
         400
       );
     }
-
-    const pinValue = payload.pinCode ?? payload.passcode ?? '';
-    if (!isValidPin(pinValue)) {
+    if (!isUuid(String(payload.organizationId))) {
       return toResponse(
-        { created: false, invited: false, already_member: false, error: 'PIN must be exactly 4 digits.' },
-        400
+        { created: false, invited: false, already_member: false, error: 'Invalid organizationId.', code: 'INVALID_UUID' },
+        422
       );
     }
+
+    const pinValueRaw = payload.pinCode ?? payload.passcode ?? '';
+    const pinValue = String(pinValueRaw ?? '').trim();
+    const pinProvided = pinValue.length > 0;
+    let normalizedPin: string | null = null;
 
     if (!validateEmployeeNumber(payload.employeeNumber)) {
       return toResponse(
@@ -242,160 +296,247 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let newAuthUserId: string | undefined;
-    let createdAuthUser = false;
     const existingAuthUserId = await findAuthUserIdByEmail(normalizedEmail);
-    if (existingAuthUserId) {
-      const { data: existingMembership, error: membershipLookupError } = await supabaseAdmin
-        .from('organization_memberships')
-        .select('id, role')
-        .eq('organization_id', payload.organizationId)
-        .eq('auth_user_id', existingAuthUserId)
-        .maybeSingle();
+    let membershipOrgIds: string[] = [];
+    let hasMembershipInThisOrg = false;
+    let hasMembershipInOtherOrg = false;
 
-      if (membershipLookupError) {
+    if (existingAuthUserId) {
+      const { data: membershipRows, error: membershipRowsError } = await supabaseAdmin
+        .from('organization_memberships')
+        .select('organization_id')
+        .eq('auth_user_id', existingAuthUserId);
+      if (membershipRowsError) {
         return toResponse(
           {
             created: false,
             invited: false,
             already_member: false,
-            error: membershipLookupError.message,
+            error: membershipRowsError.message,
+          },
+          400
+        );
+      }
+      membershipOrgIds = (membershipRows ?? []).map((row: any) => String(row.organization_id));
+      hasMembershipInThisOrg = membershipOrgIds.includes(payload.organizationId);
+      hasMembershipInOtherOrg = membershipOrgIds.some((id) => id !== payload.organizationId);
+    }
+
+    const { data: existingEmailRows, error: existingEmailError } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('organization_id', payload.organizationId)
+      .or(`real_email.eq.${normalizedEmail},email.eq.${normalizedEmail}`)
+      .limit(1);
+
+    if (existingEmailError) {
+      return toResponse(
+        {
+          created: false,
+          invited: false,
+          already_member: false,
+          error: existingEmailError.message,
+        },
+        400
+      );
+    }
+
+    if ((existingEmailRows ?? []).length > 0) {
+      return toResponse(
+        {
+          created: false,
+          invited: false,
+          already_member: false,
+          action: 'ALREADY_MEMBER',
+          already_member: true,
+          code: 'ALREADY_MEMBER',
+          message: 'User already belongs to this restaurant.',
+        },
+        409
+      );
+    }
+
+    if (existingAuthUserId && hasMembershipInThisOrg) {
+      return toResponse(
+        {
+          created: false,
+          invited: false,
+          already_member: true,
+          action: 'ALREADY_MEMBER',
+          code: 'ALREADY_MEMBER',
+          message: 'User already belongs to this restaurant.',
+        },
+        409
+      );
+    }
+
+    if (!existingAuthUserId && pinProvided) {
+      try {
+        normalizedPin = normalizePin(pinValue);
+      } catch {
+        return toResponse(
+          { created: false, invited: false, already_member: false, error: 'PIN must be 6 digits.' },
+          400
+        );
+      }
+    }
+
+    if (!existingAuthUserId && !pinProvided) {
+      return toResponse(
+        {
+          created: false,
+          invited: false,
+          already_member: false,
+          error: 'PIN is required for new accounts.',
+        },
+        400
+      );
+    }
+
+    let authUserIdToUse = existingAuthUserId;
+    let invited = false;
+    let action: CreateResponse['action'] = 'CREATED';
+
+    if (!authUserIdToUse) {
+      const normalizedPinValue = normalizedPin ?? '';
+      if (!normalizedPinValue) {
+        return toResponse(
+          {
+            created: false,
+            invited: false,
+            already_member: false,
+            error: 'PIN is required for new accounts.',
           },
           400
         );
       }
 
-      const { data: existingProfile, error: profileLookupError } = await supabaseAdmin
+      const { data: createdAuthUser, error: createAuthError } = await supabaseAdmin.auth.admin.createUser({
+        email: normalizedEmail,
+        password: normalizedPinValue,
+        email_confirm: process.env.NODE_ENV !== 'production',
+      });
+
+      if (createAuthError || !createdAuthUser?.user?.id) {
+        const message = createAuthError?.message ?? 'Unable to create auth user.';
+        return toResponse(
+          { created: false, invited: false, already_member: false, error: message },
+          400
+        );
+      }
+
+      authUserIdToUse = createdAuthUser.user.id;
+      action = 'CREATED';
+    } else {
+      if (hasMembershipInOtherOrg) {
+        invited = true;
+        action = 'INVITED';
+      } else {
+        action = 'ADDED_EXISTING_AUTH';
+      }
+    }
+
+    const membershipRole = targetRole.toLowerCase();
+
+    if (invited) {
+      const inviteColumns = await getInvitationColumns();
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const expiresIso = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const requesterProfileId = await supabaseAdmin
         .from('users')
         .select('id')
         .eq('organization_id', payload.organizationId)
-        .eq('auth_user_id', existingAuthUserId)
+        .eq('auth_user_id', authUserId)
+        .maybeSingle()
+        .then((res) => res.data?.id ?? null);
+
+      const baseInvitePayload: Record<string, unknown> = {
+        organization_id: payload.organizationId,
+        email: normalizedEmail,
+        role: membershipRole,
+        status: 'pending',
+        invited_by_auth_user_id: authUserId,
+      };
+
+      if (inviteColumns.has('created_at')) baseInvitePayload.created_at = nowIso;
+      if (inviteColumns.has('updated_at')) baseInvitePayload.updated_at = nowIso;
+      if (inviteColumns.has('expires_at')) baseInvitePayload.expires_at = expiresIso;
+      if (inviteColumns.has('created_by_auth_user_id')) baseInvitePayload.created_by_auth_user_id = authUserId;
+      if (inviteColumns.has('invited_by_user_id')) baseInvitePayload.invited_by_user_id = requesterProfileId ?? authUserId;
+      if (inviteColumns.has('created_by_user_id')) baseInvitePayload.created_by_user_id = requesterProfileId ?? authUserId;
+      if (inviteColumns.has('invited_by')) baseInvitePayload.invited_by = requesterProfileId ?? authUserId;
+      if (inviteColumns.has('invited_by_email')) baseInvitePayload.invited_by_email = authData.user?.email ?? null;
+
+      if (inviteColumns.has('token')) baseInvitePayload.token = crypto.randomUUID();
+      if (inviteColumns.has('invite_token')) baseInvitePayload.invite_token = crypto.randomUUID();
+      if (inviteColumns.has('invitation_token')) baseInvitePayload.invitation_token = crypto.randomUUID();
+
+      const { data: existingInvite } = await supabaseAdmin
+        .from('organization_invitations')
+        .select('id,status')
+        .eq('organization_id', payload.organizationId)
+        .eq('email', normalizedEmail)
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle();
 
-      if (profileLookupError) {
-        return toResponse(
-          { created: false, invited: false, already_member: false, error: profileLookupError.message },
-          400
-        );
-      }
-
-      const membershipExists = !!existingMembership;
-      const profileExists = !!existingProfile;
-
-      if (membershipExists && profileExists) {
-        return toResponse({ created: false, invited: false, already_member: true });
-      }
-
-      if (membershipExists && !profileExists) {
-        const fullNameRaw = String(payload.fullName ?? '').trim();
-        const fullName = fullNameRaw || normalizedEmail;
-        const phone = String(payload.phone ?? '').trim();
-        const profileRole = String(existingMembership?.role ?? targetRole).trim() || targetRole;
-
-        const insertPayload: Record<string, unknown> = {
-          auth_user_id: existingAuthUserId,
-          organization_id: payload.organizationId,
-          full_name: fullName,
-          email: normalizedEmail,
-          real_email: normalizedEmail,
-          role: profileRole,
-        };
-        if (phone) {
-          insertPayload.phone = phone;
+      if (existingInvite?.id) {
+        const status = String(existingInvite.status ?? '').trim().toLowerCase();
+        const activeStatuses = new Set(['pending', 'sent']);
+        if (activeStatuses.has(status)) {
+          return toResponse({
+            created: false,
+            invited: true,
+            already_member: false,
+            alreadySent: true,
+            action,
+            code: 'INVITE_ALREADY_SENT',
+            message: 'Invite already sent.',
+          });
         }
 
-        const insertResult = await supabaseAdmin.from('users').insert(insertPayload);
-        if (insertResult.error) {
-          const message = insertResult.error.message?.toLowerCase() ?? '';
-          if (
-            message.includes('full_name')
-            || message.includes('first_name')
-            || message.includes('last_name')
-          ) {
-            const { firstName, lastName } = splitFullName(fullName);
-            const legacyPayload: Record<string, unknown> = {
-              auth_user_id: existingAuthUserId,
-              organization_id: payload.organizationId,
-              first_name: firstName,
-              last_name: lastName,
-              email: normalizedEmail,
-              real_email: normalizedEmail,
-              role: profileRole,
-            };
-            if (phone) {
-              legacyPayload.phone = phone;
-            }
-            const legacyResult = await supabaseAdmin.from('users').insert(legacyPayload);
-            if (legacyResult.error) {
-              return toResponse(
-                {
-                  created: false,
-                  invited: false,
-                  already_member: false,
-                  error: legacyResult.error.message,
-                },
-                400
-              );
-            }
-          } else {
-            return toResponse(
-              { created: false, invited: false, already_member: false, error: insertResult.error.message },
-              400
-            );
-          }
-        }
-
-        return toResponse({ created: false, invited: false, already_member: true });
-      }
-
-      const invitationRole = targetRole.toLowerCase();
-      const { error: inviteError } = await supabaseAdmin
-        .from('organization_invitations')
-        .insert({
-          organization_id: payload.organizationId,
-          email: normalizedEmail,
-          role: invitationRole,
+        const updatePayload: Record<string, unknown> = {
           status: 'pending',
           invited_by_auth_user_id: authUserId,
-        });
+        };
+        if (inviteColumns.has('updated_at')) updatePayload.updated_at = nowIso;
+        if (inviteColumns.has('role')) updatePayload.role = membershipRole;
+        if (inviteColumns.has('expires_at')) updatePayload.expires_at = expiresIso;
+        if (inviteColumns.has('created_by_auth_user_id')) updatePayload.created_by_auth_user_id = authUserId;
+        if (inviteColumns.has('invited_by_user_id')) updatePayload.invited_by_user_id = requesterProfileId ?? authUserId;
+        if (inviteColumns.has('created_by_user_id')) updatePayload.created_by_user_id = requesterProfileId ?? authUserId;
+        if (inviteColumns.has('invited_by')) updatePayload.invited_by = requesterProfileId ?? authUserId;
+        if (inviteColumns.has('invited_by_email')) updatePayload.invited_by_email = authData.user?.email ?? null;
 
-      if (inviteError) {
-        const lowerMessage = inviteError.message?.toLowerCase() ?? '';
-        if (inviteError.code === '23505' || lowerMessage.includes('duplicate')) {
-          return toResponse({ created: false, invited: true, already_member: false });
+        const { error: inviteUpdateError } = await supabaseAdmin
+          .from('organization_invitations')
+          .update(updatePayload)
+          .eq('id', existingInvite.id);
+        if (inviteUpdateError) {
+          if (process.env.NODE_ENV !== 'production') {
+            // eslint-disable-next-line no-console
+            console.error('[create-user] invite update failed', inviteUpdateError);
+          }
+          return toPostgrestErrorResponse(inviteUpdateError, 400);
         }
-        return toResponse(
-          { created: false, invited: false, already_member: false, error: inviteError.message },
-          400
-        );
+
+        return toResponse({ created: false, invited: true, already_member: false, reactivated: true, action });
       }
 
-      return toResponse({ created: false, invited: true, already_member: false });
-    }
+      const { error: inviteInsertError } = await supabaseAdmin
+        .from('organization_invitations')
+        .insert(baseInvitePayload);
 
-    const { data: createData, error: createError } = await supabaseAdmin.auth.admin.createUser({
-      email: normalizedEmail,
-      password: deriveAuthPasswordFromPin(pinValue),
-      email_confirm: true,
-    });
-    if (createError) {
-      const cleanMessage =
-        createError.message?.toLowerCase().includes('password')
-          ? 'PIN must be exactly 4 digits.'
-          : createError.message;
-      return toResponse(
-        { created: false, invited: false, already_member: false, error: cleanMessage },
-        400
-      );
-    }
-    newAuthUserId = createData.user?.id;
-    createdAuthUser = true;
+      if (inviteInsertError) {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.error('[create-user] invite insert failed', inviteInsertError);
+        }
+        return toPostgrestErrorResponse(inviteInsertError, 400);
+      }
 
-    if (!newAuthUserId) {
-      return toResponse(
-        { created: false, invited: false, already_member: false, error: 'Failed to create auth user.' },
-        500
-      );
+      return toResponse({ created: false, invited: true, already_member: false, action });
     }
 
     // Sanitize jobPay: ensure it's a valid Record<string, number> with no NaN values
@@ -417,7 +558,7 @@ export async function POST(request: NextRequest) {
       : payload.hourlyPay ?? 0;
 
     const insertPayload: Record<string, unknown> = {
-      auth_user_id: newAuthUserId,
+      auth_user_id: authUserIdToUse ?? null,
       organization_id: payload.organizationId,
       full_name: payload.fullName,
       phone: payload.phone ?? '',
@@ -432,23 +573,30 @@ export async function POST(request: NextRequest) {
       insertPayload.job_pay = sanitizedJobPay;
     }
 
-    let insertSucceeded = false;
     const insertResult = await supabaseAdmin.from('users').insert(insertPayload);
 
     if (insertResult.error) {
+      if (isRealEmailConflict(insertResult.error)) {
+        return toResponse(
+          {
+            created: false,
+            invited: false,
+            already_member: false,
+            code: 'EMAIL_TAKEN_ORG',
+            message: 'Email is already used by another account.',
+          },
+          409
+        );
+      }
       if (isEmployeeNumberConflict(insertResult.error)) {
-        if (createdAuthUser) {
-          await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-        }
         return toResponse(
           {
             created: false,
             invited: false,
             already_member: false,
             code: 'EMPLOYEE_ID_TAKEN',
-            field: 'employeeNumber',
-            message: 'Employee ID already exists. Please choose a different ID.',
-          } as any,
+            message: 'Employee ID already exists.',
+          },
           409
         );
       }
@@ -457,9 +605,6 @@ export async function POST(request: NextRequest) {
         const { hourly_pay, ...withoutPay } = insertPayload;
         const pinFallbackResult = await supabaseAdmin.from('users').insert(withoutPay);
         if (pinFallbackResult.error) {
-          if (createdAuthUser) {
-            await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-          }
           return toResponse(
             {
               created: false,
@@ -470,11 +615,10 @@ export async function POST(request: NextRequest) {
             400
           );
         }
-        insertSucceeded = true;
       } else if (message.includes('full_name')) {
         const { firstName, lastName } = splitFullName(payload.fullName);
         const legacyPayload: Record<string, unknown> = {
-          auth_user_id: newAuthUserId,
+          auth_user_id: authUserIdToUse ?? null,
           organization_id: payload.organizationId,
           first_name: firstName,
           last_name: lastName,
@@ -491,19 +635,27 @@ export async function POST(request: NextRequest) {
         }
         const legacyResult = await supabaseAdmin.from('users').insert(legacyPayload);
         if (legacyResult.error) {
+          if (isRealEmailConflict(legacyResult.error)) {
+            return toResponse(
+              {
+                created: false,
+                invited: false,
+                already_member: false,
+                code: 'EMAIL_TAKEN_ORG',
+                message: 'Email is already used by another account.',
+              },
+              409
+            );
+          }
           if (isEmployeeNumberConflict(legacyResult.error)) {
-            if (createdAuthUser) {
-              await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-            }
             return toResponse(
               {
                 created: false,
                 invited: false,
                 already_member: false,
                 code: 'EMPLOYEE_ID_TAKEN',
-                field: 'employeeNumber',
-                message: 'Employee ID already exists. Please choose a different ID.',
-              } as any,
+                message: 'Employee ID already exists.',
+              },
               409
             );
           }
@@ -511,24 +663,29 @@ export async function POST(request: NextRequest) {
             const { hourly_pay, ...legacyNoPay } = legacyPayload;
             const secondLegacy = await supabaseAdmin.from('users').insert(legacyNoPay);
             if (secondLegacy.error) {
+              if (isRealEmailConflict(secondLegacy.error)) {
+                return toResponse(
+                  {
+                    created: false,
+                    invited: false,
+                    already_member: false,
+                    code: 'EMAIL_TAKEN_ORG',
+                    message: 'Email is already used by another account.',
+                  },
+                  409
+                );
+              }
               if (isEmployeeNumberConflict(secondLegacy.error)) {
-                if (createdAuthUser) {
-                  await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-                }
                 return toResponse(
                   {
                     created: false,
                     invited: false,
                     already_member: false,
                     code: 'EMPLOYEE_ID_TAKEN',
-                    field: 'employeeNumber',
-                    message: 'Employee ID already exists. Please choose a different ID.',
-                  } as any,
+                    message: 'Employee ID already exists.',
+                  },
                   409
                 );
-              }
-              if (createdAuthUser) {
-                await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
               }
               return toResponse(
                 {
@@ -540,49 +697,27 @@ export async function POST(request: NextRequest) {
                 400
               );
             }
-            insertSucceeded = true;
           } else {
-            if (createdAuthUser) {
-              await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-            }
             return toResponse(
               { created: false, invited: false, already_member: false, error: legacyResult.error.message },
               400
             );
           }
-        } else {
-          insertSucceeded = true;
         }
       } else {
-        if (createdAuthUser) {
-          await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-        }
         return toResponse(
           { created: false, invited: false, already_member: false, error: insertResult.error.message },
           400
         );
       }
-    } else {
-      insertSucceeded = true;
     }
 
-    if (!insertSucceeded) {
-      if (createdAuthUser) {
-        await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
-      }
-      return toResponse(
-        { created: false, invited: false, already_member: false, error: 'Unable to create user.' },
-        400
-      );
-    }
-
-    const membershipRole = targetRole.toLowerCase();
     const { error: membershipError } = await supabaseAdmin
       .from('organization_memberships')
       .upsert(
         {
           organization_id: payload.organizationId,
-          auth_user_id: newAuthUserId,
+          auth_user_id: authUserIdToUse,
           role: membershipRole,
         },
         { onConflict: 'organization_id,auth_user_id' }
@@ -593,9 +728,9 @@ export async function POST(request: NextRequest) {
         .from('users')
         .delete()
         .eq('organization_id', payload.organizationId)
-        .eq('auth_user_id', newAuthUserId);
-      if (createdAuthUser) {
-        await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+        .eq('auth_user_id', authUserIdToUse);
+      if (action === 'CREATED' && authUserIdToUse) {
+        await supabaseAdmin.auth.admin.deleteUser(authUserIdToUse);
       }
       return toResponse(
         { created: false, invited: false, already_member: false, error: membershipError.message },
@@ -603,7 +738,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    return toResponse({ created: true, invited: false, already_member: false });
+    return toResponse({ created: true, invited: false, already_member: false, action });
   } catch (e: any) {
     const message = e?.message ?? 'Unknown error.';
     return toResponse(
