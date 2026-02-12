@@ -486,6 +486,7 @@ function CompRow({ label, values }: { label: string; values: (string | boolean)[
 export function LandingPage() {
   const { theme, toggleTheme } = useThemeStore();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
 
   const scrollTo = (id: string) => {
     setMobileMenuOpen(false);
@@ -541,10 +542,10 @@ export function LandingPage() {
               Sign In
             </Link>
             <Link
-              href="/login"
+              href="/subscribe"
               className="hidden sm:inline-flex px-4 py-2 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors shadow-sm"
             >
-              Get Started Free
+              Get Started
             </Link>
 
             {/* Mobile hamburger */}
@@ -584,10 +585,10 @@ export function LandingPage() {
                   Sign In
                 </Link>
                 <Link
-                  href="/login"
+                  href="/subscribe"
                   className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
                 >
-                  Get Started Free
+                  Get Started
                 </Link>
               </div>
             </div>
@@ -814,8 +815,8 @@ export function LandingPage() {
                 </tr>
               </thead>
               <tbody>
-                <CompRow label="Monthly Price" values={['$0 – $19', '$150-180', '$70-150', '$50-100']} />
-                <CompRow label="Free Tier" values={[true, false, true, false]} />
+                <CompRow label="Monthly Price" values={['$19.99/location', '$150-180', '$70-150', '$50-100']} />
+                <CompRow label="Plan Model" values={['One simple plan', 'Tiered plans', 'Tiered plans', 'Tiered plans']} />
                 <CompRow label="Shift Marketplace" values={[true, false, false, false]} />
                 <CompRow label="Mobile App Quality" values={['Excellent', 'Poor', 'Good', 'Average']} />
                 <CompRow label="Setup Time" values={['5 min', '2-3 hours', '1 hour', '30 min']} />
@@ -834,60 +835,81 @@ export function LandingPage() {
               Simple, Honest Pricing
             </h2>
             <p className="text-gray-500 dark:text-zinc-400 max-w-xl mx-auto">
-              Save $130+/month vs HotSchedules. Start free, upgrade when you&apos;re ready.
+              Save $130+/month vs HotSchedules. One simple plan, everything included.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
-            {/* Free */}
-            <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-gray-200 dark:border-zinc-800 p-6 shadow-sm">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-zinc-100 mb-1">Free</h3>
-              <div className="flex items-baseline gap-1 mb-4">
-                <span className="text-4xl font-bold text-gray-900 dark:text-zinc-100">$0</span>
-                <span className="text-gray-400 dark:text-zinc-500">/month</span>
+          <div className="max-w-3xl mx-auto">
+            <div className="flex justify-center">
+              <div className="inline-flex rounded-xl border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-1">
+                <button
+                  onClick={() => setBillingCycle('monthly')}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    billingCycle === 'monthly'
+                      ? 'bg-amber-500 text-zinc-900'
+                      : 'text-gray-600 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  Monthly
+                </button>
+                <button
+                  onClick={() => setBillingCycle('annual')}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    billingCycle === 'annual'
+                      ? 'bg-amber-500 text-zinc-900'
+                      : 'text-gray-600 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  Annual
+                </button>
               </div>
-              <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">Perfect for single-location restaurants getting started.</p>
-              <ul className="space-y-2.5 mb-6">
-                {[
-                  'Single location',
-                  'Up to 15 employees',
-                  'Basic scheduling',
-                  'Shift swaps',
-                  'Mobile app access',
-                ].map(item => (
-                  <li key={item} className="flex items-center gap-2 text-sm text-gray-600 dark:text-zinc-400">
-                    <Check className="w-4 h-4 text-emerald-500 shrink-0" />
-                    {item}
-                  </li>
-                ))}
-              </ul>
-              <Link
-                href="/login"
-                className="block w-full py-2.5 rounded-xl text-sm font-semibold border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-center"
-              >
-                Get Started Free
-              </Link>
             </div>
 
-            {/* Pro */}
-            <div className="bg-white dark:bg-zinc-900 rounded-2xl border-2 border-amber-500 p-6 shadow-sm relative">
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full text-xs font-semibold bg-amber-500 text-zinc-900">
-                Most Popular
+            <div className="mt-6 bg-white dark:bg-zinc-900 rounded-2xl border-2 border-amber-500 p-6 sm:p-8 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-zinc-100">ShiftFlow Pro</h3>
+                  <p className="text-sm text-gray-500 dark:text-zinc-400">One simple plan for every location.</p>
+                </div>
+                <span className="self-start px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30">
+                  per location
+                </span>
               </div>
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-zinc-100 mb-1">Pro</h3>
-              <div className="flex items-baseline gap-1 mb-4">
-                <span className="text-4xl font-bold text-gray-900 dark:text-zinc-100">$19</span>
-                <span className="text-gray-400 dark:text-zinc-500">/month</span>
+
+              <div className="mb-6">
+                <div className="flex items-end gap-2">
+                  <span className="text-5xl sm:text-6xl font-bold text-gray-900 dark:text-zinc-100">
+                    {billingCycle === 'monthly' ? '$1' : '$199'}
+                  </span>
+                  <span className="text-gray-400 dark:text-zinc-500 pb-1">
+                    {billingCycle === 'monthly' ? '/first month' : '/year per location'}
+                  </span>
+                </div>
+                {billingCycle === 'monthly' ? (
+                  <p className="mt-2 text-sm font-medium text-gray-700 dark:text-zinc-300">Then $19.99/mo per location</p>
+                ) : (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+                      Save 17%
+                    </span>
+                  </div>
+                )}
+                <p className="mt-2 text-xs text-gray-500 dark:text-zinc-400">
+                  Billed per location. Add locations anytime in Site Manager.
+                </p>
               </div>
-              <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">For growing restaurants that need the full power.</p>
-              <ul className="space-y-2.5 mb-6">
+
+              <ul className="space-y-2.5 mb-5">
                 {[
+                  'Schedule builder (day/week/month views)',
+                  'Shift marketplace (drop & pick up shifts)',
+                  'Team chat',
+                  'Time-off requests',
+                  'Blocked days management',
+                  'Reports (Daily Roster, Daily Timeline, Weekly Schedule)',
+                  'Multi-location support via Site Manager',
                   'Unlimited employees',
-                  'Shift marketplace',
-                  'Multi-location support',
-                  'Labor analytics & reports',
-                  'Priority support',
-                  'Custom roles & permissions',
+                  'Mobile-friendly access',
                 ].map(item => (
                   <li key={item} className="flex items-center gap-2 text-sm text-gray-600 dark:text-zinc-400">
                     <Check className="w-4 h-4 text-amber-500 shrink-0" />
@@ -895,9 +917,18 @@ export function LandingPage() {
                   </li>
                 ))}
               </ul>
+
+              <div className="mb-6 rounded-xl border border-gray-200 dark:border-zinc-700/70 bg-gray-50 dark:bg-zinc-900/70 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-zinc-500">Coming soon</p>
+                <ul className="mt-2 space-y-1 text-xs text-gray-500 dark:text-zinc-500">
+                  <li>• Clock-in/Clock-out with tablet kiosk mode</li>
+                  <li>• Clock-in reports & analytics</li>
+                </ul>
+              </div>
+
               <Link
-                href="/login"
-                className="block w-full py-2.5 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
+                href="/subscribe"
+                className="block w-full py-3 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
               >
                 Get Started
               </Link>

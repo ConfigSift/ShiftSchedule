@@ -18,6 +18,17 @@ interface PendingInvitation {
   status: string;
 }
 
+type SubscriptionStatus = 'loading' | 'active' | 'past_due' | 'canceled' | 'none';
+
+interface SubscriptionDetails {
+  planInterval: 'monthly' | 'annual' | 'unknown';
+  quantity: number;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+}
+
+const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
+
 interface AuthState {
   currentUser: UserProfile | null;
   userProfiles: UserProfile[];
@@ -27,6 +38,10 @@ interface AuthState {
   activeRestaurantId: string | null;
   activeRestaurantCode: string | null;
 
+  // Billing
+  subscriptionStatus: SubscriptionStatus;
+  subscriptionDetails: SubscriptionDetails | null;
+
   init: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
   signOut: () => Promise<void>;
@@ -34,6 +49,7 @@ interface AuthState {
   clearActiveOrganization: () => void;
   refreshProfile: () => Promise<void>;
   refreshInvitations: () => Promise<void>;
+  fetchSubscriptionStatus: (organizationId: string) => Promise<void>;
   updateProfile: (data: { fullName: string; phone?: string | null; email?: string | null }) => Promise<{ success: boolean; error?: string; emailPending?: boolean }>;
 }
 
@@ -87,11 +103,39 @@ async function fetchUserProfiles(authUserId: string) {
   return profiles;
 }
 
+/** Set a short-lived cookie that middleware checks to avoid DB queries */
+function setBillingCookie(status: string) {
+  if (typeof document === 'undefined') return;
+  // 1-hour TTL cookie; middleware uses this as a lightweight signal
+  const maxAge = 3600;
+  document.cookie = `sf_billing_ok=${status}; path=/; max-age=${maxAge}; SameSite=Lax`;
+}
+
+function clearBillingCookie() {
+  if (typeof document === 'undefined') return;
+  document.cookie = 'sf_billing_ok=; path=/; max-age=0; SameSite=Lax';
+}
+
+/** Determine plan interval from Stripe price ID */
+function resolvePlanInterval(priceId: string): 'monthly' | 'annual' | 'unknown' {
+  const monthlyPriceId = process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO_MONTHLY ?? '';
+  const annualPriceId = process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO_YEARLY ?? '';
+  if (monthlyPriceId && priceId === monthlyPriceId) return 'monthly';
+  if (annualPriceId && priceId === annualPriceId) return 'annual';
+  // Fallback heuristic: price IDs often contain "month" or "year"
+  const lower = priceId.toLowerCase();
+  if (lower.includes('month')) return 'monthly';
+  if (lower.includes('year') || lower.includes('annual')) return 'annual';
+  return 'unknown';
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   currentUser: null,
   userProfiles: [],
   accessibleRestaurants: [],
   pendingInvitations: [],
+  subscriptionStatus: BILLING_ENABLED ? 'loading' : 'active',
+  subscriptionDetails: null,
   isInitialized: false,
   activeRestaurantId: loadFromStorage<{ id: string | null; code: string | null }>(
     STORAGE_KEYS.ACTIVE_RESTAURANT,
@@ -218,6 +262,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           code: activeRestaurantCode,
         });
       }
+
+      // Fetch subscription status for the active org
+      if (activeRestaurantId) {
+        get().fetchSubscriptionStatus(activeRestaurantId);
+      }
     } catch {
       set({
         currentUser: null,
@@ -296,11 +345,80 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       activeRestaurantId,
       activeRestaurantCode,
     });
+
+    // Refresh subscription status for the active org
+    if (activeRestaurantId) {
+      get().fetchSubscriptionStatus(activeRestaurantId);
+    }
   },
 
   refreshInvitations: async () => {
     const invitations = await fetchPendingInvitations();
     set({ pendingInvitations: invitations });
+  },
+
+  fetchSubscriptionStatus: async (organizationId: string) => {
+    // Billing disabled — always active, set cookie for middleware
+    if (!BILLING_ENABLED) {
+      set({ subscriptionStatus: 'active', subscriptionDetails: null });
+      setBillingCookie('active');
+      return;
+    }
+
+    set({ subscriptionStatus: 'loading' });
+
+    const result = await apiFetch<{
+      billingEnabled: boolean;
+      status: string;
+      subscription: {
+        stripe_price_id: string;
+        quantity: number;
+        current_period_end: string | null;
+        cancel_at_period_end: boolean;
+      } | null;
+    }>(`/api/billing/subscription-status?organizationId=${organizationId}`);
+
+    if (!result.ok || !result.data) {
+      set({ subscriptionStatus: 'none', subscriptionDetails: null });
+      clearBillingCookie();
+      return;
+    }
+
+    const { status: rawStatus, subscription } = result.data;
+
+    // If the API says billing is not enabled, treat as active
+    if (!result.data.billingEnabled) {
+      set({ subscriptionStatus: 'active', subscriptionDetails: null });
+      setBillingCookie('active');
+      return;
+    }
+
+    const subscriptionStatus: SubscriptionStatus =
+      rawStatus === 'active' || rawStatus === 'trialing'
+        ? 'active'
+        : rawStatus === 'past_due'
+          ? 'past_due'
+          : rawStatus === 'canceled'
+            ? 'canceled'
+            : 'none';
+
+    const subscriptionDetails: SubscriptionDetails | null = subscription
+      ? {
+          planInterval: resolvePlanInterval(subscription.stripe_price_id),
+          quantity: subscription.quantity,
+          currentPeriodEnd: subscription.current_period_end,
+          cancelAtPeriodEnd: subscription.cancel_at_period_end,
+        }
+      : null;
+
+    set({ subscriptionStatus, subscriptionDetails });
+
+    // Set cookie for middleware
+    if (subscriptionStatus === 'active' || subscriptionStatus === 'past_due') {
+      setBillingCookie(subscriptionStatus);
+    } else {
+      clearBillingCookie();
+    }
   },
 
   signIn: async (email, password) => {
@@ -316,6 +434,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signOut: async () => {
     await supabase.auth.signOut();
     clearStorage();
+    clearBillingCookie();
     set({
       currentUser: null,
       userProfiles: [],
@@ -324,6 +443,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       isInitialized: true,
       activeRestaurantId: null,
       activeRestaurantCode: null,
+      subscriptionStatus: BILLING_ENABLED ? 'loading' : 'active',
+      subscriptionDetails: null,
     });
   },
 
@@ -333,6 +454,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       code: restaurantCode ?? null,
     });
     set({ activeRestaurantId: organizationId, activeRestaurantCode: restaurantCode ?? null });
+    // Fetch subscription status for newly selected org
+    if (organizationId) {
+      get().fetchSubscriptionStatus(organizationId);
+    }
   },
   clearActiveOrganization: () => {
     saveToStorage(STORAGE_KEYS.ACTIVE_RESTAURANT, {

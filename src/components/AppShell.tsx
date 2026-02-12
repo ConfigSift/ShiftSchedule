@@ -11,6 +11,8 @@ import { useAuthStore } from '../store/authStore';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useUIStore } from '../store/uiStore';
 import { getUserRole, isManagerRole } from '../utils/role';
+import { SubscriptionBanner } from './billing/SubscriptionBanner';
+import { SubscriptionGate } from './billing/SubscriptionGate';
 
 type AppShellProps = {
   children: React.ReactNode;
@@ -20,7 +22,14 @@ type AppShellProps = {
 
 export function AppShell({ children, showFooter = true }: AppShellProps) {
   const pathname = usePathname();
-  const isStandalonePage = pathname === '/' || pathname === '/login' || pathname === '/setup';
+  const isStandalonePage =
+    pathname === '/' ||
+    pathname === '/login' ||
+    pathname === '/signup' ||
+    pathname === '/onboarding' ||
+    pathname === '/setup' ||
+    pathname.startsWith('/auth') ||
+    pathname.startsWith('/subscribe');
   const isChatPage = pathname === '/chat';
   const isDashboardPage = pathname === '/dashboard';
   const isRestaurantsPage = pathname === '/restaurants';
@@ -132,13 +141,16 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
         }`}
         data-chat-content={isChatPage ? 'true' : undefined}
       >
-        <div
-          className={`flex-1 min-h-0 bg-theme-timeline ${employeeNavPadding} ${
-            isChatPage || isDashboardPage ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
-          }`}
-        >
-          {children}
-        </div>
+        {!isRestaurantsPage && <SubscriptionBanner />}
+        <SubscriptionGate>
+          <div
+            className={`flex-1 min-h-0 bg-theme-timeline ${employeeNavPadding} ${
+              isChatPage || isDashboardPage ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
+            }`}
+          >
+            {children}
+          </div>
+        </SubscriptionGate>
       </div>
       {shouldShowFooter && <StatsFooter />}
       {shouldShowEmployeeNav && <EmployeeMobileNav />}

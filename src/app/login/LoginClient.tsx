@@ -1,15 +1,26 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Calendar, Lock, Mail } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase/client';
+import { getAuthCallbackUrl } from '../../lib/site-url';
 
 type LoginClientProps = {
   notice?: string | null;
   setupDisabled: boolean;
 };
+
+function getConfirmationRedirectUrl() {
+  const next = encodeURIComponent('/login?notice=email-verified');
+  return `${getAuthCallbackUrl()}?next=${next}`;
+}
+
+function isUnverifiedEmailError(message: string) {
+  return /email.*not.*confirm|verify your email|confirm your email/i.test(message);
+}
 
 export default function LoginClient({ notice, setupDisabled }: LoginClientProps) {
   const router = useRouter();
@@ -23,6 +34,9 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
   const [recoveryMessage, setRecoveryMessage] = useState('');
   const [recoveryError, setRecoveryError] = useState('');
   const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendError, setResendError] = useState('');
+  const [resendMessage, setResendMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [hasManagers, setHasManagers] = useState<boolean | null>(null);
 
@@ -51,9 +65,10 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
       return;
     }
 
-    // Rule 2: No memberships -> /restaurants
+    // Rule 2: No memberships -> /onboarding
     if (accessibleRestaurants.length === 0) {
-      router.push('/restaurants');
+      // New users can be authenticated before they have any accessible orgs.
+      router.replace('/onboarding');
       return;
     }
 
@@ -71,26 +86,24 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
     }
   }, [currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
 
-  const isPasscodeValid = /^\d{6}$/.test(passcode);
+  const isPasscodeValid = passcode.trim().length >= 6;
   const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const canSubmit = isPasscodeValid && isEmailValid && !loading;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setResendError('');
+    setResendMessage('');
     setLoading(true);
 
     try {
       const loginEmail = email.trim().toLowerCase();
 
-      const authPassword = passcode;
-      if (!/^\d{6}$/.test(authPassword)) {
-        setError('Enter a 6-digit PIN.');
+      const authPassword = passcode.trim();
+      if (authPassword.length < 6) {
+        setError('Enter your password.');
         return;
-      }
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.debug('[login] mode=PIN', 'pwLen=', authPassword.length);
       }
       const { error: authError } = await supabase.auth.signInWithPassword({
         email: loginEmail,
@@ -98,8 +111,11 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
       });
 
       if (authError) {
-        setError('Invalid login credentials.');
-        setPasscode('');
+        if (isUnverifiedEmailError(authError.message || '')) {
+          setError('Please verify your email before signing in. Check your inbox for the confirmation link.');
+        } else {
+          setError('Invalid login credentials.');
+        }
         return;
       }
 
@@ -119,10 +135,10 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
         return;
       }
 
-      // Rule 2: No memberships and no invitations -> show error
+      // Rule 2: No memberships and no invitations -> onboarding bootstrap
       if (refreshedRestaurants.length === 0) {
-        await supabase.auth.signOut();
-        setError('No restaurant access for this account.');
+        // Keep authenticated users in-session and send them to onboarding bootstrap.
+        router.replace('/onboarding');
         return;
       }
 
@@ -181,6 +197,43 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
     }
   };
 
+  const handleResendConfirmation = async () => {
+    setResendError('');
+    setResendMessage('');
+    const targetEmail = email.trim().toLowerCase();
+    if (!targetEmail) {
+      setResendError('Enter your email first, then resend the confirmation link.');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(targetEmail)) {
+      setResendError('Enter a valid email address.');
+      return;
+    }
+
+    setResendLoading(true);
+    try {
+      const { error: resendErrorResult } = await supabase.auth.resend({
+        type: 'signup',
+        email: targetEmail,
+        options: {
+          emailRedirectTo: getConfirmationRedirectUrl(),
+        },
+      });
+
+      if (resendErrorResult) {
+        setResendError(resendErrorResult.message || 'Unable to resend confirmation email.');
+        return;
+      }
+
+      setResendMessage('If your account is pending verification, we sent a new confirmation email.');
+    } catch {
+      setResendError('Unable to resend confirmation email.');
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-theme-primary flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -204,6 +257,20 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-4">
               <p className="text-sm text-amber-400">
                 Setup is disabled. Contact your administrator.
+              </p>
+            </div>
+          )}
+          {notice === 'email-verified' && (
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 mb-4">
+              <p className="text-sm text-emerald-400">
+                Email verified. You can sign in now.
+              </p>
+            </div>
+          )}
+          {notice === 'verification-failed' && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-4">
+              <p className="text-sm text-red-400">
+                Verification link is invalid or expired. Request a new confirmation email below.
               </p>
             </div>
           )}
@@ -248,36 +315,22 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
 
             <div>
               <label className="block text-sm font-medium text-theme-secondary mb-1.5">
-                PIN
+                Password
               </label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-theme-muted" />
                 <input
                   type="password"
-                  inputMode="numeric"
-                  maxLength={6}
                   value={passcode}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    const sanitized = next.replace(/\D/g, '').slice(0, 6);
-                    if (process.env.NODE_ENV !== 'production') {
-                      // eslint-disable-next-line no-console
-                      console.log('[login] input', {
-                        mode: 'pin',
-                        rawLength: next.length,
-                        nextLength: sanitized.length,
-                      });
-                    }
-                    setPasscode(sanitized);
-                  }}
+                  onChange={(e) => setPasscode(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder="123456"
+                  placeholder="Enter your password"
                   required
                 />
               </div>
               {!isPasscodeValid && passcode.length > 0 && (
                 <p className="text-xs text-red-400 mt-1">
-                  Enter a 6-digit PIN.
+                  Password must be at least 6 characters.
                 </p>
               )}
             </div>
@@ -304,14 +357,34 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
               }}
               className="text-xs text-theme-muted hover:text-theme-primary"
             >
-              Forgot PIN?
+              Forgot password?
             </button>
           </div>
+
+          <div className="mt-3 text-center space-y-1">
+            <button
+              type="button"
+              onClick={handleResendConfirmation}
+              disabled={resendLoading}
+              className="text-xs text-amber-400 hover:text-amber-300 disabled:opacity-60"
+            >
+              {resendLoading ? 'Sending confirmation...' : 'Resend confirmation email'}
+            </button>
+            {resendError && <p className="text-xs text-red-400">{resendError}</p>}
+            {resendMessage && <p className="text-xs text-emerald-400">{resendMessage}</p>}
+          </div>
+
+          <p className="text-xs text-theme-muted text-center mt-3">
+            Need an account?{' '}
+            <Link href="/signup" className="text-amber-400 hover:text-amber-300">
+              Sign up
+            </Link>
+          </p>
 
           {recoveryOpen && (
             <div className="mt-4 border-t border-theme-primary pt-4 space-y-3">
               <p className="text-xs text-theme-muted">
-                Enter your email and we will send a PIN reset link.
+                Enter your email and we will send a password reset link.
               </p>
               <form onSubmit={handleRecovery} className="space-y-3">
                 <input

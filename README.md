@@ -18,6 +18,14 @@ Vercel environment variables (set these in Project Settings):
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `NEXT_PUBLIC_SITE_URL` (example: `https://your-domain.com`)
+
+## Supabase Email Verification Settings
+
+- Supabase Dashboard -> Authentication -> Providers (Email): turn **Confirm email** ON.
+- Supabase Dashboard -> Authentication -> URL Configuration -> Redirect URLs must include:
+  - `http://localhost:3000/auth/callback`
+  - `https://<your-domain>/auth/callback`
 
 After editing `.env.local`, restart the dev server to pick up changes.
 

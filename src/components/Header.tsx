@@ -23,6 +23,7 @@ import {
   Menu,
   X,
   MoreHorizontal,
+  CreditCard,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
@@ -384,6 +385,15 @@ export function Header({ minimal = false }: HeaderProps) {
                       <Clock className="w-4 h-4" />
                       Schedule Settings
                     </Link>
+                    {currentRole === 'ADMIN' && (
+                      <Link
+                        href="/billing"
+                        className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                      >
+                        <CreditCard className="w-4 h-4" />
+                        Billing
+                      </Link>
+                    )}
                   </>
                 )}
 

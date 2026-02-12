@@ -4,6 +4,24 @@ import { getSupabaseEnv } from '@/lib/supabase/env';
 import type { User } from '@supabase/supabase-js';
 import { isManagerRole } from '@/utils/role';
 
+/** Routes that skip the subscription billing gate entirely */
+const BILLING_EXEMPT_PREFIXES = [
+  '/subscribe',
+  '/api/billing/',
+  '/api/auth/',
+  '/restaurants',
+  '/login',
+  '/setup',
+  '/pricing',
+];
+
+const BILLING_EXEMPT_EXACT = ['/', '/restaurants'];
+
+function isBillingExempt(pathname: string): boolean {
+  if (BILLING_EXEMPT_EXACT.includes(pathname)) return true;
+  return BILLING_EXEMPT_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
 export async function middleware(req: NextRequest) {
   const { supabaseUrl, supabaseAnonKey, isValid } = getSupabaseEnv();
   if (!isValid) {
@@ -52,6 +70,8 @@ return redirect;
 };
 
   const { pathname } = req.nextUrl;
+
+  // --- Manager route protection (existing) ---
   if (pathname.startsWith('/manager')) {
     if (!user) {
       return redirectTo('/login');
@@ -72,6 +92,26 @@ return redirect;
       return redirectTo('/dashboard');
     }
   }
+
+  // --- Billing gate (lightweight, cookie-based) ---
+  const billingEnabled = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
+
+  if (billingEnabled && user && !isBillingExempt(pathname)) {
+    const billingCookie = req.cookies.get('sf_billing_ok')?.value;
+
+    if (!billingCookie) {
+      // No billing cookie — redirect to /subscribe as safety net.
+      // The client-side SubscriptionGate does the authoritative check;
+      // this redirect catches direct URL access without a valid cookie.
+      return redirectTo('/subscribe');
+    }
+
+    // If subscription is past_due, set a response header the UI can read
+    if (billingCookie === 'past_due') {
+      response.headers.set('x-sf-billing-warning', 'past_due');
+    }
+  }
+
   return response;
 }
 
@@ -83,6 +123,13 @@ export const config = {
     '/time-off/:path*',
     '/debug/:path*',
     '/api/:path*',
+    '/schedule/:path*',
+    '/blocked-days/:path*',
+    '/business-hours/:path*',
+    '/chat/:path*',
+    '/reports/:path*',
+    '/review-requests/:path*',
+    '/shift-exchange/:path*',
+    '/profile/:path*',
   ],
 };
-

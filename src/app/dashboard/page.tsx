@@ -8,10 +8,21 @@ import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
 import { getUserRole, isManagerRole } from '../../utils/role';
 
+function consumeQueryFlag(param: string): boolean {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has(param)) return false;
+  params.delete(param);
+  const qs = params.toString();
+  const newUrl = window.location.pathname + (qs ? `?${qs}` : '');
+  window.history.replaceState({}, '', newUrl);
+  return true;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [notice, setNotice] = useState<string | null>(null);
-  const { hydrate, isHydrated } = useScheduleStore();
+  const { hydrate, isHydrated, showToast } = useScheduleStore();
   const {
     currentUser,
     isInitialized,
@@ -29,8 +40,15 @@ export default function DashboardPage() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       setNotice(params.get('notice'));
+
+      // Post-checkout toasts — consume the flag and clean URL
+      if (consumeQueryFlag('subscribed')) {
+        showToast('Welcome to ShiftFlow Pro!', 'success');
+      } else if (consumeQueryFlag('checkout_canceled')) {
+        showToast('Checkout canceled. You can subscribe anytime from Settings.', 'error');
+      }
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     if (isHydrated) {
