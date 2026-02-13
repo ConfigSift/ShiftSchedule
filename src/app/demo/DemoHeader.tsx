@@ -10,10 +10,12 @@ import {
   BarChart3,
   Users,
   ClipboardList,
+  ArrowLeftRight,
   Menu,
   X,
   MoreHorizontal,
   RotateCcw,
+  Settings,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
@@ -21,6 +23,7 @@ import { useThemeStore } from '../../store/themeStore';
 import { useUIStore } from '../../store/uiStore';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useDemoContext } from '../../demo/DemoProvider';
+import { DemoSettingsModal } from './DemoSettingsModal';
 
 function toYMD(date: Date): string {
   const year = date.getFullYear();
@@ -39,6 +42,7 @@ export function DemoHeader() {
 
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [moreMenuPosition, setMoreMenuPosition] = useState({ top: 0, left: 0 });
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const moreMenuButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -142,7 +146,7 @@ export function DemoHeader() {
             </button>
 
             <button
-              onClick={() => handleIntercept('review requests')}
+              onClick={() => router.push('/demo/review-requests')}
               className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
               aria-label="Review Requests"
             >
@@ -220,11 +224,24 @@ export function DemoHeader() {
                       Staff
                     </button>
                     <button
-                      onClick={() => handleIntercept('review requests')}
+                      onClick={() => {
+                        router.push('/demo/review-requests');
+                        setMoreMenuOpen(false);
+                      }}
                       className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
                     >
                       <ClipboardList className="w-4 h-4" />
                       Requests
+                    </button>
+                    <button
+                      onClick={() => {
+                        router.push('/demo/shift-exchange');
+                        setMoreMenuOpen(false);
+                      }}
+                      className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                    >
+                      <ArrowLeftRight className="w-4 h-4" />
+                      Shift Exchange
                     </button>
                     <button
                       onClick={handleReportsClick}
@@ -234,6 +251,28 @@ export function DemoHeader() {
                       Reports
                     </button>
                   </div>
+
+                  <button
+                    onClick={() => {
+                      setSettingsOpen(true);
+                      setMoreMenuOpen(false);
+                    }}
+                    className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                  >
+                    <Settings className="w-4 h-4" />
+                    Schedule Settings
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      router.push('/demo/shift-exchange');
+                      setMoreMenuOpen(false);
+                    }}
+                    className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                  >
+                    <ArrowLeftRight className="w-4 h-4" />
+                    Shift Exchange
+                  </button>
 
                   <button
                     onClick={() => {
@@ -264,7 +303,7 @@ export function DemoHeader() {
                       className="flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-amber-500 hover:bg-amber-500/10 transition-colors"
                     >
                       <Plus className="w-4 h-4" />
-                      Get Started Free
+                      Get Started
                     </Link>
                   </div>
                 </div>,
@@ -281,6 +320,7 @@ export function DemoHeader() {
           </Link>
         </div>
       </div>
+      <DemoSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </header>
   );
 }

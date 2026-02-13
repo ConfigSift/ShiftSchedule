@@ -47,8 +47,7 @@ type PersistedPayload = {
   state: DemoSnapshot;
 };
 
-const DEMO_SESSION_ID_KEY = 'crewshyft_demo:session_id';
-const DEMO_STORE_PREFIX = 'crewshyft_demo';
+const DEMO_SESSION_ID_KEY = 'crewshyft_demo_session_id';
 const DEMO_TTL_MS = 60 * 60 * 1000;
 const PERSIST_DEBOUNCE_MS = 250;
 
@@ -79,7 +78,7 @@ function createSeedSnapshot(): DemoSnapshot {
 }
 
 function getStoreKey(sessionId: string) {
-  return `${DEMO_STORE_PREFIX}:${sessionId}:store`;
+  return `crewshyft_demo:${sessionId}:state`;
 }
 
 function ensureSessionId() {
@@ -114,6 +113,13 @@ function getShiftLoadCounts(shifts: Shift[]) {
     total: shifts.length,
     visible: shifts.length,
   };
+}
+
+function normalizeDemoShifts(shifts: Shift[]): Shift[] {
+  return shifts.map((shift) => ({
+    ...shift,
+    swapStatus: shift.swapStatus ?? 'none',
+  }));
 }
 
 function createDemoShiftId() {
@@ -182,7 +188,7 @@ export function DemoProvider({ children }: DemoProviderProps) {
     const selectedDate = new Date(snapshot.selectedDate);
     useScheduleStore.setState({
       employees: cloneJson(snapshot.employees),
-      shifts: cloneJson(snapshot.shifts),
+      shifts: normalizeDemoShifts(cloneJson(snapshot.shifts)),
       timeOffRequests: cloneJson(snapshot.timeOffRequests),
       blockedDayRequests: cloneJson(snapshot.blockedDayRequests),
       businessHours: cloneJson(snapshot.businessHours),
@@ -279,6 +285,7 @@ export function DemoProvider({ children }: DemoProviderProps) {
           id: createDemoShiftId(),
           scheduleState: shift.scheduleState ?? (state.scheduleMode === 'draft' ? 'draft' : 'published'),
           payRate: resolveShiftPayRate(state, shift),
+          swapStatus: 'none',
         };
         const nextShifts = [...state.shifts, nextShift];
         useScheduleStore.setState({
@@ -303,6 +310,7 @@ export function DemoProvider({ children }: DemoProviderProps) {
           ...target,
           ...updates,
           scheduleState: nextScheduleState,
+          swapStatus: updates.swapStatus ?? target.swapStatus ?? 'none',
         };
         merged.payRate = resolveShiftPayRate(state, merged);
 
@@ -391,6 +399,7 @@ export function DemoProvider({ children }: DemoProviderProps) {
             ...draft,
             scheduleState: 'published',
             isBlocked: false,
+            swapStatus: draft.swapStatus ?? 'none',
           });
           publishedCount += 1;
         });
@@ -430,6 +439,7 @@ export function DemoProvider({ children }: DemoProviderProps) {
             ...shift,
             id: createDemoShiftId(),
             scheduleState: 'draft' as const,
+            swapStatus: shift.swapStatus ?? 'none',
           }));
 
         if (draftRows.length) {
@@ -480,6 +490,7 @@ export function DemoProvider({ children }: DemoProviderProps) {
             id: createDemoShiftId(),
             date: targetYmd,
             scheduleState: 'draft',
+            swapStatus: shift.swapStatus ?? 'none',
           });
           targetKeys.add(key);
         });
@@ -500,10 +511,89 @@ export function DemoProvider({ children }: DemoProviderProps) {
         };
       },
 
-      saveCoreHours: makeInterceptor('save core hours', interceptOnly),
-      addTimeOffRequest: makeInterceptor('request time off', interceptOnly),
-      reviewTimeOffRequest: makeInterceptor('review a time-off request', interceptOnly),
-      cancelTimeOffRequest: makeInterceptor('cancel a time-off request', interceptOnly),
+      saveCoreHours: async (payload) => {
+        const toTime = (value: string | null | undefined, fallback: string) => {
+          const normalized = String(value ?? '').trim();
+          if (!normalized) return fallback;
+          if (normalized.length === 5) return `${normalized}:00`;
+          return normalized;
+        };
+
+        const currentState = useScheduleStore.getState();
+        const existingByDay = new Map(currentState.coreHours.map((row) => [row.dayOfWeek, row]));
+        const updatedCoreHours = payload.hours.map((hour) => {
+          const existing = existingByDay.get(hour.dayOfWeek);
+          return {
+            id: existing?.id ?? `demo-core-${hour.dayOfWeek}`,
+            organizationId: payload.organizationId,
+            dayOfWeek: hour.dayOfWeek,
+            openTime: toTime(hour.openTime, existing?.openTime ?? '11:00:00'),
+            closeTime: toTime(hour.closeTime, existing?.closeTime ?? '22:00:00'),
+            enabled: Boolean(hour.enabled),
+            sortOrder: existing?.sortOrder ?? hour.dayOfWeek,
+          };
+        });
+
+        useScheduleStore.setState({ coreHours: updatedCoreHours });
+        return { success: true };
+      },
+      addTimeOffRequest: async (request) => {
+        const now = new Date().toISOString();
+        const newRequest = {
+          id: `demo-to-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          employeeId: request.employeeId,
+          organizationId: request.organizationId,
+          startDate: request.startDate,
+          endDate: request.endDate,
+          reason: request.reason?.trim() || '',
+          status: 'PENDING' as const,
+          createdAt: now,
+        };
+        useScheduleStore.setState((state) => ({
+          timeOffRequests: [...state.timeOffRequests, newRequest],
+        }));
+        return { success: true };
+      },
+      reviewTimeOffRequest: async (id, status, reviewerId, managerNote) => {
+        const now = new Date().toISOString();
+        const state = useScheduleStore.getState();
+        const exists = state.timeOffRequests.some((request) => request.id === id);
+        if (!exists) return { success: false, error: 'Request not found.' };
+
+        useScheduleStore.setState((current) => ({
+          timeOffRequests: current.timeOffRequests.map((request) =>
+            request.id === id
+              ? {
+                  ...request,
+                  status,
+                  reviewedBy: reviewerId,
+                  reviewedAt: now,
+                  managerNote: managerNote?.trim() || undefined,
+                  updatedAt: now,
+                }
+              : request,
+          ),
+        }));
+        return { success: true };
+      },
+      cancelTimeOffRequest: async (id) => {
+        const now = new Date().toISOString();
+        const state = useScheduleStore.getState();
+        const exists = state.timeOffRequests.some((request) => request.id === id);
+        if (!exists) return { success: false, error: 'Request not found.' };
+        useScheduleStore.setState((current) => ({
+          timeOffRequests: current.timeOffRequests.map((request) =>
+            request.id === id
+              ? {
+                  ...request,
+                  status: 'CANCELLED',
+                  updatedAt: now,
+                }
+              : request,
+          ),
+        }));
+        return { success: true };
+      },
       submitBlockedDayRequest: makeInterceptor('block a day', interceptOnly),
       reviewBlockedDayRequest: makeInterceptor('review a blocked day', interceptOnly),
       cancelBlockedDayRequest: makeInterceptor('cancel a blocked day', interceptOnly),
@@ -512,10 +602,114 @@ export function DemoProvider({ children }: DemoProviderProps) {
       deleteBlockedDay: makeInterceptor('delete a blocked day', interceptOnly),
       createBlockedPeriod: makeInterceptor('block a period', interceptOnly),
       deleteBlockedPeriod: makeInterceptor('remove a blocked period', interceptOnly),
-      createDropRequest: () => interceptOnly('drop a shift'),
-      acceptDropRequest: makeInterceptor('accept a shift pickup', interceptOnly),
-      cancelDropRequest: () => interceptOnly('cancel a drop request'),
-      sendChatMessage: () => interceptOnly('send a message'),
+      createDropRequest: (shiftId, employeeId) => {
+        const state = useScheduleStore.getState();
+        const shift = state.shifts.find((item) => item.id === shiftId);
+        if (!shift) return;
+        const alreadyOpen = state.dropRequests.some(
+          (request) => request.shiftId === shiftId && request.status === 'open',
+        );
+        if (alreadyOpen) return;
+
+        const nextRequest = {
+          id: `demo-drop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          shiftId,
+          fromEmployeeId: employeeId,
+          status: 'open' as const,
+          createdAt: new Date().toISOString(),
+        };
+        useScheduleStore.setState((current) => ({
+          dropRequests: [...current.dropRequests, nextRequest],
+          shifts: current.shifts.map((item) =>
+            item.id === shiftId
+              ? {
+                  ...item,
+                  swapStatus: 'offered',
+                }
+              : item,
+          ),
+        }));
+      },
+      acceptDropRequest: async (requestId, acceptingEmployeeId) => {
+        const now = new Date().toISOString();
+        const state = useScheduleStore.getState();
+        const request = state.dropRequests.find((item) => item.id === requestId);
+        if (!request || request.status !== 'open') {
+          return { success: false, error: 'Request no longer available.' };
+        }
+        const shift = state.shifts.find((item) => item.id === request.shiftId);
+        if (!shift) {
+          return { success: false, error: 'Shift not found.' };
+        }
+
+        useScheduleStore.setState((current) => ({
+          dropRequests: current.dropRequests.map((item) => {
+            if (item.id === requestId) {
+              return {
+                ...item,
+                status: 'accepted',
+                acceptedByEmployeeId: acceptingEmployeeId,
+                acceptedAt: now,
+              };
+            }
+            if (item.shiftId === request.shiftId && item.status === 'open') {
+              return {
+                ...item,
+                status: 'cancelled',
+              };
+            }
+            return item;
+          }),
+          shifts: current.shifts.map((item) =>
+            item.id === request.shiftId
+              ? {
+                  ...item,
+                  employeeId: acceptingEmployeeId,
+                  swapStatus: 'claimed',
+                }
+              : item,
+          ),
+        }));
+        return { success: true };
+      },
+      cancelDropRequest: (requestId) => {
+        const state = useScheduleStore.getState();
+        const target = state.dropRequests.find((item) => item.id === requestId);
+        if (!target) return;
+
+        useScheduleStore.setState((current) => {
+          const nextDropRequests = current.dropRequests.map((item) =>
+            item.id === requestId ? { ...item, status: 'cancelled' as const } : item,
+          );
+          const hasOpenForShift = nextDropRequests.some(
+            (item) => item.shiftId === target.shiftId && item.status === 'open',
+          );
+          return {
+            dropRequests: nextDropRequests,
+            shifts: current.shifts.map((item) =>
+              item.id === target.shiftId
+                ? {
+                    ...item,
+                    swapStatus: hasOpenForShift ? 'offered' : 'none',
+                  }
+                : item,
+            ),
+          };
+        });
+      },
+      sendChatMessage: (senderId, text, type = 'message', dropRequestId) => {
+        const nextMessage = {
+          id: `demo-msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          senderId,
+          createdAt: new Date().toISOString(),
+          text,
+          type,
+          dropRequestId,
+        };
+        useScheduleStore.setState((state) => ({
+          chatMessages: [...state.chatMessages, nextMessage],
+        }));
+      },
     };
 
     useScheduleStore.setState(scheduleOverrides);

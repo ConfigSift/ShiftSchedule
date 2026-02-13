@@ -7,6 +7,7 @@ import { Modal } from './Modal';
 import { JOB_OPTIONS, SECTIONS, Section } from '../types';
 import { formatHour, timeRangesOverlap } from '../utils/timeUtils';
 import { getUserRole, isManagerRole } from '../utils/role';
+import { useDemoContext } from '../demo/DemoProvider';
 
 export function AddShiftModal() {
   const { 
@@ -23,10 +24,14 @@ export function AddShiftModal() {
     hasApprovedTimeOff,
     hasBlockedShiftOnDate,
     shifts,
+    dropRequests,
+    createDropRequest,
+    cancelDropRequest,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
   const isManager = isManagerRole(getUserRole(currentUser?.role));
+  const demo = useDemoContext();
   
   const isOpen = modalType === 'addShift' || modalType === 'editShift';
   const isEditing = modalType === 'editShift';
@@ -212,8 +217,23 @@ export function AddShiftModal() {
   const eligibleJobs = selectedEmployee?.jobs ?? [];
   const hasEligibleJobs = eligibleJobs.length > 0;
   const isJobEligible = job ? eligibleJobs.includes(job) : false;
+  const openDropRequestForShift =
+    isEditing && modalData?.id
+      ? dropRequests.find((request) => request.shiftId === modalData.id && request.status === 'open')
+      : undefined;
 
   const hourOptions = Array.from({ length: 19 }, (_, i) => i + 6);
+
+  const handleOfferShift = () => {
+    if (!isEditing || !modalData?.id) return;
+    if (openDropRequestForShift) {
+      cancelDropRequest(openDropRequestForShift.id);
+      showToast('Shift offer canceled', 'success');
+      return;
+    }
+    createDropRequest(modalData.id, modalData.employeeId);
+    showToast('Shift offered in demo exchange', 'success');
+  };
 
   return (
     <Modal
@@ -364,6 +384,15 @@ export function AddShiftModal() {
         </div>
 
         <div className="flex gap-3 pt-2">
+          {isEditing && isManager && demo?.isDemo && (
+            <button
+              type="button"
+              onClick={handleOfferShift}
+              className="px-4 py-2 rounded-lg bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors text-sm font-medium"
+            >
+              {openDropRequestForShift ? 'Cancel Offer' : 'Offer Shift'}
+            </button>
+          )}
           {isEditing && isManager && (
             <button
               type="button"

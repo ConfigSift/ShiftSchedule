@@ -64,6 +64,7 @@ export interface Shift {
   payRate?: number; // Hourly rate for this shift (set by DB trigger)
   paySource?: string; // Source of pay rate: 'job_pay', 'hourly_pay', or 'default'
   scheduleState?: 'draft' | 'published';
+  swapStatus?: 'none' | 'offered' | 'claimed';
 }
 
 export type TimeOffStatus = 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED';
