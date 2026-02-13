@@ -375,9 +375,9 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
           </div>
 
           <p className="text-xs text-theme-muted text-center mt-3">
-            Need an account?{' '}
-            <Link href="/signup" className="text-amber-400 hover:text-amber-300">
-              Sign up
+            New here?{' '}
+            <Link href="/signup?next=/onboarding" className="text-amber-400 hover:text-amber-300">
+              Create an account
             </Link>
           </p>
 

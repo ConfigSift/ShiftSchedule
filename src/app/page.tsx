@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useAuthStore } from '../store/authStore';
+import { CheckCircle } from 'lucide-react';
 
 const LandingPage = dynamic(() => import('../components/landing/LandingPage').then(m => ({ default: m.LandingPage })), {
   loading: () => (
@@ -22,6 +23,7 @@ const LandingPage = dynamic(() => import('../components/landing/LandingPage').th
 
 export default function Home() {
   const router = useRouter();
+  const [showDeletedToast, setShowDeletedToast] = useState(false);
   const {
     currentUser,
     isInitialized,
@@ -34,6 +36,18 @@ export default function Home() {
   useEffect(() => {
     init();
   }, [init]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('deleted') !== 'true') return;
+
+    setShowDeletedToast(true);
+    params.delete('deleted');
+    const queryString = params.toString();
+    const nextUrl = `${window.location.pathname}${queryString ? `?${queryString}` : ''}`;
+    window.history.replaceState({}, '', nextUrl);
+  }, []);
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -69,7 +83,19 @@ export default function Home() {
 
   // Show landing page while initializing or when not authenticated
   if (!isInitialized || !currentUser) {
-    return <LandingPage />;
+    return (
+      <>
+        {showDeletedToast && (
+          <div className="fixed bottom-4 right-4 z-50 animate-slide-in">
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-4 py-3 shadow-lg">
+              <CheckCircle className="h-5 w-5 text-emerald-400" />
+              <span className="text-sm font-medium text-emerald-200">Account deleted</span>
+            </div>
+          </div>
+        )}
+        <LandingPage />
+      </>
+    );
   }
 
   // Authenticated user - show loading while redirect happens

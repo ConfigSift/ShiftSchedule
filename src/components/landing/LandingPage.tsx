@@ -542,7 +542,7 @@ export function LandingPage() {
               Sign In
             </Link>
             <Link
-              href="/subscribe"
+              href="/start"
               className="hidden sm:inline-flex px-4 py-2 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors shadow-sm"
             >
               Get Started
@@ -585,7 +585,7 @@ export function LandingPage() {
                   Sign In
                 </Link>
                 <Link
-                  href="/subscribe"
+                  href="/start"
                   className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
                 >
                   Get Started
@@ -927,7 +927,7 @@ export function LandingPage() {
               </div>
 
               <Link
-                href="/subscribe"
+                href="/start"
                 className="block w-full py-3 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
               >
                 Get Started

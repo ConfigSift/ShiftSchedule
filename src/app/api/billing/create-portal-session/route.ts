@@ -3,6 +3,11 @@ import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
 import { stripe } from '@/lib/stripe/server';
+import {
+  getBillingAccountByAuthUserId,
+  getStripeCustomerIdForAuthUser,
+  upsertBillingAccountFromSubscription,
+} from '@/lib/billing/customer';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -19,13 +24,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
 
-  const organizationId = payload.organizationId?.trim();
+  const organizationId = String(payload.organizationId ?? '').trim() || null;
 
-  if (!organizationId) {
-    return NextResponse.json({ error: 'organizationId is required.' }, { status: 400 });
-  }
-
-  // Authenticate
   const { supabase, response } = createSupabaseRouteClient(request);
   const { data: authData, error: authError } = await supabase.auth.getUser();
   const authUserId = authData.user?.id;
@@ -37,123 +37,53 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError(message, 401), response);
   }
 
-  // Verify user is admin of this org
-  const { data: membership } = await supabaseAdmin
-    .from('organization_memberships')
-    .select('role')
-    .eq('auth_user_id', authUserId)
-    .eq('organization_id', organizationId)
-    .maybeSingle();
+  if (organizationId) {
+    const { data: membership } = await supabaseAdmin
+      .from('organization_memberships')
+      .select('role')
+      .eq('auth_user_id', authUserId)
+      .eq('organization_id', organizationId)
+      .maybeSingle();
 
-  if (!membership || membership.role !== 'admin') {
-    return applySupabaseCookies(
-      jsonError('Only admins can manage billing.', 403),
-      response,
-    );
+    const role = String(membership?.role ?? '').trim().toLowerCase();
+    if (!membership || (role !== 'admin' && role !== 'manager')) {
+      return applySupabaseCookies(
+        jsonError('Only admins can manage billing.', 403),
+        response,
+      );
+    }
   }
 
-  // Look up billing state for this organization.
-  const { data: subscriptionRow, error: subscriptionError } = await supabaseAdmin
-    .from('subscriptions')
-    .select(
-      'organization_id, status, stripe_customer_id, stripe_subscription_id, current_period_start, current_period_end',
-    )
-    .eq('organization_id', organizationId)
-    .maybeSingle();
-
-  if (subscriptionError) {
-    console.error('[billing:portal] failed to load subscription row', {
-      organizationId,
-      error: subscriptionError.message,
-    });
+  const billingResult = await getBillingAccountByAuthUserId(authUserId, supabaseAdmin);
+  if (billingResult.error) {
     return applySupabaseCookies(
       NextResponse.json({ error: 'Unable to load billing account.' }, { status: 500 }),
       response,
     );
   }
 
-  const rowPresent = Boolean(subscriptionRow);
-  const stripeSubscriptionId = subscriptionRow?.stripe_subscription_id ?? null;
-  let stripeCustomerId = subscriptionRow?.stripe_customer_id ?? null;
-  let selfHealRan = false;
+  let stripeCustomerId = billingResult.data?.stripe_customer_id ?? null;
+  const stripeSubscriptionId = billingResult.data?.stripe_subscription_id ?? null;
 
-  console.log('[billing:portal] subscription lookup', {
-    organizationId,
-    rowPresent,
-    stripeSubscriptionId,
-    stripeCustomerId,
-  });
-
-  if (!stripeCustomerId && !stripeSubscriptionId) {
-    return applySupabaseCookies(
-      NextResponse.json(
-        {
-          error:
-            'No Stripe billing identifiers found for this organization. Please complete checkout first.',
-        },
-        { status: 400 },
-      ),
-      response,
-    );
+  if (!stripeCustomerId) {
+    stripeCustomerId = await getStripeCustomerIdForAuthUser(authUserId, supabaseAdmin);
   }
 
   if (!stripeCustomerId && stripeSubscriptionId) {
     const stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
-    const customerId =
+    await upsertBillingAccountFromSubscription(authUserId, stripeSubscription, supabaseAdmin);
+    stripeCustomerId =
       typeof stripeSubscription.customer === 'string'
         ? stripeSubscription.customer
         : stripeSubscription.customer?.id ?? null;
-
-    if (!customerId) {
-      return applySupabaseCookies(
-        NextResponse.json(
-          { error: 'Stripe subscription is missing a customer id.' },
-          { status: 400 },
-        ),
-        response,
-      );
-    }
-
-    const currentPeriodStart =
-      typeof stripeSubscription.current_period_start === 'number'
-        ? new Date(stripeSubscription.current_period_start * 1000).toISOString()
-        : null;
-    const currentPeriodEnd =
-      typeof stripeSubscription.current_period_end === 'number'
-        ? new Date(stripeSubscription.current_period_end * 1000).toISOString()
-        : null;
-
-    const { error: updateError } = await supabaseAdmin
-      .from('subscriptions')
-      .update({
-        stripe_customer_id: customerId,
-        status: stripeSubscription.status,
-        current_period_start: currentPeriodStart,
-        current_period_end: currentPeriodEnd,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('organization_id', organizationId);
-
-    if (updateError) {
-      console.error('[billing:portal] self-heal DB update failed', {
-        organizationId,
-        stripeSubscriptionId,
-        customerId,
-        error: updateError.message,
-      });
-      return applySupabaseCookies(
-        NextResponse.json({ error: 'Failed to update billing account.' }, { status: 500 }),
-        response,
-      );
-    }
-
-    stripeCustomerId = customerId;
-    selfHealRan = true;
   }
 
   if (!stripeCustomerId) {
     return applySupabaseCookies(
-      NextResponse.json({ error: 'Unable to resolve Stripe customer id.' }, { status: 400 }),
+      NextResponse.json(
+        { error: 'No Stripe billing account found. Please complete checkout first.' },
+        { status: 400 },
+      ),
       response,
     );
   }
@@ -161,18 +91,13 @@ export async function POST(request: NextRequest) {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
 
   try {
+    const query = new URLSearchParams({ portal: '1' });
+    if (organizationId) {
+      query.set('organizationId', organizationId);
+    }
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: stripeCustomerId,
-      return_url: `${appUrl}/billing`,
-    });
-
-    console.log('[billing:portal] portal session created', {
-      organizationId,
-      rowPresent,
-      selfHealRan,
-      stripeSubscriptionId,
-      stripeCustomerId,
-      portalSessionId: portalSession.id,
+      return_url: `${appUrl}/billing?${query.toString()}`,
     });
 
     return applySupabaseCookies(
@@ -180,9 +105,9 @@ export async function POST(request: NextRequest) {
       response,
     );
   } catch (err) {
-    console.error('[billing:portal] Stripe portal session creation failed', err);
+    const message = err instanceof Error ? err.message : String(err);
     return applySupabaseCookies(
-      NextResponse.json({ error: 'Unable to create billing portal session.' }, { status: 500 }),
+      NextResponse.json({ error: message || 'Unable to create billing portal session.' }, { status: 500 }),
       response,
     );
   }

@@ -7,6 +7,41 @@ import { apiFetch } from '../../lib/apiClient';
 import { Modal } from '../../components/Modal';
 import { PlusCircle, Check, ChevronRight, Pencil, Store, Mail, Trash2 } from 'lucide-react';
 
+type CreateIntentResponse = {
+  intentId: string;
+  desiredQuantity: number;
+  ownedOrgCount: number;
+  billingEnabled: boolean;
+  hasActiveSubscription: boolean;
+  needsUpgrade: boolean;
+};
+
+type UpgradeQuantityResponse = {
+  ok?: boolean;
+  bypass?: boolean;
+  upgraded?: boolean;
+  code?: string;
+  message?: string;
+  redirect?: string;
+  manageBillingUrl?: string;
+  hostedInvoiceUrl?: string;
+  error?: string;
+};
+
+type CommitIntentResponse = {
+  ok: boolean;
+  organizationId: string;
+  restaurantCode?: string | null;
+};
+
+type DeleteRestaurantResponse = {
+  ok: boolean;
+  quantitySynced?: boolean;
+  newQuantity?: number | null;
+  ownedRestaurantCount?: number;
+  syncError?: string;
+};
+
 export default function RestaurantSelectPage() {
   const router = useRouter();
   const {
@@ -25,16 +60,34 @@ export default function RestaurantSelectPage() {
   const [inviteError, setInviteError] = useState('');
   const [newRestaurantName, setNewRestaurantName] = useState('');
   const [manageError, setManageError] = useState('');
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [intentId, setIntentId] = useState<string | null>(null);
+  const [intentDesiredQuantity, setIntentDesiredQuantity] = useState<number | null>(null);
+  const [createModalStep, setCreateModalStep] = useState<'hidden' | 'upgrade' | 'payment'>('hidden');
+  const [createFlowError, setCreateFlowError] = useState('');
+  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+  const [upgradeSubmitting, setUpgradeSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; restaurantCode: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteToast, setDeleteToast] = useState<{ type: 'success' | 'warning'; message: string } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editedName, setEditedName] = useState('');
 
   useEffect(() => {
     init();
   }, [init]);
+
+  useEffect(() => {
+    if (!deleteToast) return;
+    const timer = setTimeout(() => {
+      setDeleteToast(null);
+    }, 3500);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [deleteToast]);
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -133,6 +186,103 @@ export default function RestaurantSelectPage() {
     await refreshProfile();
   };
 
+  const clearIntentFlow = () => {
+    setIntentId(null);
+    setIntentDesiredQuantity(null);
+    setCreateModalStep('hidden');
+    setCreateFlowError('');
+    setPaymentUrl(null);
+    setUpgradeSubmitting(false);
+  };
+
+  const commitIntent = async (nextIntentId: string) => {
+    const result = await apiFetch<CommitIntentResponse | UpgradeQuantityResponse>('/api/orgs/commit-intent', {
+      method: 'POST',
+      json: { intentId: nextIntentId },
+    });
+
+    if (result.ok && (result.data as CommitIntentResponse | null)?.organizationId) {
+      const organizationId = (result.data as CommitIntentResponse).organizationId;
+      await refreshProfile();
+      const matchedRestaurant = useAuthStore
+        .getState()
+        .accessibleRestaurants
+        .find((restaurant) => restaurant.id === organizationId);
+      setActiveOrganization(organizationId, matchedRestaurant?.restaurantCode ?? null);
+      setNewRestaurantName('');
+      clearIntentFlow();
+      router.push('/dashboard');
+      return true;
+    }
+
+    const body = (result.data ?? null) as UpgradeQuantityResponse | null;
+    if (result.status === 409) {
+      if (body?.code === 'NO_ACTIVE_SUBSCRIPTION' && body.redirect) {
+        router.push(body.redirect);
+        return false;
+      }
+      setCreateFlowError(body?.message || 'Payment is required before this restaurant can be created.');
+      setCreateModalStep('payment');
+      setPaymentUrl(body?.hostedInvoiceUrl ?? body?.manageBillingUrl ?? body?.redirect ?? '/billing');
+      return false;
+    }
+
+    setCreateFlowError(body?.message || body?.error || result.error || 'Unable to create restaurant.');
+    return false;
+  };
+
+  const runUpgradeQuantity = async (nextIntentId: string) => {
+    setUpgradeSubmitting(true);
+    setCreateFlowError('');
+
+    const result = await apiFetch<UpgradeQuantityResponse>('/api/billing/upgrade-quantity', {
+      method: 'POST',
+      json: { intentId: nextIntentId },
+    });
+
+    if (!result.ok || !result.data) {
+      setCreateFlowError(result.error || 'Unable to update subscription quantity.');
+      setUpgradeSubmitting(false);
+      return;
+    }
+
+    if (result.data.ok && (result.data.upgraded || result.data.bypass)) {
+      const committed = await commitIntent(nextIntentId);
+      setUpgradeSubmitting(false);
+      if (committed) return;
+      return;
+    }
+
+    if (result.data.code === 'NO_SUBSCRIPTION') {
+      setUpgradeSubmitting(false);
+      router.push(result.data.redirect || `/subscribe?intent=${encodeURIComponent(nextIntentId)}`);
+      return;
+    }
+
+    if (result.data.code === 'PAYMENT_REQUIRED') {
+      setCreateModalStep('payment');
+      setPaymentUrl(result.data.hostedInvoiceUrl ?? result.data.manageBillingUrl ?? '/billing');
+      setCreateFlowError(result.data.message || 'Complete payment, then return and continue.');
+      setUpgradeSubmitting(false);
+      return;
+    }
+
+    setCreateFlowError(result.data.message || result.data.error || 'Unable to update subscription quantity.');
+    setUpgradeSubmitting(false);
+  };
+
+  const handleCancelPendingIntent = async () => {
+    if (!intentId) {
+      clearIntentFlow();
+      return;
+    }
+    await apiFetch('/api/orgs/cancel-intent', {
+      method: 'POST',
+      json: { intentId },
+    });
+    clearIntentFlow();
+  };
+
   const handleCreateRestaurant = async () => {
     setManageError('');
     const name = newRestaurantName.trim();
@@ -141,20 +291,44 @@ export default function RestaurantSelectPage() {
       return;
     }
 
-    const result = await apiFetch('/api/organizations/create', {
+    setCreateSubmitting(true);
+    setCreateFlowError('');
+
+    const createIntentResult = await apiFetch<CreateIntentResponse>('/api/orgs/create-intent', {
       method: 'POST',
-      json: { name },
+      json: { restaurantName: name },
     });
 
-    if (!result.ok || !result.data?.id) {
-      setManageError(result.error || 'Unable to create restaurant. Try again.');
+    if (!createIntentResult.ok || !createIntentResult.data?.intentId) {
+      setManageError(createIntentResult.error || 'Unable to create restaurant. Try again.');
+      setCreateSubmitting(false);
       return;
     }
 
-    await refreshProfile();
-    setActiveOrganization(result.data.id, result.data.restaurant_code);
-    setNewRestaurantName('');
-    router.push('/dashboard');
+    const nextIntentId = createIntentResult.data.intentId;
+    setIntentId(nextIntentId);
+    setIntentDesiredQuantity(createIntentResult.data.desiredQuantity);
+
+    if (!createIntentResult.data.billingEnabled) {
+      await commitIntent(nextIntentId);
+      setCreateSubmitting(false);
+      return;
+    }
+
+    if (!createIntentResult.data.hasActiveSubscription) {
+      setCreateSubmitting(false);
+      router.push(`/subscribe?intent=${encodeURIComponent(nextIntentId)}`);
+      return;
+    }
+
+    if (createIntentResult.data.needsUpgrade) {
+      setCreateModalStep('upgrade');
+      setCreateSubmitting(false);
+      return;
+    }
+
+    await commitIntent(nextIntentId);
+    setCreateSubmitting(false);
   };
 
   const handleOpenDelete = (restaurant: { id: string; name: string; restaurantCode: string }) => {
@@ -192,7 +366,7 @@ export default function RestaurantSelectPage() {
     if (!isMatch) return;
     setDeleteSubmitting(true);
     setDeleteError('');
-    const result = await apiFetch(`/api/organizations/${organizationId}/delete`, {
+    const result = await apiFetch<DeleteRestaurantResponse>(`/api/organizations/${organizationId}/delete`, {
       method: 'POST',
     });
     if (!result.ok) {
@@ -204,6 +378,25 @@ export default function RestaurantSelectPage() {
       clearActiveOrganization();
     }
     await refreshProfile();
+    await useAuthStore.getState().fetchSubscriptionStatus();
+    const quantitySynced = result.data?.quantitySynced !== false;
+    const newQuantity = Number(result.data?.newQuantity ?? 0);
+    if (quantitySynced && Number.isFinite(newQuantity) && newQuantity > 0) {
+      setDeleteToast({
+        type: 'success',
+        message: `Restaurant deleted. Billing updated to ${newQuantity} location${newQuantity === 1 ? '' : 's'}.`,
+      });
+    } else if (quantitySynced) {
+      setDeleteToast({
+        type: 'success',
+        message: 'Restaurant deleted.',
+      });
+    } else {
+      setDeleteToast({
+        type: 'warning',
+        message: 'Restaurant deleted. Billing update is syncing - refresh in a moment.',
+      });
+    }
     setDeleteSubmitting(false);
     setDeleteTarget(null);
   };
@@ -440,10 +633,11 @@ export default function RestaurantSelectPage() {
                 />
                 <button
                   onClick={handleCreateRestaurant}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors text-sm"
+                  disabled={createSubmitting}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <PlusCircle className="w-4 h-4" />
-                  Create
+                  {createSubmitting ? 'Starting...' : 'Create'}
                 </button>
               </div>
               {manageError && !editingId && <p className="text-xs text-red-400 mt-2">{manageError}</p>}
@@ -461,6 +655,101 @@ export default function RestaurantSelectPage() {
           </div>
         )}
       </div>
+
+      <Modal
+        isOpen={createModalStep !== 'hidden'}
+        onClose={() => {
+          if (upgradeSubmitting) return;
+          void handleCancelPendingIntent();
+        }}
+        title="Create Restaurant"
+        size="md"
+      >
+        <div className="space-y-4">
+          {createModalStep === 'upgrade' && (
+            <>
+              <p className="text-sm text-theme-secondary">
+                Creating this restaurant requires upgrading your subscription to{' '}
+                <span className="font-semibold text-amber-400">
+                  {intentDesiredQuantity ?? 'the required'}
+                </span>{' '}
+                locations.
+              </p>
+              <p className="text-xs text-theme-muted">
+                We will only create the restaurant after billing confirms the quantity update.
+              </p>
+            </>
+          )}
+
+          {createModalStep === 'payment' && (
+            <>
+              <p className="text-sm text-theme-secondary">
+                {createFlowError || 'Payment is required before this restaurant can be created.'}
+              </p>
+              <p className="text-xs text-theme-muted">
+                Complete payment, then return and click &quot;I&apos;ve completed payment&quot;.
+              </p>
+            </>
+          )}
+
+          {createFlowError && createModalStep === 'upgrade' && (
+            <p className="text-xs text-red-400">{createFlowError}</p>
+          )}
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void handleCancelPendingIntent();
+              }}
+              disabled={upgradeSubmitting}
+              className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
+            >
+              Cancel pending creation
+            </button>
+
+            {createModalStep === 'upgrade' && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!intentId) return;
+                  void runUpgradeQuantity(intentId);
+                }}
+                disabled={upgradeSubmitting}
+                className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
+              >
+                {upgradeSubmitting ? 'Processing...' : 'Continue to payment'}
+              </button>
+            )}
+
+            {createModalStep === 'payment' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!paymentUrl) return;
+                    window.open(paymentUrl, '_blank');
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors"
+                >
+                  Open billing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!intentId) return;
+                    void runUpgradeQuantity(intentId);
+                  }}
+                  disabled={upgradeSubmitting}
+                  className="px-4 py-2 rounded-lg border border-theme-primary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
+                >
+                  {upgradeSubmitting ? 'Checking...' : "I've completed payment"}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         isOpen={Boolean(deleteTarget)}
@@ -511,6 +800,19 @@ export default function RestaurantSelectPage() {
           </div>
         </div>
       </Modal>
+      {deleteToast && (
+        <div className="fixed bottom-4 right-4 z-50 animate-slide-in">
+          <div
+            className={`flex items-center gap-2 rounded-lg px-4 py-3 shadow-lg border ${
+              deleteToast.type === 'success'
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                : 'border-amber-500/40 bg-amber-500/15 text-amber-100'
+            }`}
+          >
+            <span className="text-sm font-medium">{deleteToast.message}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -25,6 +25,10 @@ interface SubscriptionDetails {
   quantity: number;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
+  ownedOrgCount: number;
+  requiredQuantity: number;
+  overLimit: boolean;
+  status: string;
 }
 
 const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
@@ -49,7 +53,7 @@ interface AuthState {
   clearActiveOrganization: () => void;
   refreshProfile: () => Promise<void>;
   refreshInvitations: () => Promise<void>;
-  fetchSubscriptionStatus: (organizationId: string) => Promise<void>;
+  fetchSubscriptionStatus: (organizationId?: string | null) => Promise<void>;
   updateProfile: (data: { fullName: string; phone?: string | null; email?: string | null }) => Promise<{ success: boolean; error?: string; emailPending?: boolean }>;
 }
 
@@ -357,7 +361,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ pendingInvitations: invitations });
   },
 
-  fetchSubscriptionStatus: async (organizationId: string) => {
+  fetchSubscriptionStatus: async (organizationId?: string | null) => {
     // Billing disabled — always active, set cookie for middleware
     if (!BILLING_ENABLED) {
       set({ subscriptionStatus: 'active', subscriptionDetails: null });
@@ -369,14 +373,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     const result = await apiFetch<{
       billingEnabled: boolean;
+      active: boolean;
+      over_limit?: boolean;
+      owned_org_count?: number;
+      required_quantity?: number;
       status: string;
       subscription: {
-        stripe_price_id: string;
+        stripe_price_id: string | null;
         quantity: number;
         current_period_end: string | null;
         cancel_at_period_end: boolean;
       } | null;
-    }>(`/api/billing/subscription-status?organizationId=${organizationId}`);
+    }>(
+      organizationId
+        ? `/api/billing/subscription-status?organizationId=${organizationId}`
+        : '/api/billing/subscription-status',
+    );
 
     if (!result.ok || !result.data) {
       set({ subscriptionStatus: 'none', subscriptionDetails: null });
@@ -384,7 +396,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return;
     }
 
-    const { status: rawStatus, subscription } = result.data;
+    const {
+      status: rawStatus,
+      subscription,
+      active: activeByQuantity,
+      over_limit: overLimitRaw,
+      owned_org_count: ownedOrgCountRaw,
+      required_quantity: requiredQuantityRaw,
+    } = result.data;
+    const overLimit = Boolean(overLimitRaw);
+    const ownedOrgCount = Math.max(0, Number(ownedOrgCountRaw ?? 0));
+    const requiredQuantity = Math.max(
+      1,
+      Number(requiredQuantityRaw ?? ownedOrgCount ?? 1),
+    );
 
     // If the API says billing is not enabled, treat as active
     if (!result.data.billingEnabled) {
@@ -394,7 +419,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
 
     const subscriptionStatus: SubscriptionStatus =
-      rawStatus === 'active' || rawStatus === 'trialing'
+      activeByQuantity
         ? 'active'
         : rawStatus === 'past_due'
           ? 'past_due'
@@ -404,18 +429,36 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     const subscriptionDetails: SubscriptionDetails | null = subscription
       ? {
-          planInterval: resolvePlanInterval(subscription.stripe_price_id),
+          planInterval: subscription.stripe_price_id
+            ? resolvePlanInterval(subscription.stripe_price_id)
+            : 'unknown',
           quantity: subscription.quantity,
           currentPeriodEnd: subscription.current_period_end,
           cancelAtPeriodEnd: subscription.cancel_at_period_end,
+          ownedOrgCount,
+          requiredQuantity,
+          overLimit,
+          status: rawStatus,
         }
-      : null;
+      : {
+          planInterval: 'unknown',
+          quantity: 0,
+          currentPeriodEnd: null,
+          cancelAtPeriodEnd: false,
+          ownedOrgCount,
+          requiredQuantity,
+          overLimit,
+          status: rawStatus,
+        };
 
     set({ subscriptionStatus, subscriptionDetails });
 
     // Set cookie for middleware
-    if (subscriptionStatus === 'active' || subscriptionStatus === 'past_due') {
-      setBillingCookie(subscriptionStatus);
+    const normalizedRawStatus = String(rawStatus ?? '').trim().toLowerCase();
+    const hasCustomerLevelSubscription =
+      normalizedRawStatus === 'active' || normalizedRawStatus === 'trialing';
+    if (hasCustomerLevelSubscription) {
+      setBillingCookie('active');
     } else {
       clearBillingCookie();
     }

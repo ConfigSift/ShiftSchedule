@@ -13,6 +13,14 @@ function hasManagerMembership(role?: string | null) {
   return MANAGER_ROLES.has(String(role ?? '').trim().toLowerCase());
 }
 
+type DeleteRestaurantResponse = {
+  ok: boolean;
+  quantitySynced?: boolean;
+  newQuantity?: number | null;
+  ownedRestaurantCount?: number;
+  syncError?: string;
+};
+
 export default function ManagerClient() {
   const router = useRouter();
   const {
@@ -32,12 +40,23 @@ export default function ManagerClient() {
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteToast, setDeleteToast] = useState<{ type: 'success' | 'warning'; message: string } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editedName, setEditedName] = useState('');
 
   useEffect(() => {
     init();
   }, [init]);
+
+  useEffect(() => {
+    if (!deleteToast) return;
+    const timer = setTimeout(() => {
+      setDeleteToast(null);
+    }, 3500);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [deleteToast]);
 
   const canManageSite = useMemo(
     () => accessibleRestaurants.some((restaurant) => hasManagerMembership(restaurant.role)),
@@ -170,7 +189,7 @@ export default function ManagerClient() {
     if (!isMatch) return;
     setDeleteSubmitting(true);
     setDeleteError('');
-    const result = await apiFetch(`/api/organizations/${organizationId}/delete`, {
+    const result = await apiFetch<DeleteRestaurantResponse>(`/api/organizations/${organizationId}/delete`, {
       method: 'POST',
     });
     if (!result.ok) {
@@ -182,6 +201,25 @@ export default function ManagerClient() {
       clearActiveOrganization();
     }
     await refreshProfile();
+    await useAuthStore.getState().fetchSubscriptionStatus();
+    const quantitySynced = result.data?.quantitySynced !== false;
+    const newQuantity = Number(result.data?.newQuantity ?? 0);
+    if (quantitySynced && Number.isFinite(newQuantity) && newQuantity > 0) {
+      setDeleteToast({
+        type: 'success',
+        message: `Restaurant deleted. Billing updated to ${newQuantity} location${newQuantity === 1 ? '' : 's'}.`,
+      });
+    } else if (quantitySynced) {
+      setDeleteToast({
+        type: 'success',
+        message: 'Restaurant deleted.',
+      });
+    } else {
+      setDeleteToast({
+        type: 'warning',
+        message: 'Restaurant deleted. Billing update is syncing - refresh in a moment.',
+      });
+    }
     setDeleteSubmitting(false);
     setDeleteTarget(null);
   };
@@ -378,6 +416,19 @@ export default function ManagerClient() {
           </div>
         </div>
       </Modal>
+      {deleteToast && (
+        <div className="fixed bottom-4 right-4 z-50 animate-slide-in">
+          <div
+            className={`flex items-center gap-2 rounded-lg px-4 py-3 shadow-lg border ${
+              deleteToast.type === 'success'
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                : 'border-amber-500/40 bg-amber-500/15 text-amber-100'
+            }`}
+          >
+            <span className="text-sm font-medium">{deleteToast.message}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Loader2 } from 'lucide-react';
 import { Dashboard } from '../../components/Dashboard';
 import { EmployeeDashboard } from '../../components/employee/EmployeeDashboard';
 import { useScheduleStore } from '../../store/scheduleStore';
@@ -29,6 +30,7 @@ export default function DashboardPage() {
     activeRestaurantId,
     accessibleRestaurants,
     pendingInvitations,
+    subscriptionStatus,
     init,
   } = useAuthStore();
 
@@ -107,10 +109,28 @@ export default function DashboardPage() {
     }
   }, [isHydrated, isInitialized, currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
 
-  if (!isHydrated || !isInitialized || !currentUser) {
+  // Subscription loading gate: show spinner while status is 'loading', max 5 seconds
+  const [subLoadingTimedOut, setSubLoadingTimedOut] = useState(false);
+  const subTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (subscriptionStatus !== 'loading') {
+      setSubLoadingTimedOut(false);
+      if (subTimerRef.current) clearTimeout(subTimerRef.current);
+      return;
+    }
+    subTimerRef.current = setTimeout(() => setSubLoadingTimedOut(true), 5000);
+    return () => {
+      if (subTimerRef.current) clearTimeout(subTimerRef.current);
+    };
+  }, [subscriptionStatus]);
+
+  const isSubLoading = subscriptionStatus === 'loading' && !subLoadingTimedOut;
+
+  if (!isHydrated || !isInitialized || !currentUser || isSubLoading) {
     return (
       <div className="min-h-screen bg-theme-primary flex items-center justify-center">
-        <p className="text-theme-secondary">Loading...</p>
+        <Loader2 className="w-8 h-8 text-amber-500 animate-spin" />
       </div>
     );
   }

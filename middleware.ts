@@ -9,13 +9,20 @@ const BILLING_EXEMPT_PREFIXES = [
   '/subscribe',
   '/api/billing/',
   '/api/auth/',
+  '/api/orgs/',
+  '/api/organizations/',
   '/restaurants',
+  '/manager',
+  '/billing',
   '/login',
+  '/signup',
   '/setup',
   '/pricing',
+  '/start',
+  '/onboarding',
 ];
 
-const BILLING_EXEMPT_EXACT = ['/', '/restaurants'];
+const BILLING_EXEMPT_EXACT = ['/', '/restaurants', '/start', '/onboarding'];
 
 function isBillingExempt(pathname: string): boolean {
   if (BILLING_EXEMPT_EXACT.includes(pathname)) return true;

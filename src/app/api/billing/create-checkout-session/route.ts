@@ -7,42 +7,56 @@ import {
   STRIPE_MONTHLY_PRICE_ID,
   STRIPE_ANNUAL_PRICE_ID,
   STRIPE_INTRO_COUPON_ID,
+  BILLING_ENABLED,
 } from '@/lib/stripe/config';
-import { getOrCreateStripeCustomer, getLocationCount } from '@/lib/stripe/helpers';
+import { getOrCreateStripeCustomer } from '@/lib/stripe/helpers';
+import {
+  getBillingAccountByAuthUserId,
+  getOwnedOrganizationCount,
+  isActiveBillingStatus,
+} from '@/lib/billing/customer';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 type CheckoutPayload = {
-  organizationId: string;
-  priceType: 'monthly' | 'annual';
+  organizationId?: string;
+  intentId?: string;
+  priceType?: 'monthly' | 'annual';
 };
 
 export async function POST(request: NextRequest) {
-  const payload = (await request.json()) as CheckoutPayload;
-  const { organizationId, priceType } = payload;
-
-  if (!organizationId) {
-    return NextResponse.json(
-      { error: 'organizationId is required.' },
-      { status: 400 },
-    );
+  let payload: CheckoutPayload;
+  try {
+    payload = (await request.json()) as CheckoutPayload;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
 
+  if (!BILLING_ENABLED) {
+    return NextResponse.json({ error: 'Billing is disabled.' }, { status: 400 });
+  }
+
+  const organizationId = String(payload.organizationId ?? '').trim() || null;
+  const intentId = String(payload.intentId ?? '').trim() || null;
+  const priceType = payload.priceType;
+
   if (!priceType || !['monthly', 'annual'].includes(priceType)) {
+    return NextResponse.json({ error: 'priceType (monthly|annual) is required.' }, { status: 400 });
+  }
+
+  if (!organizationId && !intentId) {
     return NextResponse.json(
-      { error: 'priceType (monthly|annual) is required.' },
+      { error: 'organizationId or intentId is required.' },
       { status: 400 },
     );
   }
 
   const priceId = priceType === 'monthly' ? STRIPE_MONTHLY_PRICE_ID : STRIPE_ANNUAL_PRICE_ID;
   if (!priceId) {
-    console.error('[billing:checkout] Missing price ID for', priceType);
     return NextResponse.json({ error: 'Billing not configured.' }, { status: 500 });
   }
 
-  // Authenticate
   const { supabase, response } = createSupabaseRouteClient(request);
   const { data: authData, error: authError } = await supabase.auth.getUser();
   const authUserId = authData.user?.id;
@@ -54,58 +68,142 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError(message, 401), response);
   }
 
-  // Verify user is admin of this org
-  const { data: membership } = await supabaseAdmin
-    .from('organization_memberships')
-    .select('role')
-    .eq('auth_user_id', authUserId)
-    .eq('organization_id', organizationId)
-    .maybeSingle();
+  let desiredQuantity = 1;
+  let effectiveIntentId: string | null = null;
+  let effectiveOrganizationId: string | null = organizationId;
 
-  if (!membership || membership.role !== 'admin') {
+  if (intentId) {
+    const { data: intent, error: intentError } = await supabaseAdmin
+      .from('organization_create_intents')
+      .select('id,status,desired_quantity,auth_user_id')
+      .eq('id', intentId)
+      .eq('auth_user_id', authUserId)
+      .maybeSingle();
+
+    if (intentError) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Unable to load creation intent.' }, { status: 500 }),
+        response,
+      );
+    }
+    if (!intent || intent.status !== 'pending') {
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Intent is not pending.' }, { status: 409 }),
+        response,
+      );
+    }
+
+    desiredQuantity = Math.max(1, Number(intent.desired_quantity ?? 1));
+    effectiveIntentId = intent.id;
+    effectiveOrganizationId = null;
+  } else if (organizationId) {
+    const { data: membership } = await supabaseAdmin
+      .from('organization_memberships')
+      .select('role')
+      .eq('auth_user_id', authUserId)
+      .eq('organization_id', organizationId)
+      .maybeSingle();
+
+    const role = String(membership?.role ?? '').trim().toLowerCase();
+    if (!membership || role !== 'admin') {
+      return applySupabaseCookies(jsonError('Only admins can manage billing.', 403), response);
+    }
+
+    const ownedResult = await getOwnedOrganizationCount(authUserId, supabaseAdmin);
+    if (ownedResult.error) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Unable to calculate required quantity.' }, { status: 500 }),
+        response,
+      );
+    }
+    desiredQuantity = Math.max(1, ownedResult.count);
+  }
+
+  const billingAccountResult = await getBillingAccountByAuthUserId(authUserId, supabaseAdmin);
+  if (billingAccountResult.error) {
     return applySupabaseCookies(
-      jsonError('Only admins can manage billing.', 403),
+      NextResponse.json({ error: 'Unable to load billing account.' }, { status: 500 }),
       response,
     );
   }
 
-  // Check for existing active subscription
-  const { data: existingSub } = await supabaseAdmin
-    .from('subscriptions')
-    .select('status')
-    .eq('organization_id', organizationId)
-    .maybeSingle();
-
-  if (existingSub && ['active', 'trialing'].includes(existingSub.status)) {
+  if (
+    billingAccountResult.data &&
+    isActiveBillingStatus(billingAccountResult.data.status) &&
+    Number(billingAccountResult.data.quantity ?? 0) >= desiredQuantity
+  ) {
     return applySupabaseCookies(
-      NextResponse.json({ error: 'Organization already has an active subscription.' }, { status: 409 }),
+      NextResponse.json(
+        {
+          error: 'ACTIVE_SUBSCRIPTION_SUFFICIENT',
+          message: 'Your active subscription already covers this restaurant count.',
+          redirect: '/billing',
+        },
+        { status: 409 },
+      ),
       response,
     );
   }
 
-  // Get or create Stripe customer
+  if (
+    billingAccountResult.data &&
+    isActiveBillingStatus(billingAccountResult.data.status) &&
+    Number(billingAccountResult.data.quantity ?? 0) < desiredQuantity
+  ) {
+    return applySupabaseCookies(
+      NextResponse.json(
+        {
+          error: 'USE_UPGRADE_FLOW',
+          message: `Upgrade to ${desiredQuantity} locations from Billing before creating this restaurant.`,
+          redirect: '/billing',
+        },
+        { status: 409 },
+      ),
+      response,
+    );
+  }
+
   const email = authData.user.email ?? '';
   const stripeCustomerId = await getOrCreateStripeCustomer(authUserId, email);
 
-  // Count locations for quantity
-  const quantity = await getLocationCount(organizationId);
-
-  // Build Checkout Session params
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
-  const params: Parameters<typeof stripe.checkout.sessions.create>[0] = {
-    customer: stripeCustomerId,
-    client_reference_id: organizationId,
-    mode: 'subscription',
-    line_items: [{ price: priceId, quantity }],
-    success_url: `${appUrl}/subscribe/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${appUrl}/subscribe?canceled=true`,
-    subscription_data: {
-      metadata: { organization_id: organizationId },
-    },
-    metadata: { organization_id: organizationId },
+  const successIntentSegment = effectiveIntentId
+    ? `&intent_id=${encodeURIComponent(effectiveIntentId)}`
+    : '';
+  const cancelIntentSegment = effectiveIntentId
+    ? `&intent=${encodeURIComponent(effectiveIntentId)}`
+    : '';
+
+  const subscriptionMetadata: Record<string, string> = {
+    auth_user_id: authUserId,
+    desired_quantity: String(desiredQuantity),
+  };
+  const checkoutMetadata: Record<string, string> = {
+    auth_user_id: authUserId,
+    desired_quantity: String(desiredQuantity),
   };
 
-  // Stripe Checkout accepts either automatic discounts OR manual promo codes, not both.
+  if (effectiveIntentId) {
+    subscriptionMetadata.intent_id = effectiveIntentId;
+    checkoutMetadata.intent_id = effectiveIntentId;
+  }
+  if (effectiveOrganizationId) {
+    subscriptionMetadata.organization_id = effectiveOrganizationId;
+    checkoutMetadata.organization_id = effectiveOrganizationId;
+  }
+
+  const params: Parameters<typeof stripe.checkout.sessions.create>[0] = {
+    customer: stripeCustomerId,
+    mode: 'subscription',
+    line_items: [{ price: priceId, quantity: desiredQuantity }],
+    success_url: `${appUrl}/subscribe/success?session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`,
+    cancel_url: `${appUrl}/subscribe?canceled=true${cancelIntentSegment}`,
+    subscription_data: {
+      metadata: subscriptionMetadata,
+    },
+    metadata: checkoutMetadata,
+  };
+
   if (STRIPE_INTRO_COUPON_ID) {
     params.discounts = [{ coupon: STRIPE_INTRO_COUPON_ID }];
   } else {
@@ -118,56 +216,23 @@ export async function POST(request: NextRequest) {
       throw new Error(`Stripe customer ${stripeCustomerId} is deleted.`);
     }
 
-    const mergedCustomerMetadata = {
-      ...(stripeCustomer.metadata ?? {}),
-      organization_id: organizationId,
-    };
     await stripe.customers.update(stripeCustomerId, {
-      metadata: mergedCustomerMetadata,
+      metadata: {
+        ...(stripeCustomer.metadata ?? {}),
+        auth_user_id: authUserId,
+        ...(effectiveIntentId ? { intent_id: effectiveIntentId } : {}),
+      },
     });
 
     const session = await stripe.checkout.sessions.create(params);
-    console.log('[billing:create-checkout]', {
-      organizationId,
-      selectedPriceId: priceId,
-      customerId: stripeCustomerId,
-      sessionId: session.id,
-    });
     return applySupabaseCookies(
       NextResponse.json({ url: session.url }),
       response,
     );
-  } catch (err) {
-    const unknownError = err as Record<string, unknown> | null;
-    const stripeDiagnostics = {
-      type: typeof unknownError?.type === 'string' ? unknownError.type : null,
-      code: typeof unknownError?.code === 'string' ? unknownError.code : null,
-      param: typeof unknownError?.param === 'string' ? unknownError.param : null,
-    };
-    const supabaseDiagnostics = {
-      message: typeof unknownError?.message === 'string' ? unknownError.message : null,
-      details: typeof unknownError?.details === 'string' ? unknownError.details : null,
-      hint: typeof unknownError?.hint === 'string' ? unknownError.hint : null,
-      code: typeof unknownError?.code === 'string' ? unknownError.code : null,
-    };
-
-    console.error('[billing/create-checkout-session] failed', {
-      error: err,
-      message: err instanceof Error ? err.message : null,
-      stack: err instanceof Error ? err.stack : null,
-      stripe: stripeDiagnostics,
-      supabase: supabaseDiagnostics,
-      envPresent: {
-        STRIPE_SECRET_KEY: Boolean(process.env.STRIPE_SECRET_KEY),
-        STRIPE_PRICE_PRO_MONTHLY: Boolean(process.env.STRIPE_PRICE_PRO_MONTHLY),
-        STRIPE_PRICE_PRO_YEARLY: Boolean(process.env.STRIPE_PRICE_PRO_YEARLY),
-        STRIPE_COUPON_INTRO: Boolean(process.env.STRIPE_COUPON_INTRO),
-        NEXT_PUBLIC_APP_URL: Boolean(process.env.NEXT_PUBLIC_APP_URL),
-        NEXT_PUBLIC_SITE_URL: Boolean(process.env.NEXT_PUBLIC_SITE_URL),
-      },
-    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return applySupabaseCookies(
-      NextResponse.json({ error: 'Unable to create checkout session.' }, { status: 500 }),
+      NextResponse.json({ error: message || 'Unable to create checkout session.' }, { status: 500 }),
       response,
     );
   }

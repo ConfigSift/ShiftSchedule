@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
+import { BILLING_ENABLED } from '@/lib/stripe/config';
 import { generateRestaurantCode } from '@/utils/restaurantCode';
 import { splitFullName } from '@/utils/userMapper';
 
@@ -67,6 +68,19 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(
       NextResponse.json({ error: 'Only admins can create additional restaurants.' }, { status: 403 }),
       response
+    );
+  }
+
+  if (BILLING_ENABLED) {
+    return applySupabaseCookies(
+      NextResponse.json(
+        {
+          error: 'DIRECT_CREATE_DISABLED',
+          message: 'Use the create-intent flow to create restaurants.',
+        },
+        { status: 409 },
+      ),
+      response,
     );
   }
 

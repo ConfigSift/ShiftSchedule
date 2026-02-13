@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
+import { syncStripeQuantityForCustomer } from '@/lib/billing/quantity';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -193,5 +194,31 @@ export async function POST(request: NextRequest, ctx: { params: Promise<Params> 
     );
   }
 
-  return applySupabaseCookies(NextResponse.json({ ok: true }), response);
+  try {
+    const syncResult = await syncStripeQuantityForCustomer({ authUserId });
+    return applySupabaseCookies(
+      NextResponse.json({
+        ok: true,
+        quantitySynced: true,
+        newQuantity: syncResult.newQuantity,
+        ownedRestaurantCount: syncResult.ownedRestaurantCount,
+      }),
+      response,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[billing:quantity] failed to sync after organization delete', {
+      organizationId,
+      authUserId,
+      error: message,
+    });
+    return applySupabaseCookies(
+      NextResponse.json({
+        ok: true,
+        quantitySynced: false,
+        syncError: message,
+      }),
+      response,
+    );
+  }
 }

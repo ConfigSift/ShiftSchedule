@@ -17,11 +17,12 @@ import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
 
 type SubscriptionInfo = {
+  active: boolean;
   status: string;
   subscription: {
-    stripe_price_id: string;
+    stripe_price_id: string | null;
     quantity: number;
-    current_period_end: string;
+    current_period_end: string | null;
     cancel_at_period_end: boolean;
   } | null;
 };
@@ -30,6 +31,7 @@ export default function SubscribeClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const canceled = searchParams.get('canceled');
+  const intentId = String(searchParams.get('intent') ?? '').trim() || null;
 
   const { currentUser, activeRestaurantId, isInitialized, init } = useAuthStore();
 
@@ -46,7 +48,7 @@ export default function SubscribeClient() {
 
   // Check existing subscription status
   useEffect(() => {
-    if (!activeRestaurantId) {
+    if (!activeRestaurantId && !intentId) {
       setCheckingStatus(false);
       return;
     }
@@ -54,7 +56,9 @@ export default function SubscribeClient() {
     let mounted = true;
     async function check() {
       const result = await apiFetch<SubscriptionInfo>(
-        `/api/billing/subscription-status?organizationId=${activeRestaurantId}`,
+        activeRestaurantId
+          ? `/api/billing/subscription-status?organizationId=${activeRestaurantId}`
+          : '/api/billing/subscription-status',
       );
       if (!mounted) return;
       if (result.ok && result.data) {
@@ -64,17 +68,17 @@ export default function SubscribeClient() {
     }
     check();
     return () => { mounted = false; };
-  }, [activeRestaurantId]);
+  }, [activeRestaurantId, intentId]);
 
   // Redirect to restaurants if no org selected
   useEffect(() => {
-    if (isInitialized && !activeRestaurantId && currentUser) {
+    if (isInitialized && !activeRestaurantId && currentUser && !intentId) {
       router.push('/restaurants');
     }
-  }, [isInitialized, activeRestaurantId, currentUser, router]);
+  }, [isInitialized, activeRestaurantId, currentUser, router, intentId]);
 
   const handleCheckout = async (priceType: 'monthly' | 'annual') => {
-    if (!activeRestaurantId) {
+    if (!activeRestaurantId && !intentId) {
       setError('No restaurant selected. Please go back and select one.');
       return;
     }
@@ -83,24 +87,34 @@ export default function SubscribeClient() {
 
     const result = await apiFetch<{ url: string }>('/api/billing/create-checkout-session', {
       method: 'POST',
-      json: { organizationId: activeRestaurantId, priceType },
+      json: {
+        organizationId: activeRestaurantId ?? undefined,
+        intentId: intentId ?? undefined,
+        priceType,
+      },
     });
 
     if (result.ok && result.data?.url) {
       window.location.href = result.data.url;
     } else {
+      const redirect = (result.data as { redirect?: string } | null)?.redirect;
+      if (result.status === 409 && redirect) {
+        router.push(redirect);
+        setLoading(null);
+        return;
+      }
       setError(result.error || 'Unable to start checkout. Please try again.');
       setLoading(null);
     }
   };
 
   const handlePortal = async () => {
-    if (!activeRestaurantId) return;
+    if (!activeRestaurantId && !intentId) return;
     setPortalLoading(true);
 
     const result = await apiFetch<{ url: string }>('/api/billing/create-portal-session', {
       method: 'POST',
-      json: { organizationId: activeRestaurantId },
+      json: { organizationId: activeRestaurantId ?? undefined },
     });
 
     if (result.ok && result.data?.url) {
@@ -120,7 +134,7 @@ export default function SubscribeClient() {
     );
   }
 
-  const isActive = existingSub?.status === 'active' || existingSub?.status === 'trialing';
+  const isActive = existingSub?.active === true || existingSub?.status === 'active' || existingSub?.status === 'trialing';
 
   // Already subscribed — show current plan info
   if (isActive && existingSub?.subscription) {

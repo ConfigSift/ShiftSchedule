@@ -26,6 +26,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
     pathname === '/' ||
     pathname === '/login' ||
     pathname === '/signup' ||
+    pathname === '/start' ||
     pathname === '/onboarding' ||
     pathname === '/setup' ||
     pathname.startsWith('/auth') ||
