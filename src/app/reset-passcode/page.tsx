@@ -108,7 +108,7 @@ export default function ResetPasscodePage() {
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center mx-auto mb-4 shadow-lg">
             <Calendar className="w-8 h-8 text-zinc-900" />
           </div>
-          <h1 className="text-2xl font-bold text-theme-primary">ShiftFlow</h1>
+          <h1 className="text-2xl font-bold text-theme-primary">CrewShyft</h1>
           <p className="text-theme-tertiary mt-1">Reset your PIN</p>
         </div>
 

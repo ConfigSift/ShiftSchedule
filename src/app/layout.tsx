@@ -4,7 +4,7 @@ import { ThemeProvider } from "../components/ThemeProvider";
 import { AppShell } from "../components/AppShell";
 
 export const metadata: Metadata = {
-  title: "ShiftFlow - Restaurant Scheduling",
+  title: "CrewShyft - Restaurant Scheduling",
   description: "Effortless shift scheduling for restaurants",
 };
 

@@ -351,7 +351,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
   }, [buildReportHTML]);
 
   const handleDownloadPdf = useCallback(() => {
-    const { title, bodyHTML, orientation } = buildReportHTML('ShiftFlow');
+    const { title, bodyHTML, orientation } = buildReportHTML('CrewShyft');
     const html = wrapInHTMLDocument(bodyHTML, title, { orientation });
     renderReportToWindow(html, title);
   }, [buildReportHTML]);

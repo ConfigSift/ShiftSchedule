@@ -21,7 +21,7 @@ export const useThemeStore = create<ThemeState>()(
       })),
     }),
     {
-      name: 'shiftflow-theme',
+      name: 'crewshyft-theme',
     }
   )
 );

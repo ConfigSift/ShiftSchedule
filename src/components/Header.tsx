@@ -171,9 +171,9 @@ export function Header({ minimal = false }: HeaderProps) {
               <Calendar className="w-4 h-4 text-zinc-900" />
             </div>
             {showEmployeeMobileHeader && (
-              <span className="sm:hidden font-semibold text-theme-primary">ShiftFlow</span>
+              <span className="sm:hidden font-semibold text-theme-primary">CrewShyft</span>
             )}
-            <span className="hidden sm:inline font-semibold text-theme-primary">ShiftFlow</span>
+            <span className="hidden sm:inline font-semibold text-theme-primary">CrewShyft</span>
           </Link>
 
           {/* Primary nav - hidden in minimal mode */}

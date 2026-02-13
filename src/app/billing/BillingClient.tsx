@@ -283,7 +283,7 @@ export default function BillingClient() {
         </button>
         <div>
           <h1 className="text-xl font-bold text-theme-primary">Billing</h1>
-          <p className="text-sm text-theme-tertiary">Manage your ShiftFlow subscription</p>
+          <p className="text-sm text-theme-tertiary">Manage your CrewShyft subscription</p>
         </div>
       </div>
 
@@ -294,7 +294,7 @@ export default function BillingClient() {
               <Calendar className="w-5 h-5 text-zinc-900" />
             </div>
             <div>
-              <p className="font-semibold text-theme-primary">ShiftFlow Pro - {planLabel}</p>
+              <p className="font-semibold text-theme-primary">CrewShyft Pro - {planLabel}</p>
               <StatusBadge />
             </div>
           </div>

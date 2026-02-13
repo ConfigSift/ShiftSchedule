@@ -102,7 +102,7 @@ function DesktopScheduleMockup() {
           <div className="w-3 h-3 rounded-full bg-green-400" />
         </div>
         <div className="flex-1 bg-white dark:bg-zinc-700 rounded-lg px-3 py-1 text-xs text-gray-400 dark:text-zinc-400 truncate">
-          app.shiftflow.com/dashboard
+          app.crewshyft.com/dashboard
         </div>
       </div>
 
@@ -112,7 +112,7 @@ function DesktopScheduleMockup() {
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
             <Calendar className="w-3.5 h-3.5 text-zinc-900" />
           </div>
-          <span className="font-semibold text-sm text-gray-900 dark:text-zinc-100 hidden sm:inline">ShiftFlow</span>
+          <span className="font-semibold text-sm text-gray-900 dark:text-zinc-100 hidden sm:inline">CrewShyft</span>
           <div className="flex items-center gap-1 ml-2">
             <span className="px-2 py-1 rounded-md text-[10px] bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400 font-medium">Schedule</span>
             <span className="px-2 py-1 rounded-md text-[10px] text-gray-400 dark:text-zinc-500 hidden sm:inline">Staff</span>
@@ -512,7 +512,7 @@ export function LandingPage() {
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
               <Calendar className="w-4.5 h-4.5 text-zinc-900" />
             </div>
-            <span className="text-lg font-bold text-gray-900 dark:text-zinc-100">ShiftFlow</span>
+            <span className="text-lg font-bold text-gray-900 dark:text-zinc-100">CrewShyft</span>
           </div>
 
           {/* Center nav links */}
@@ -888,7 +888,7 @@ export function LandingPage() {
                 <tr className="border-b border-gray-200 dark:border-zinc-700">
                   <th className="py-4 px-3 text-left text-sm font-medium text-gray-500 dark:text-zinc-400" />
                   <th className="py-4 px-3 text-center bg-amber-50/50 dark:bg-amber-500/5">
-                    <span className="text-sm font-bold text-amber-600 dark:text-amber-400">ShiftFlow</span>
+                    <span className="text-sm font-bold text-amber-600 dark:text-amber-400">CrewShyft</span>
                   </th>
                   <th className="py-4 px-3 text-center text-sm font-medium text-gray-500 dark:text-zinc-400">HotSchedules</th>
                   <th className="py-4 px-3 text-center text-sm font-medium text-gray-500 dark:text-zinc-400">7shifts</th>
@@ -949,7 +949,7 @@ export function LandingPage() {
             <div className="mt-6 bg-white dark:bg-zinc-900 rounded-2xl border-2 border-amber-500 p-6 sm:p-8 shadow-sm">
               <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
                 <div>
-                  <h3 className="text-2xl font-bold text-gray-900 dark:text-zinc-100">ShiftFlow Pro</h3>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-zinc-100">CrewShyft Pro</h3>
                   <p className="text-sm text-gray-500 dark:text-zinc-400">One simple plan for every location.</p>
                 </div>
                 <span className="self-start px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30">
@@ -1079,7 +1079,7 @@ export function LandingPage() {
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
                   <Calendar className="w-4 h-4 text-zinc-900" />
                 </div>
-                <span className="font-bold text-gray-900 dark:text-zinc-100">ShiftFlow</span>
+                <span className="font-bold text-gray-900 dark:text-zinc-100">CrewShyft</span>
               </div>
               <p className="text-xs text-gray-400 dark:text-zinc-500 leading-relaxed">
                 Built for restaurants, by people who&apos;ve worked in them.
@@ -1127,7 +1127,7 @@ export function LandingPage() {
 
           <div className="border-t border-gray-200 dark:border-zinc-800 pt-6 text-center">
             <p className="text-xs text-gray-400 dark:text-zinc-500">
-              &copy; {new Date().getFullYear()} ShiftFlow. All rights reserved.
+              &copy; {new Date().getFullYear()} CrewShyft. All rights reserved.
             </p>
           </div>
         </div>

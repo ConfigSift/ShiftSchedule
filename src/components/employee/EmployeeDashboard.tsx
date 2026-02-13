@@ -411,7 +411,7 @@ export function EmployeeDashboard() {
                   <CalendarDays className="h-5 w-5" aria-hidden />
                 </div>
                 <div>
-                  <p className="text-xs uppercase tracking-widest text-gray-500 dark:text-white/60">ShiftFlow</p>
+                  <p className="text-xs uppercase tracking-widest text-gray-500 dark:text-white/60">CrewShyft</p>
                   <p className="text-sm text-gray-600 dark:text-white/70 hidden sm:block">
                     {activeRestaurant
                       ? `${activeRestaurant.name} (${activeRestaurant.restaurantCode})`

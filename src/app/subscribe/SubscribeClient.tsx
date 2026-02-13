@@ -161,7 +161,7 @@ export default function SubscribeClient() {
                 <Check className="w-5 h-5 text-emerald-500" />
               </div>
               <div>
-                <p className="font-semibold text-theme-primary">ShiftFlow Pro</p>
+                <p className="font-semibold text-theme-primary">CrewShyft Pro</p>
                 <p className="text-sm text-theme-tertiary">Active</p>
               </div>
             </div>
@@ -330,7 +330,7 @@ export default function SubscribeClient() {
       <div className="text-center pb-6 pt-4">
         <p className="text-xs text-theme-muted">
           Questions?{' '}
-          <a href="mailto:support@shiftflow.app" className="text-amber-500 hover:underline">
+          <a href="mailto:support@crewshyft.app" className="text-amber-500 hover:underline">
             Contact support
           </a>
         </p>
@@ -345,7 +345,7 @@ function Logo() {
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center mb-4 shadow-lg">
         <Calendar className="w-8 h-8 text-zinc-900" />
       </div>
-      <p className="text-xl font-bold text-theme-primary mb-1">ShiftFlow</p>
+      <p className="text-xl font-bold text-theme-primary mb-1">CrewShyft</p>
     </div>
   );
 }

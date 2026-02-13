@@ -1,14 +1,14 @@
 const STORAGE_KEYS = {
-  EMPLOYEES: 'shiftflow_employees',
-  SHIFTS: 'shiftflow_shifts',
-  TIME_OFF_REQUESTS: 'shiftflow_time_off',
-  BLOCKED_PERIODS: 'shiftflow_blocked',
-  DROP_REQUESTS: 'shiftflow_drop_requests',
-  CHAT_MESSAGES: 'shiftflow_chat',
-  CURRENT_USER: 'shiftflow_current_user',
-  ACTIVE_RESTAURANT: 'shiftflow_active_restaurant',
-  RESTAURANTS: 'shiftflow_restaurants',
-  INITIALIZED: 'shiftflow_initialized',
+  EMPLOYEES: 'crewshyft_employees',
+  SHIFTS: 'crewshyft_shifts',
+  TIME_OFF_REQUESTS: 'crewshyft_time_off',
+  BLOCKED_PERIODS: 'crewshyft_blocked',
+  DROP_REQUESTS: 'crewshyft_drop_requests',
+  CHAT_MESSAGES: 'crewshyft_chat',
+  CURRENT_USER: 'crewshyft_current_user',
+  ACTIVE_RESTAURANT: 'crewshyft_active_restaurant',
+  RESTAURANTS: 'crewshyft_restaurants',
+  INITIALIZED: 'crewshyft_initialized',
 };
 
 export function saveToStorage<T>(key: string, data: T): void {

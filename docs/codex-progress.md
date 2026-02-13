@@ -1,4 +1,4 @@
-# ShiftFlow Progress Checklist
+# CrewShyft Progress Checklist
 
 Checked items are verified in code and reachable in the UI.
 

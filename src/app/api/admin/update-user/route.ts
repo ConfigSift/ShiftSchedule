@@ -225,7 +225,7 @@ export async function POST(request: NextRequest) {
         response
       );
     }
-    if (normalizedEmail.startsWith('emp_') || normalizedEmail.endsWith('@pin.shiftflow.local')) {
+    if (normalizedEmail.startsWith('emp_') || normalizedEmail.endsWith('@pin.crewshyft.local')) {
       return applySupabaseCookies(
         NextResponse.json({ error: 'Please enter a valid email address.' }, { status: 400 }),
         response

@@ -45,7 +45,7 @@ export default function DashboardPage() {
 
       // Post-checkout toasts — consume the flag and clean URL
       if (consumeQueryFlag('subscribed')) {
-        showToast('Welcome to ShiftFlow Pro!', 'success');
+        showToast('Welcome to CrewShyft Pro!', 'success');
       } else if (consumeQueryFlag('checkout_canceled')) {
         showToast('Checkout canceled. You can subscribe anytime from Settings.', 'error');
       }

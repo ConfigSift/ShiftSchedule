@@ -137,7 +137,7 @@ export function SubscriptionGate({ children }: SubscriptionGateProps) {
           ) : isAdmin ? (
             <>
               <p className="text-sm text-theme-tertiary mb-6">
-                Your organization needs an active subscription to access ShiftFlow.
+                Your organization needs an active subscription to access CrewShyft.
               </p>
               <a
                 href="/subscribe"

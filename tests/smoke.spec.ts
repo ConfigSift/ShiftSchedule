@@ -4,7 +4,7 @@ test.describe('Smoke Tests', () => {
   test.describe('Login Flow', () => {
     test('shows login page', async ({ page }) => {
       await page.goto('/login');
-      await expect(page).toHaveTitle(/ShiftFlow|ShiftSchedule/i);
+      await expect(page).toHaveTitle(/CrewShyft|ShiftSchedule/i);
       // Should see login form elements
       await expect(page.locator('input[type="password"], input[type="text"]')).toBeVisible();
     });

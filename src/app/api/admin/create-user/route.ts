@@ -272,7 +272,7 @@ export async function POST(request: NextRequest) {
         400
       );
     }
-    if (normalizedEmail.startsWith('emp_') || normalizedEmail.endsWith('@pin.shiftflow.local')) {
+    if (normalizedEmail.startsWith('emp_') || normalizedEmail.endsWith('@pin.crewshyft.local')) {
       return toResponse(
         {
           created: false,

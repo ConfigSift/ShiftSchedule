@@ -1168,7 +1168,7 @@ end $$;`);
         <header>
           <h1 className="text-2xl font-bold text-theme-primary">DB Setup & Diagnostics</h1>
           <p className="text-theme-tertiary mt-1">
-            Checks required tables/columns for ShiftFlow.
+            Checks required tables/columns for CrewShyft.
           </p>
         </header>
 

@@ -352,7 +352,7 @@ export default function SubscribeSuccessPage() {
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center mb-4 shadow-lg">
             <Calendar className="w-8 h-8 text-zinc-900" />
           </div>
-          <p className="text-xl font-bold text-theme-primary">ShiftFlow</p>
+          <p className="text-xl font-bold text-theme-primary">CrewShyft</p>
         </div>
 
         <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-8 shadow-xl">

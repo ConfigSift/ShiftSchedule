@@ -30,7 +30,7 @@ function renderHeaderHTML({ restaurantName, title, dateLabel }: ReportHeaderInpu
         <div class="report-date">${escapeHTML(dateLabel)}</div>
       </div>
       <div class="report-header-right">
-        <div class="report-brand">ShiftFlow</div>
+        <div class="report-brand">CrewShyft</div>
       </div>
     </div>
   `;

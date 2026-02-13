@@ -1,7 +1,7 @@
 export function computeSyntheticAuthEmail(restaurantCode: string, employeeNumber: number): string {
   const code = String(restaurantCode).trim().toUpperCase();
   const padded = String(employeeNumber).padStart(4, '0');
-  return `emp_${code}_${padded}@pin.shiftflow.local`;
+  return `emp_${code}_${padded}@pin.crewshyft.local`;
 }
 
 export function validateEmployeeNumber(value: unknown): boolean {
