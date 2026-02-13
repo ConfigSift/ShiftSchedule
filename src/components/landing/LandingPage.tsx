@@ -22,6 +22,7 @@ import {
   BarChart3,
   FileCheck,
   Star,
+  ArrowRight,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -495,6 +496,7 @@ export function LandingPage() {
 
   const navLinks = [
     { label: 'Features', id: 'features' },
+    { label: 'Demo', id: 'demo' },
     { label: 'Pricing', id: 'pricing' },
     { label: 'Marketplace', id: 'marketplace' },
     { label: 'Testimonials', id: 'testimonials' },
@@ -785,6 +787,85 @@ export function LandingPage() {
           </div>
           <div className="lg:w-1/2 flex justify-center">
             <PhoneMockup />
+          </div>
+        </div>
+      </Section>
+
+      {/* ─── S6b: Demo CTA ─── */}
+      <Section id="demo" className="py-12 sm:py-20 px-4">
+        <div className="max-w-4xl mx-auto text-center" data-analytics="demo_cta_section">
+          <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-gray-900 dark:text-zinc-100 mb-4">
+            See CrewShyft{' '}
+            <span className="bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent">in Action</span>
+          </h2>
+          <p className="text-gray-500 dark:text-zinc-400 max-w-xl mx-auto mb-8 text-base sm:text-lg">
+            Explore a fully interactive demo with real scheduling data. No signup required.
+          </p>
+          <Link
+            href="/demo"
+            className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl text-base font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:shadow-lg hover:shadow-amber-500/25 mb-10"
+            data-analytics="demo_landing_cta"
+          >
+            Try the Demo
+            <ArrowRight className="w-5 h-5" />
+          </Link>
+
+          {/* Decorative browser frame preview */}
+          <div className="max-w-3xl mx-auto">
+            <div className="rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-900 shadow-2xl overflow-hidden">
+              {/* Browser chrome */}
+              <div className="flex items-center gap-2 px-4 py-2.5 bg-gray-100 dark:bg-zinc-800 border-b border-gray-200 dark:border-zinc-700">
+                <div className="flex gap-1.5">
+                  <div className="w-3 h-3 rounded-full bg-red-400/80" />
+                  <div className="w-3 h-3 rounded-full bg-yellow-400/80" />
+                  <div className="w-3 h-3 rounded-full bg-green-400/80" />
+                </div>
+                <div className="flex-1 mx-8">
+                  <div className="h-6 rounded-md bg-gray-200 dark:bg-zinc-700 flex items-center px-3">
+                    <span className="text-[10px] text-gray-400 dark:text-zinc-500 font-mono">app.crewshyft.com/dashboard</span>
+                  </div>
+                </div>
+              </div>
+              {/* Mock schedule grid */}
+              <div className="p-4 sm:p-6">
+                {/* Toolbar mock */}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <div className="h-7 w-16 rounded-md bg-amber-500/20 dark:bg-amber-500/10" />
+                    <div className="h-7 w-16 rounded-md bg-gray-200 dark:bg-zinc-700" />
+                  </div>
+                  <div className="h-5 w-32 rounded bg-gray-200 dark:bg-zinc-700" />
+                  <div className="hidden sm:flex items-center gap-2">
+                    <div className="h-7 w-20 rounded-md bg-gray-200 dark:bg-zinc-700" />
+                    <div className="h-7 w-7 rounded-md bg-amber-500/30" />
+                  </div>
+                </div>
+                {/* Rows */}
+                <div className="space-y-2">
+                  {[
+                    { name: 'w-20', shifts: [{ left: '5%', w: '25%', color: 'bg-blue-500/30 dark:bg-blue-500/20' }, { left: '55%', w: '20%', color: 'bg-blue-500/20 dark:bg-blue-500/15' }] },
+                    { name: 'w-16', shifts: [{ left: '12%', w: '35%', color: 'bg-amber-500/30 dark:bg-amber-500/20' }] },
+                    { name: 'w-24', shifts: [{ left: '40%', w: '30%', color: 'bg-purple-500/30 dark:bg-purple-500/20' }] },
+                    { name: 'w-14', shifts: [{ left: '2%', w: '22%', color: 'bg-emerald-500/30 dark:bg-emerald-500/20' }, { left: '60%', w: '25%', color: 'bg-emerald-500/20 dark:bg-emerald-500/15' }] },
+                    { name: 'w-20', shifts: [{ left: '30%', w: '40%', color: 'bg-red-500/25 dark:bg-red-500/15' }] },
+                    { name: 'w-16', shifts: [{ left: '8%', w: '28%', color: 'bg-blue-500/25 dark:bg-blue-500/15' }] },
+                  ].map((row, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <div className={`h-4 ${row.name} rounded bg-gray-200 dark:bg-zinc-700 shrink-0`} />
+                      <div className="flex-1 relative h-7 rounded bg-gray-100 dark:bg-zinc-800/50">
+                        {row.shifts.map((shift, j) => (
+                          <div
+                            key={j}
+                            className={`absolute top-0.5 bottom-0.5 rounded ${shift.color}`}
+                            style={{ left: shift.left, width: shift.w }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </Section>

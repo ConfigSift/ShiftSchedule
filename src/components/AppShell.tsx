@@ -30,7 +30,8 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
     pathname === '/onboarding' ||
     pathname === '/setup' ||
     pathname.startsWith('/auth') ||
-    pathname.startsWith('/subscribe');
+    pathname.startsWith('/subscribe') ||
+    pathname.startsWith('/demo');
   const isChatPage = pathname === '/chat';
   const isDashboardPage = pathname === '/dashboard';
   const isRestaurantsPage = pathname === '/restaurants';

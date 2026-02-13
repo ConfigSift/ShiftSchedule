@@ -131,6 +131,22 @@
     }
   }
   
+  /* Demo page entry animation */
+  @keyframes demoFadeIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate-demo-enter {
+    animation: demoFadeIn 0.6s ease-out 0.15s both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-demo-enter {
+      animation: none;
+    }
+  }
+
   /* Touch-friendly minimum tap targets */
   .min-tap {
     min-width: 44px;

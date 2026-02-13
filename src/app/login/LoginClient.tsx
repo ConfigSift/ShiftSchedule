@@ -267,6 +267,13 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
               </p>
             </div>
           )}
+          {notice === 'account-deleted' && (
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 mb-4">
+              <p className="text-sm text-emerald-400">
+                Account deleted successfully.
+              </p>
+            </div>
+          )}
           {notice === 'verification-failed' && (
             <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-4">
               <p className="text-sm text-red-400">

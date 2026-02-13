@@ -229,7 +229,7 @@ export default function SubscribeSuccessPage() {
         .accessibleRestaurants
         .find((restaurant) => restaurant.id === organizationId);
       setActiveOrganization(organizationId, matchedRestaurant?.restaurantCode ?? null);
-      router.replace('/dashboard?subscribed=true');
+      router.replace('/restaurants?subscribed=true');
       return true;
     }
 
@@ -303,7 +303,7 @@ export default function SubscribeSuccessPage() {
           await commitIntentAndRedirect(resolvedIntentId);
           return;
         }
-        router.replace('/dashboard?subscribed=true');
+        router.replace('/restaurants?subscribed=true');
         return;
       }
 
@@ -315,14 +315,14 @@ export default function SubscribeSuccessPage() {
           await commitIntentAndRedirect(resolvedIntentId);
           return;
         }
-        router.replace('/dashboard?subscribed=true');
+        router.replace('/restaurants?subscribed=true');
         return;
       }
 
       setViewState('syncing');
       setErrorMessage('Your payment succeeded - subscription is syncing.');
       autoRedirectTimerRef.current = setTimeout(() => {
-        router.replace('/dashboard?subscribed=true');
+        router.replace('/restaurants?subscribed=true');
       }, 3000);
     }
 
@@ -405,6 +405,12 @@ export default function SubscribeSuccessPage() {
               >
                 Retry
               </button>
+              <button
+                onClick={() => router.replace('/restaurants?subscribed=true')}
+                className="w-full mt-3 py-3 border border-theme-primary text-theme-secondary rounded-lg hover:bg-theme-hover transition-colors"
+              >
+                Continue to Site Manager
+              </button>
             </>
           )}
 
@@ -453,10 +459,10 @@ export default function SubscribeSuccessPage() {
                 {errorMessage ?? 'Your payment succeeded - subscription is syncing.'}
               </p>
               <button
-                onClick={() => router.replace('/dashboard?subscribed=true')}
+                onClick={() => router.replace('/restaurants?subscribed=true')}
                 className="w-full py-3 bg-amber-500 text-zinc-900 font-semibold rounded-lg hover:bg-amber-400 transition-colors"
               >
-                Continue to Dashboard
+                Continue to Site Manager
               </button>
             </>
           )}

@@ -18,7 +18,17 @@ type DeleteRestaurantResponse = {
   quantitySynced?: boolean;
   newQuantity?: number | null;
   ownedRestaurantCount?: number;
+  subscriptionStatus?: string;
   syncError?: string;
+};
+
+type DeleteRestaurantError = {
+  error?: string;
+  message?: string;
+  table?: string;
+  code?: string;
+  details?: string;
+  hint?: string;
 };
 
 export default function ManagerClient() {
@@ -39,6 +49,7 @@ export default function ManagerClient() {
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; restaurantCode: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleteError, setDeleteError] = useState('');
+  const [deleteErrorDetails, setDeleteErrorDetails] = useState<DeleteRestaurantError | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [deleteToast, setDeleteToast] = useState<{ type: 'success' | 'warning'; message: string } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -170,6 +181,7 @@ export default function ManagerClient() {
     setDeleteTarget({ ...restaurant, id: orgId });
     setDeleteConfirm('');
     setDeleteError('');
+    setDeleteErrorDetails(null);
   };
 
   const handleCloseDelete = () => {
@@ -177,23 +189,28 @@ export default function ManagerClient() {
     setDeleteTarget(null);
     setDeleteConfirm('');
     setDeleteError('');
+    setDeleteErrorDetails(null);
   };
 
   const handleDeleteRestaurant = async () => {
     if (!deleteTarget) return;
     const organizationId = String(deleteTarget.id ?? '').trim();
     if (!organizationId) return;
-    const confirmValue = deleteConfirm.trim();
-    const isMatch =
-      confirmValue === deleteTarget.name || confirmValue === deleteTarget.restaurantCode;
-    if (!isMatch) return;
+    if (deleteConfirm !== 'DELETE') return;
     setDeleteSubmitting(true);
     setDeleteError('');
-    const result = await apiFetch<DeleteRestaurantResponse>(`/api/organizations/${organizationId}/delete`, {
-      method: 'POST',
-    });
+    setDeleteErrorDetails(null);
+    const result = await apiFetch<DeleteRestaurantResponse | DeleteRestaurantError>(
+      `/api/organizations/${organizationId}/delete`,
+      {
+        method: 'POST',
+        json: { confirm: 'DELETE' },
+      },
+    );
     if (!result.ok) {
-      setDeleteError(result.error || 'Unable to delete restaurant.');
+      const body = (result.data ?? null) as DeleteRestaurantError | null;
+      setDeleteError(body?.message || body?.error || result.error || 'Unable to delete restaurant.');
+      setDeleteErrorDetails(body);
       setDeleteSubmitting(false);
       return;
     }
@@ -204,20 +221,20 @@ export default function ManagerClient() {
     await useAuthStore.getState().fetchSubscriptionStatus();
     const quantitySynced = result.data?.quantitySynced !== false;
     const newQuantity = Number(result.data?.newQuantity ?? 0);
-    if (quantitySynced && Number.isFinite(newQuantity) && newQuantity > 0) {
+    if (!quantitySynced) {
+      setDeleteToast({
+        type: 'warning',
+        message: 'Restaurant deleted. Billing update is syncing - refresh in a moment.',
+      });
+    } else if (Number.isFinite(newQuantity) && newQuantity > 0) {
       setDeleteToast({
         type: 'success',
         message: `Restaurant deleted. Billing updated to ${newQuantity} location${newQuantity === 1 ? '' : 's'}.`,
       });
-    } else if (quantitySynced) {
-      setDeleteToast({
-        type: 'success',
-        message: 'Restaurant deleted.',
-      });
     } else {
       setDeleteToast({
-        type: 'warning',
-        message: 'Restaurant deleted. Billing update is syncing - refresh in a moment.',
+        type: 'success',
+        message: 'Restaurant deleted. Subscription canceled for 0 locations.',
       });
     }
     setDeleteSubmitting(false);
@@ -374,22 +391,36 @@ export default function ManagerClient() {
         size="md"
       >
         <div className="space-y-4">
-          <p className="text-sm text-theme-secondary">
-            This permanently deletes this restaurant and ALL associated data. This cannot be undone.
-          </p>
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3">
+            <p className="text-sm text-red-300">
+              Deleting removes schedules/staff/data and ends access immediately. Cannot be undone.
+            </p>
+          </div>
           <div className="space-y-2">
             <label className="text-xs uppercase tracking-wide text-theme-muted">
-              Type restaurant name or code to confirm
+              Type DELETE to confirm
             </label>
             <input
               type="text"
               value={deleteConfirm}
               onChange={(e) => setDeleteConfirm(e.target.value)}
               className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
-              placeholder={deleteTarget ? `${deleteTarget.name} or ${deleteTarget.restaurantCode}` : ''}
+              placeholder="DELETE"
             />
           </div>
-          {deleteError && <p className="text-xs text-red-400">{deleteError}</p>}
+          {deleteError && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-1">
+              <p className="text-xs text-red-300">{deleteError}</p>
+              {(deleteErrorDetails?.table || deleteErrorDetails?.code || deleteErrorDetails?.details || deleteErrorDetails?.hint) && (
+                <div className="space-y-1 text-xs text-red-200/90">
+                  {deleteErrorDetails?.table && <p>Table: <span className="font-mono">{deleteErrorDetails.table}</span></p>}
+                  {deleteErrorDetails?.code && <p>Code: <span className="font-mono">{deleteErrorDetails.code}</span></p>}
+                  {deleteErrorDetails?.details && <p>Details: {deleteErrorDetails.details}</p>}
+                  {deleteErrorDetails?.hint && <p>Hint: {deleteErrorDetails.hint}</p>}
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
@@ -404,14 +435,11 @@ export default function ManagerClient() {
               disabled={
                 deleteSubmitting ||
                 !deleteTarget ||
-                !(
-                  deleteConfirm.trim() === deleteTarget.name ||
-                  deleteConfirm.trim() === deleteTarget.restaurantCode
-                )
+                deleteConfirm !== 'DELETE'
               }
               className="px-4 py-2 rounded-lg bg-red-500 text-white font-semibold hover:bg-red-400 transition-colors disabled:opacity-50"
             >
-              {deleteSubmitting ? 'Deleting...' : 'Delete'}
+              {deleteSubmitting ? 'Deleting...' : 'Permanently delete'}
             </button>
           </div>
         </div>

@@ -1,11 +1,21 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
 import { Modal } from '../../components/Modal';
-import { PlusCircle, Check, ChevronRight, Pencil, Store, Mail, Trash2 } from 'lucide-react';
+import {
+  PlusCircle,
+  Check,
+  ChevronRight,
+  Pencil,
+  Store,
+  Mail,
+  Trash2,
+  ExternalLink,
+  Loader2,
+} from 'lucide-react';
 
 type CreateIntentResponse = {
   intentId: string;
@@ -36,11 +46,46 @@ type CommitIntentResponse = {
 
 type DeleteRestaurantResponse = {
   ok: boolean;
+  deletedOrganizationId?: string;
   quantitySynced?: boolean;
   newQuantity?: number | null;
   ownedRestaurantCount?: number;
+  subscriptionStatus?: string;
   syncError?: string;
 };
+
+type DeleteApiError = {
+  error?: string;
+  message?: string;
+  table?: string;
+  column?: string;
+  code?: string;
+  details?: string;
+  hint?: string;
+  manageBillingUrl?: string;
+  count?: number;
+  organizations?: Array<{ id: string; name: string; restaurantCode?: string | null }>;
+};
+
+type AccountDeleteResponse = {
+  ok: boolean;
+  deletedAuthUser: boolean;
+};
+
+type SubscriptionSnapshot = {
+  billingEnabled?: boolean;
+  status?: string;
+  active?: boolean;
+  owned_org_count?: number;
+  subscription?: {
+    quantity?: number;
+    current_period_end?: string | null;
+    cancel_at_period_end?: boolean;
+    status?: string;
+  } | null;
+};
+
+const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
 
 export default function RestaurantSelectPage() {
   const router = useRouter();
@@ -54,7 +99,8 @@ export default function RestaurantSelectPage() {
     clearActiveOrganization,
     init,
     refreshProfile,
-    refreshInvitations,
+    signOut,
+    subscriptionDetails,
   } = useAuthStore();
 
   const [inviteError, setInviteError] = useState('');
@@ -70,8 +116,16 @@ export default function RestaurantSelectPage() {
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; restaurantCode: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleteError, setDeleteError] = useState('');
+  const [deleteErrorDetails, setDeleteErrorDetails] = useState<DeleteApiError | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [deleteToast, setDeleteToast] = useState<{ type: 'success' | 'warning'; message: string } | null>(null);
+  const [billingSnapshot, setBillingSnapshot] = useState<SubscriptionSnapshot | null>(null);
+  const [accountDeleteModalOpen, setAccountDeleteModalOpen] = useState(false);
+  const [accountDeleteConfirm, setAccountDeleteConfirm] = useState('');
+  const [accountDeleteError, setAccountDeleteError] = useState('');
+  const [accountDeleteErrorDetails, setAccountDeleteErrorDetails] = useState<DeleteApiError | null>(null);
+  const [accountDeleteSubmitting, setAccountDeleteSubmitting] = useState(false);
+  const [accountDeleteManageBillingUrl, setAccountDeleteManageBillingUrl] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editedName, setEditedName] = useState('');
 
@@ -88,6 +142,20 @@ export default function RestaurantSelectPage() {
       clearTimeout(timer);
     };
   }, [deleteToast]);
+
+  const refreshBillingSnapshot = useCallback(async () => {
+    const result = await apiFetch<SubscriptionSnapshot>('/api/billing/subscription-status', {
+      cache: 'no-store',
+    });
+    if (result.ok && result.data) {
+      setBillingSnapshot(result.data);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isInitialized) return;
+    void refreshBillingSnapshot();
+  }, [isInitialized, refreshBillingSnapshot]);
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -125,11 +193,21 @@ export default function RestaurantSelectPage() {
     () =>
       accessibleRestaurants.some((restaurant) => {
         const value = String(restaurant.role ?? '').trim().toLowerCase();
-        return value === 'admin';
+        return value === 'admin' || value === 'owner';
       }),
     [accessibleRestaurants]
   );
   const canCreateRestaurant = accessibleRestaurants.length === 0 || hasAdminMembership;
+  const ownedOrgCount = Math.max(
+    0,
+    Number(billingSnapshot?.owned_org_count ?? subscriptionDetails?.ownedOrgCount ?? accessibleRestaurants.length),
+  );
+  const billedQuantity = Math.max(
+    0,
+    Number(billingSnapshot?.subscription?.quantity ?? subscriptionDetails?.quantity ?? ownedOrgCount),
+  );
+  const canShowAccountDelete = hasAdminMembership || String(currentUser?.role ?? '').trim().toUpperCase() === 'ADMIN';
+  const canDeleteAccountNow = ownedOrgCount === 0 && !accountDeleteSubmitting;
 
   if (!isInitialized) {
     return (
@@ -347,6 +425,7 @@ export default function RestaurantSelectPage() {
     setDeleteTarget({ ...restaurant, id: orgId });
     setDeleteConfirm('');
     setDeleteError('');
+    setDeleteErrorDetails(null);
   };
 
   const handleCloseDelete = () => {
@@ -354,52 +433,135 @@ export default function RestaurantSelectPage() {
     setDeleteTarget(null);
     setDeleteConfirm('');
     setDeleteError('');
+    setDeleteErrorDetails(null);
   };
 
   const handleDeleteRestaurant = async () => {
     if (!deleteTarget) return;
     const organizationId = String(deleteTarget.id ?? '').trim();
     if (!organizationId) return;
-    const confirmValue = deleteConfirm.trim();
-    const isMatch =
-      confirmValue === deleteTarget.name || confirmValue === deleteTarget.restaurantCode;
-    if (!isMatch) return;
+    if (deleteConfirm !== 'DELETE') return;
+
     setDeleteSubmitting(true);
     setDeleteError('');
-    const result = await apiFetch<DeleteRestaurantResponse>(`/api/organizations/${organizationId}/delete`, {
-      method: 'POST',
-    });
+    setDeleteErrorDetails(null);
+
+    const result = await apiFetch<DeleteRestaurantResponse | DeleteApiError>(
+      `/api/organizations/${organizationId}/delete`,
+      {
+        method: 'POST',
+        json: { confirm: 'DELETE' },
+      },
+    );
+
     if (!result.ok) {
-      setDeleteError(result.error || 'Unable to delete restaurant.');
+      const body = (result.data ?? null) as DeleteApiError | null;
+      setDeleteError(
+        body?.message ||
+        body?.error ||
+        result.error ||
+        'Unable to delete restaurant.',
+      );
+      setDeleteErrorDetails(body);
       setDeleteSubmitting(false);
       return;
     }
+
     if (activeRestaurantId === deleteTarget.id) {
       clearActiveOrganization();
     }
     await refreshProfile();
     await useAuthStore.getState().fetchSubscriptionStatus();
-    const quantitySynced = result.data?.quantitySynced !== false;
-    const newQuantity = Number(result.data?.newQuantity ?? 0);
-    if (quantitySynced && Number.isFinite(newQuantity) && newQuantity > 0) {
-      setDeleteToast({
-        type: 'success',
-        message: `Restaurant deleted. Billing updated to ${newQuantity} location${newQuantity === 1 ? '' : 's'}.`,
-      });
-    } else if (quantitySynced) {
-      setDeleteToast({
-        type: 'success',
-        message: 'Restaurant deleted.',
-      });
-    } else {
+    await refreshBillingSnapshot();
+
+    const responseData = (result.data ?? {}) as DeleteRestaurantResponse;
+    const quantitySynced = responseData.quantitySynced !== false;
+    const newQuantity = Math.max(0, Number(responseData.newQuantity ?? 0));
+
+    if (!quantitySynced) {
       setDeleteToast({
         type: 'warning',
         message: 'Restaurant deleted. Billing update is syncing - refresh in a moment.',
       });
+    } else if (newQuantity === 0) {
+      setDeleteToast({
+        type: 'success',
+        message: 'Restaurant deleted. Subscription canceled for 0 locations.',
+      });
+    } else {
+      setDeleteToast({
+        type: 'success',
+        message: `Restaurant deleted. Billing updated to ${newQuantity} location${newQuantity === 1 ? '' : 's'}.`,
+      });
     }
+
     setDeleteSubmitting(false);
     setDeleteTarget(null);
+    setDeleteConfirm('');
   };
+
+  const handleDeleteAccount = async () => {
+    if (!canDeleteAccountNow || accountDeleteConfirm !== 'DELETE') return;
+
+    setAccountDeleteSubmitting(true);
+    setAccountDeleteError('');
+    setAccountDeleteErrorDetails(null);
+    setAccountDeleteManageBillingUrl(null);
+
+    const result = await apiFetch<AccountDeleteResponse | DeleteApiError>(
+      '/api/account/delete',
+      {
+        method: 'POST',
+        json: { confirm: 'DELETE' },
+      },
+    );
+
+    if (!result.ok) {
+      const body = (result.data ?? null) as DeleteApiError | null;
+      const mappedErrorMessage =
+        body?.error === 'RESTAURANTS_REMAIN'
+          ? `Delete all restaurants first (${Number(body.count ?? ownedOrgCount)} remaining).`
+          : body?.error === 'SUBSCRIPTION_ACTIVE'
+            ? body?.message || 'Subscription is still active. Cancel it in billing, then retry.'
+            : body?.error === 'MEMBERSHIPS_REMAIN'
+              ? `Leave remaining memberships first (${Number(body.count ?? 0)} remaining).`
+              : null;
+      setAccountDeleteError(
+        mappedErrorMessage ||
+        body?.message ||
+        body?.error ||
+        result.error ||
+        'Unable to delete account.',
+      );
+      setAccountDeleteErrorDetails(body);
+      setAccountDeleteManageBillingUrl(body?.manageBillingUrl ?? null);
+      setAccountDeleteSubmitting(false);
+      if (body?.error === 'RESTAURANTS_REMAIN' || body?.error === 'SUBSCRIPTION_ACTIVE') {
+        await refreshBillingSnapshot();
+      }
+      return;
+    }
+
+    setDeleteToast({
+      type: 'success',
+      message: 'Account deleted.',
+    });
+    await signOut();
+    router.replace('/login?notice=account-deleted');
+  };
+
+  const openAccountDeleteModal = () => {
+    setAccountDeleteError('');
+    setAccountDeleteErrorDetails(null);
+    setAccountDeleteManageBillingUrl(null);
+    setAccountDeleteConfirm('');
+    setAccountDeleteModalOpen(true);
+  };
+
+  const nextOwnedCountAfterDelete = deleteTarget ? Math.max(0, ownedOrgCount - 1) : ownedOrgCount;
+  const accountDeleteDisabledReason = ownedOrgCount > 0
+    ? `Delete all restaurants first (${ownedOrgCount} remaining).`
+    : null;
 
   return (
     <div className="bg-theme-primary text-theme-primary p-4 sm:p-6">
@@ -654,6 +816,30 @@ export default function RestaurantSelectPage() {
             </div>
           </div>
         )}
+
+        {canShowAccountDelete && (
+          <div className="bg-theme-secondary border border-red-500/30 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-red-500/20 bg-red-500/5">
+              <h2 className="text-sm font-semibold text-red-300">Account</h2>
+            </div>
+            <div className="p-4 space-y-3">
+              <p className="text-xs text-theme-muted">
+                Delete your full account only after all restaurants are removed.
+              </p>
+              <button
+                type="button"
+                onClick={openAccountDeleteModal}
+                disabled={!canDeleteAccountNow}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Delete account
+              </button>
+              {accountDeleteDisabledReason && (
+                <p className="text-xs text-amber-300">{accountDeleteDisabledReason}</p>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <Modal
@@ -758,22 +944,41 @@ export default function RestaurantSelectPage() {
         size="md"
       >
         <div className="space-y-4">
-          <p className="text-sm text-theme-secondary">
-            This permanently deletes this restaurant and ALL associated data. This cannot be undone.
-          </p>
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3">
+            <p className="text-sm text-red-300">
+              Deleting removes schedules/staff/data and ends access immediately. Cannot be undone.
+            </p>
+          </div>
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+            <p className="text-sm text-amber-200">
+              This will reduce your billed locations from {Math.max(0, billedQuantity)} to {nextOwnedCountAfterDelete}.
+            </p>
+          </div>
           <div className="space-y-2">
             <label className="text-xs uppercase tracking-wide text-theme-muted">
-              Type restaurant name or code to confirm
+              Type DELETE to confirm
             </label>
             <input
               type="text"
               value={deleteConfirm}
               onChange={(e) => setDeleteConfirm(e.target.value)}
               className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
-              placeholder={deleteTarget ? `${deleteTarget.name} or ${deleteTarget.restaurantCode}` : ''}
+              placeholder="DELETE"
             />
           </div>
-          {deleteError && <p className="text-xs text-red-400">{deleteError}</p>}
+          {deleteError && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-1">
+              <p className="text-xs text-red-300">{deleteError}</p>
+              {(deleteErrorDetails?.table || deleteErrorDetails?.code || deleteErrorDetails?.details || deleteErrorDetails?.hint) && (
+                <div className="space-y-1 text-xs text-red-200/90">
+                  {deleteErrorDetails?.table && <p>Table: <span className="font-mono">{deleteErrorDetails.table}</span></p>}
+                  {deleteErrorDetails?.code && <p>Code: <span className="font-mono">{deleteErrorDetails.code}</span></p>}
+                  {deleteErrorDetails?.details && <p>Details: {deleteErrorDetails.details}</p>}
+                  {deleteErrorDetails?.hint && <p>Hint: {deleteErrorDetails.hint}</p>}
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
@@ -788,14 +993,96 @@ export default function RestaurantSelectPage() {
               disabled={
                 deleteSubmitting ||
                 !deleteTarget ||
-                !(
-                  deleteConfirm.trim() === deleteTarget.name ||
-                  deleteConfirm.trim() === deleteTarget.restaurantCode
-                )
+                deleteConfirm !== 'DELETE'
               }
               className="px-4 py-2 rounded-lg bg-red-500 text-white font-semibold hover:bg-red-400 transition-colors disabled:opacity-50"
             >
-              {deleteSubmitting ? 'Deleting...' : 'Delete'}
+              {deleteSubmitting ? 'Deleting...' : 'Permanently delete'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={accountDeleteModalOpen}
+        onClose={() => {
+          if (accountDeleteSubmitting) return;
+          setAccountDeleteModalOpen(false);
+        }}
+        title="Delete Account"
+        size="md"
+      >
+        <div className="space-y-4">
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3">
+            <p className="text-sm text-red-300">
+              This permanently deletes your auth account and remaining billing data. This cannot be undone.
+            </p>
+          </div>
+          {ownedOrgCount > 0 ? (
+            <p className="text-sm text-amber-300">
+              Delete all restaurants first. {ownedOrgCount} remaining.
+            </p>
+          ) : (
+            <p className="text-sm text-theme-secondary">
+              No restaurants remain. You can now delete your full account.
+            </p>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-xs uppercase tracking-wide text-theme-muted">
+              Type DELETE to confirm
+            </label>
+            <input
+              type="text"
+              value={accountDeleteConfirm}
+              onChange={(e) => setAccountDeleteConfirm(e.target.value)}
+              className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+              placeholder="DELETE"
+            />
+          </div>
+
+          {accountDeleteError && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-2">
+              <p className="text-xs text-red-300">{accountDeleteError}</p>
+              {(accountDeleteErrorDetails?.table || accountDeleteErrorDetails?.code || accountDeleteErrorDetails?.details || accountDeleteErrorDetails?.hint) && (
+                <div className="space-y-1 text-xs text-red-200/90">
+                  {accountDeleteErrorDetails?.table && <p>Table: <span className="font-mono">{accountDeleteErrorDetails.table}</span></p>}
+                  {accountDeleteErrorDetails?.code && <p>Code: <span className="font-mono">{accountDeleteErrorDetails.code}</span></p>}
+                  {accountDeleteErrorDetails?.details && <p>Details: {accountDeleteErrorDetails.details}</p>}
+                  {accountDeleteErrorDetails?.hint && <p>Hint: {accountDeleteErrorDetails.hint}</p>}
+                </div>
+              )}
+              {accountDeleteManageBillingUrl && BILLING_ENABLED && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.open(accountDeleteManageBillingUrl, '_blank');
+                  }}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500 text-zinc-900 text-xs font-semibold hover:bg-amber-400 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Manage Billing
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAccountDeleteModalOpen(false)}
+              className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteAccount}
+              disabled={!canDeleteAccountNow || accountDeleteConfirm !== 'DELETE' || accountDeleteSubmitting}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {accountDeleteSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+              Permanently delete account
             </button>
           </div>
         </div>

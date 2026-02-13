@@ -20,6 +20,7 @@ const BILLING_EXEMPT_PREFIXES = [
   '/pricing',
   '/start',
   '/onboarding',
+  '/demo',
 ];
 
 const BILLING_EXEMPT_EXACT = ['/', '/restaurants', '/start', '/onboarding'];
