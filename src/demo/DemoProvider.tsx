@@ -5,15 +5,12 @@ import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { DEMO_DATA } from './mockData';
 import { DemoInterceptModal } from './DemoInterceptModal';
-
-// ---------------------------------------------------------------------------
-// Context — lets child components check if demo mode is active
-// ---------------------------------------------------------------------------
+import type { Shift } from '../types';
 
 interface DemoContextValue {
   isDemo: true;
-  /** Show the intercept modal for a given action label */
   intercept: (action: string) => void;
+  resetDemo: () => void;
 }
 
 const DemoContext = createContext<DemoContextValue | null>(null);
@@ -22,14 +19,132 @@ export function useDemoContext() {
   return useContext(DemoContext);
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+type ScheduleStoreState = ReturnType<typeof useScheduleStore.getState>;
+type AuthStoreState = ReturnType<typeof useAuthStore.getState>;
 
-/**
- * Creates a function that, when called, shows the signup intercept modal
- * instead of performing the real write operation.
- */
+type DemoSnapshot = {
+  employees: ScheduleStoreState['employees'];
+  shifts: ScheduleStoreState['shifts'];
+  timeOffRequests: ScheduleStoreState['timeOffRequests'];
+  blockedDayRequests: ScheduleStoreState['blockedDayRequests'];
+  businessHours: ScheduleStoreState['businessHours'];
+  coreHours: ScheduleStoreState['coreHours'];
+  scheduleViewSettings: ScheduleStoreState['scheduleViewSettings'];
+  locations: ScheduleStoreState['locations'];
+  dropRequests: ScheduleStoreState['dropRequests'];
+  chatMessages: ScheduleStoreState['chatMessages'];
+  selectedDate: string;
+  viewMode: ScheduleStoreState['viewMode'];
+  continuousDays: ScheduleStoreState['continuousDays'];
+  scheduleMode: ScheduleStoreState['scheduleMode'];
+  selectedSections: ScheduleStoreState['selectedSections'];
+  selectedEmployeeIds: ScheduleStoreState['selectedEmployeeIds'];
+  workingTodayOnly: ScheduleStoreState['workingTodayOnly'];
+};
+
+type PersistedPayload = {
+  updatedAt: number;
+  state: DemoSnapshot;
+};
+
+const DEMO_SESSION_ID_KEY = 'crewshyft_demo:session_id';
+const DEMO_STORE_PREFIX = 'crewshyft_demo';
+const DEMO_TTL_MS = 60 * 60 * 1000;
+const PERSIST_DEBOUNCE_MS = 250;
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function createSeedSnapshot(): DemoSnapshot {
+  return {
+    employees: cloneJson(DEMO_DATA.employees),
+    shifts: cloneJson(DEMO_DATA.shifts),
+    timeOffRequests: cloneJson(DEMO_DATA.timeOffRequests),
+    blockedDayRequests: cloneJson(DEMO_DATA.blockedDayRequests),
+    businessHours: cloneJson(DEMO_DATA.businessHours),
+    coreHours: cloneJson(DEMO_DATA.coreHours),
+    scheduleViewSettings: cloneJson(DEMO_DATA.scheduleViewSettings),
+    locations: cloneJson(DEMO_DATA.locations),
+    dropRequests: cloneJson(DEMO_DATA.dropRequests),
+    chatMessages: cloneJson(DEMO_DATA.chatMessages),
+    selectedDate: new Date().toISOString(),
+    viewMode: 'day',
+    continuousDays: false,
+    scheduleMode: 'published',
+    selectedSections: ['kitchen', 'front', 'bar', 'management'],
+    selectedEmployeeIds: cloneJson(DEMO_DATA.employees.map((employee) => employee.id)),
+    workingTodayOnly: false,
+  };
+}
+
+function getStoreKey(sessionId: string) {
+  return `${DEMO_STORE_PREFIX}:${sessionId}:store`;
+}
+
+function ensureSessionId() {
+  const existing = sessionStorage.getItem(DEMO_SESSION_ID_KEY);
+  if (existing) return existing;
+  const generated =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `demo-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  sessionStorage.setItem(DEMO_SESSION_ID_KEY, generated);
+  return generated;
+}
+
+function readSnapshotFromStorage(storeKey: string): DemoSnapshot | null {
+  const raw = sessionStorage.getItem(storeKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as PersistedPayload;
+    if (!parsed?.state || typeof parsed.updatedAt !== 'number') return null;
+    if (Date.now() - parsed.updatedAt > DEMO_TTL_MS) {
+      sessionStorage.removeItem(storeKey);
+      return null;
+    }
+    return parsed.state;
+  } catch {
+    return null;
+  }
+}
+
+function getShiftLoadCounts(shifts: Shift[]) {
+  return {
+    total: shifts.length,
+    visible: shifts.length,
+  };
+}
+
+function createDemoShiftId() {
+  return `demo-shift-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function shiftRangeKey(shift: Shift) {
+  return [
+    shift.employeeId,
+    shift.date,
+    shift.startHour,
+    shift.endHour,
+    shift.job ?? '',
+    shift.locationId ?? '',
+    shift.notes ?? '',
+  ].join('|');
+}
+
+function resolveShiftPayRate(
+  state: ScheduleStoreState,
+  shift: Pick<Shift, 'employeeId' | 'job' | 'payRate'>,
+) {
+  if (typeof shift.payRate === 'number') return shift.payRate;
+  const employee = state.employees.find((item) => item.id === shift.employeeId);
+  if (!employee) return undefined;
+  if (shift.job && employee.jobPay && typeof employee.jobPay[shift.job] === 'number') {
+    return employee.jobPay[shift.job];
+  }
+  return employee.hourlyPay;
+}
+
 function makeInterceptor<T extends (...args: any[]) => any>(
   action: string,
   interceptFn: (action: string) => void,
@@ -37,43 +152,23 @@ function makeInterceptor<T extends (...args: any[]) => any>(
 ) {
   return ((..._args: any[]) => {
     interceptFn(action);
-    // Return a resolved promise matching the expected signature
     if (returnValue !== undefined) return Promise.resolve(returnValue);
     return Promise.resolve({ success: false, error: 'Demo mode' });
   }) as unknown as T;
 }
 
-// ---------------------------------------------------------------------------
-// Provider
-// ---------------------------------------------------------------------------
-
 interface DemoProviderProps {
   children: React.ReactNode;
 }
 
-/**
- * Wraps children in demo mode.
- *
- * **Technical approach — Direct store override:**
- *
- * Both `useScheduleStore` and `useAuthStore` are global Zustand singletons.
- * Components read from them via hooks (`useScheduleStore()`). We:
- *
- * 1. Snapshot the current store state on mount.
- * 2. Replace store state with mock data (employees, shifts, settings, etc.).
- * 3. Replace every write method (addShift, updateShift, deleteShift,
- *    publishWeekDraft, etc.) with an interceptor that shows the signup modal.
- * 4. Leave read-only methods and UI-navigation methods untouched so the
- *    user can freely switch views, dates, toggle sections, etc.
- * 5. Restore the original state on unmount so navigating away from /demo
- *    returns the app to its normal state.
- *
- * This avoids forking components, creating parallel stores, or using React
- * context to shadow Zustand — the simplest approach with zero changes to
- * existing components.
- */
 export function DemoProvider({ children }: DemoProviderProps) {
   const [interceptAction, setInterceptAction] = useState<string | null>(null);
+
+  const scheduleOriginals = useRef<ScheduleStoreState | null>(null);
+  const authOriginals = useRef<AuthStoreState | null>(null);
+  const storeKeyRef = useRef<string | null>(null);
+  const persistTimerRef = useRef<number | null>(null);
+  const restoringRef = useRef(false);
 
   const intercept = useCallback((action: string) => {
     setInterceptAction(action);
@@ -83,111 +178,360 @@ export function DemoProvider({ children }: DemoProviderProps) {
     setInterceptAction(null);
   }, []);
 
-  // Track originals so we can restore on unmount
-  const scheduleOriginals = useRef<Record<string, any> | null>(null);
-  const authOriginals = useRef<Record<string, any> | null>(null);
-
-  useEffect(() => {
-    // -----------------------------------------------------------------------
-    // 1. Snapshot originals
-    // -----------------------------------------------------------------------
-    const scheduleState = useScheduleStore.getState();
-    const authState = useAuthStore.getState();
-
-    scheduleOriginals.current = { ...scheduleState };
-    authOriginals.current = { ...authState };
-
-    // -----------------------------------------------------------------------
-    // 2. Build intercepted write methods for the schedule store
-    // -----------------------------------------------------------------------
-    const i = (action: string) => intercept(action);
-
-    const scheduleOverrides: Record<string, any> = {
-      // -- Data state --
-      employees: DEMO_DATA.employees,
-      shifts: DEMO_DATA.shifts,
-      timeOffRequests: DEMO_DATA.timeOffRequests,
-      blockedDayRequests: DEMO_DATA.blockedDayRequests,
-      businessHours: DEMO_DATA.businessHours,
-      coreHours: DEMO_DATA.coreHours,
-      scheduleViewSettings: DEMO_DATA.scheduleViewSettings,
-      locations: DEMO_DATA.locations,
-      dropRequests: DEMO_DATA.dropRequests,
-      chatMessages: DEMO_DATA.chatMessages,
-      isHydrated: true,
-
-      // -- UI defaults --
-      selectedDate: new Date(),
-      viewMode: 'day' as const,
-      scheduleMode: 'published' as const,
-      selectedSections: ['kitchen', 'front', 'bar', 'management'],
-      selectedEmployeeIds: DEMO_DATA.employees.map((e) => e.id),
-      workingTodayOnly: false,
+  const applySnapshotToStore = useCallback((snapshot: DemoSnapshot) => {
+    const selectedDate = new Date(snapshot.selectedDate);
+    useScheduleStore.setState({
+      employees: cloneJson(snapshot.employees),
+      shifts: cloneJson(snapshot.shifts),
+      timeOffRequests: cloneJson(snapshot.timeOffRequests),
+      blockedDayRequests: cloneJson(snapshot.blockedDayRequests),
+      businessHours: cloneJson(snapshot.businessHours),
+      coreHours: cloneJson(snapshot.coreHours),
+      scheduleViewSettings: cloneJson(snapshot.scheduleViewSettings),
+      locations: cloneJson(snapshot.locations),
+      dropRequests: cloneJson(snapshot.dropRequests),
+      chatMessages: cloneJson(snapshot.chatMessages),
+      selectedDate: Number.isNaN(selectedDate.getTime()) ? new Date() : selectedDate,
+      viewMode: snapshot.viewMode,
+      continuousDays: Boolean(snapshot.continuousDays),
+      scheduleMode: snapshot.scheduleMode,
+      selectedSections: cloneJson(snapshot.selectedSections),
+      selectedEmployeeIds: cloneJson(snapshot.selectedEmployeeIds),
+      workingTodayOnly: Boolean(snapshot.workingTodayOnly),
       modalType: null,
       modalData: null,
       toast: null,
-      shiftLoadCounts: {
-        total: DEMO_DATA.shifts.length,
-        visible: DEMO_DATA.shifts.length,
-      },
+      shiftLoadCounts: getShiftLoadCounts(snapshot.shifts),
+      isHydrated: true,
+      lastAppliedWorkingTodayKey: null,
+    });
+  }, []);
 
-      // -- No-op the Supabase data loaders --
+  const persistNow = useCallback(() => {
+    const storeKey = storeKeyRef.current;
+    if (!storeKey) return;
+    const state = useScheduleStore.getState();
+    const snapshot: DemoSnapshot = {
+      employees: cloneJson(state.employees),
+      shifts: cloneJson(state.shifts),
+      timeOffRequests: cloneJson(state.timeOffRequests),
+      blockedDayRequests: cloneJson(state.blockedDayRequests),
+      businessHours: cloneJson(state.businessHours),
+      coreHours: cloneJson(state.coreHours),
+      scheduleViewSettings: cloneJson(state.scheduleViewSettings),
+      locations: cloneJson(state.locations),
+      dropRequests: cloneJson(state.dropRequests),
+      chatMessages: cloneJson(state.chatMessages),
+      selectedDate: state.selectedDate.toISOString(),
+      viewMode: state.viewMode,
+      continuousDays: state.continuousDays,
+      scheduleMode: state.scheduleMode,
+      selectedSections: cloneJson(state.selectedSections),
+      selectedEmployeeIds: cloneJson(state.selectedEmployeeIds),
+      workingTodayOnly: state.workingTodayOnly,
+    };
+    const payload: PersistedPayload = {
+      updatedAt: Date.now(),
+      state: snapshot,
+    };
+    sessionStorage.setItem(storeKey, JSON.stringify(payload));
+  }, []);
+
+  const resetDemo = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const sessionId = ensureSessionId();
+    const storeKey = getStoreKey(sessionId);
+    storeKeyRef.current = storeKey;
+    sessionStorage.removeItem(storeKey);
+    const seed = createSeedSnapshot();
+    applySnapshotToStore(seed);
+    persistNow();
+    useScheduleStore.getState().showToast('Demo reset complete.', 'success');
+  }, [applySnapshotToStore, persistNow]);
+
+  useEffect(() => {
+    const scheduleState = useScheduleStore.getState();
+    const authState = useAuthStore.getState();
+    scheduleOriginals.current = { ...scheduleState };
+    authOriginals.current = { ...authState };
+
+    const sessionId = ensureSessionId();
+    const storeKey = getStoreKey(sessionId);
+    storeKeyRef.current = storeKey;
+
+    const hydratedSnapshot = readSnapshotFromStorage(storeKey) ?? createSeedSnapshot();
+
+    const interceptOnly = (action: string) => intercept(action);
+
+    const scheduleOverrides: Partial<ScheduleStoreState> = {
       loadRestaurantData: async () => {},
       loadCoreHours: async () => {},
       hydrate: () => {},
 
-      // -- Intercept all write/mutation operations --
-      addShift: makeInterceptor('add a shift', i),
-      updateShift: makeInterceptor('edit a shift', i),
-      deleteShift: makeInterceptor('delete a shift', i),
-      publishWeekDraft: makeInterceptor('publish the schedule', i),
-      publishDraftRange: makeInterceptor('publish the schedule', i),
-      seedDraftWeekFromPublished: makeInterceptor('seed a draft week', i, {
-        seeded: false,
-        insertedCount: 0,
-        skippedCount: 0,
-        sourceCount: 0,
-        error: 'Demo mode',
-      }),
-      copyPreviousDayIntoDraft: makeInterceptor('copy shifts', i),
-      saveCoreHours: makeInterceptor('save core hours', i),
-      addTimeOffRequest: makeInterceptor('request time off', i),
-      reviewTimeOffRequest: makeInterceptor('review a time-off request', i),
-      cancelTimeOffRequest: makeInterceptor('cancel a time-off request', i),
-      submitBlockedDayRequest: makeInterceptor('block a day', i),
-      reviewBlockedDayRequest: makeInterceptor('review a blocked day', i),
-      cancelBlockedDayRequest: makeInterceptor('cancel a blocked day', i),
-      createImmediateBlockedDay: makeInterceptor('create a blocked day', i),
-      updateBlockedDay: makeInterceptor('update a blocked day', i),
-      deleteBlockedDay: makeInterceptor('delete a blocked day', i),
-      createBlockedPeriod: makeInterceptor('block a period', i),
-      deleteBlockedPeriod: makeInterceptor('remove a blocked period', i),
-      createDropRequest: () => i('drop a shift'),
-      acceptDropRequest: makeInterceptor('accept a shift pickup', i),
-      cancelDropRequest: () => i('cancel a drop request'),
-      sendChatMessage: () => i('send a message'),
+      addShift: async (shift) => {
+        if (!shift.employeeId || !shift.date || shift.startHour >= shift.endHour) {
+          return { success: false, error: 'Invalid shift values.' };
+        }
 
-      // -- Keep read & navigation methods from the real store --
-      // (they don't need interception — they only modify local state)
+        const state = useScheduleStore.getState();
+        const nextShift: Shift = {
+          ...shift,
+          id: createDemoShiftId(),
+          scheduleState: shift.scheduleState ?? (state.scheduleMode === 'draft' ? 'draft' : 'published'),
+          payRate: resolveShiftPayRate(state, shift),
+        };
+        const nextShifts = [...state.shifts, nextShift];
+        useScheduleStore.setState({
+          shifts: nextShifts,
+          shiftLoadCounts: getShiftLoadCounts(nextShifts),
+        });
+        return { success: true };
+      },
+
+      updateShift: async (id, updates) => {
+        const state = useScheduleStore.getState();
+        const target = state.shifts.find((item) => item.id === id);
+        if (!target) {
+          return { success: false, error: 'Shift not found.' };
+        }
+
+        const nextScheduleState =
+          updates.scheduleState ??
+          (state.scheduleMode === 'draft' ? 'draft' : target.scheduleState ?? 'published');
+
+        const merged: Shift = {
+          ...target,
+          ...updates,
+          scheduleState: nextScheduleState,
+        };
+        merged.payRate = resolveShiftPayRate(state, merged);
+
+        const nextShifts = state.shifts.map((item) => (item.id === id ? merged : item));
+        useScheduleStore.setState({
+          shifts: nextShifts,
+          shiftLoadCounts: getShiftLoadCounts(nextShifts),
+        });
+        return { success: true };
+      },
+
+      deleteShift: async (id) => {
+        const state = useScheduleStore.getState();
+        const target = state.shifts.find((item) => item.id === id);
+        if (!target) {
+          return { success: false, error: 'Shift not found.' };
+        }
+
+        if (state.scheduleMode === 'draft' && target.scheduleState !== 'draft') {
+          const nextShifts = state.shifts.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  scheduleState: 'draft' as const,
+                  isBlocked: true,
+                }
+              : item,
+          );
+          useScheduleStore.setState({
+            shifts: nextShifts,
+            shiftLoadCounts: getShiftLoadCounts(nextShifts),
+          });
+          return { success: true };
+        }
+
+        const nextShifts = state.shifts.filter((item) => item.id !== id);
+        useScheduleStore.setState({
+          shifts: nextShifts,
+          shiftLoadCounts: getShiftLoadCounts(nextShifts),
+        });
+        return { success: true };
+      },
+
+      publishWeekDraft: async ({ weekStartDate, weekEndDate }) => {
+        const result = await useScheduleStore.getState().publishDraftRange({
+          startDate: weekStartDate,
+          endDate: weekEndDate,
+        });
+        return {
+          success: result.success,
+          error: result.error,
+          deletedPublished: result.deletedCount,
+          promotedDrafts: result.publishedCount,
+          dedupedDrafts: 0,
+        };
+      },
+
+      publishDraftRange: async ({ startDate, endDate }) => {
+        const state = useScheduleStore.getState();
+        const inRange = state.shifts.filter(
+          (shift) => shift.date >= startDate && shift.date <= endDate,
+        );
+        const outsideRange = state.shifts.filter(
+          (shift) => shift.date < startDate || shift.date > endDate,
+        );
+
+        const publishedBase = inRange.filter((shift) => shift.scheduleState !== 'draft');
+        const draftRows = inRange.filter((shift) => shift.scheduleState === 'draft');
+        const nextPublished = [...publishedBase];
+        let deletedCount = 0;
+        let publishedCount = 0;
+
+        draftRows.forEach((draft) => {
+          const key = shiftRangeKey(draft);
+          const publishedIndex = nextPublished.findIndex((candidate) => shiftRangeKey(candidate) === key);
+          if (publishedIndex !== -1) {
+            nextPublished.splice(publishedIndex, 1);
+            deletedCount += 1;
+          }
+
+          if (draft.isBlocked) {
+            return;
+          }
+
+          nextPublished.push({
+            ...draft,
+            scheduleState: 'published',
+            isBlocked: false,
+          });
+          publishedCount += 1;
+        });
+
+        const nextShifts = [...outsideRange, ...nextPublished];
+        useScheduleStore.setState({
+          shifts: nextShifts,
+          shiftLoadCounts: getShiftLoadCounts(nextShifts),
+        });
+
+        return { success: true, publishedCount, deletedCount };
+      },
+
+      seedDraftWeekFromPublished: async ({ weekStartDate, weekEndDate }) => {
+        const state = useScheduleStore.getState();
+        const source = state.shifts.filter(
+          (shift) =>
+            shift.scheduleState === 'published' &&
+            shift.date >= weekStartDate &&
+            shift.date <= weekEndDate &&
+            !shift.isBlocked,
+        );
+        const existingDraftKeys = new Set(
+          state.shifts
+            .filter(
+              (shift) =>
+                shift.scheduleState === 'draft' &&
+                shift.date >= weekStartDate &&
+                shift.date <= weekEndDate,
+            )
+            .map((shift) => shiftRangeKey(shift)),
+        );
+
+        const draftRows = source
+          .filter((shift) => !existingDraftKeys.has(shiftRangeKey(shift)))
+          .map((shift) => ({
+            ...shift,
+            id: createDemoShiftId(),
+            scheduleState: 'draft' as const,
+          }));
+
+        if (draftRows.length) {
+          const nextShifts = [...state.shifts, ...draftRows];
+          useScheduleStore.setState({
+            shifts: nextShifts,
+            shiftLoadCounts: getShiftLoadCounts(nextShifts),
+          });
+        }
+
+        return {
+          seeded: draftRows.length > 0,
+          insertedCount: draftRows.length,
+          skippedCount: source.length - draftRows.length,
+          sourceCount: source.length,
+        };
+      },
+
+      copyPreviousDayIntoDraft: async (selectedDate) => {
+        const state = useScheduleStore.getState();
+        const targetDate = new Date(selectedDate);
+        targetDate.setHours(0, 0, 0, 0);
+        const sourceDate = new Date(targetDate);
+        sourceDate.setDate(sourceDate.getDate() - 1);
+
+        const targetYmd = targetDate.toISOString().slice(0, 10);
+        const sourceYmd = sourceDate.toISOString().slice(0, 10);
+
+        const sourceRows = state.shifts.filter(
+          (shift) => shift.scheduleState === 'published' && shift.date === sourceYmd && !shift.isBlocked,
+        );
+        if (sourceRows.length === 0) {
+          return { success: true, insertedCount: 0, skippedCount: 0, sourceCount: 0 };
+        }
+
+        const targetKeys = new Set(
+          state.shifts
+            .filter((shift) => shift.date === targetYmd && !shift.isBlocked)
+            .map((shift) => shiftRangeKey(shift)),
+        );
+
+        const insertedRows: Shift[] = [];
+        sourceRows.forEach((shift) => {
+          const key = shiftRangeKey({ ...shift, date: targetYmd });
+          if (targetKeys.has(key)) return;
+          insertedRows.push({
+            ...shift,
+            id: createDemoShiftId(),
+            date: targetYmd,
+            scheduleState: 'draft',
+          });
+          targetKeys.add(key);
+        });
+
+        if (insertedRows.length > 0) {
+          const nextShifts = [...state.shifts, ...insertedRows];
+          useScheduleStore.setState({
+            shifts: nextShifts,
+            shiftLoadCounts: getShiftLoadCounts(nextShifts),
+          });
+        }
+
+        return {
+          success: true,
+          insertedCount: insertedRows.length,
+          skippedCount: sourceRows.length - insertedRows.length,
+          sourceCount: sourceRows.length,
+        };
+      },
+
+      saveCoreHours: makeInterceptor('save core hours', interceptOnly),
+      addTimeOffRequest: makeInterceptor('request time off', interceptOnly),
+      reviewTimeOffRequest: makeInterceptor('review a time-off request', interceptOnly),
+      cancelTimeOffRequest: makeInterceptor('cancel a time-off request', interceptOnly),
+      submitBlockedDayRequest: makeInterceptor('block a day', interceptOnly),
+      reviewBlockedDayRequest: makeInterceptor('review a blocked day', interceptOnly),
+      cancelBlockedDayRequest: makeInterceptor('cancel a blocked day', interceptOnly),
+      createImmediateBlockedDay: makeInterceptor('create a blocked day', interceptOnly),
+      updateBlockedDay: makeInterceptor('update a blocked day', interceptOnly),
+      deleteBlockedDay: makeInterceptor('delete a blocked day', interceptOnly),
+      createBlockedPeriod: makeInterceptor('block a period', interceptOnly),
+      deleteBlockedPeriod: makeInterceptor('remove a blocked period', interceptOnly),
+      createDropRequest: () => interceptOnly('drop a shift'),
+      acceptDropRequest: makeInterceptor('accept a shift pickup', interceptOnly),
+      cancelDropRequest: () => interceptOnly('cancel a drop request'),
+      sendChatMessage: () => interceptOnly('send a message'),
     };
 
     useScheduleStore.setState(scheduleOverrides);
+    applySnapshotToStore(hydratedSnapshot);
 
-    // -----------------------------------------------------------------------
-    // 3. Override auth store with demo user
-    // -----------------------------------------------------------------------
-    const authOverrides: Record<string, any> = {
-      currentUser: DEMO_DATA.currentUser,
-      userProfiles: [DEMO_DATA.currentUser],
-      accessibleRestaurants: DEMO_DATA.accessibleRestaurants,
+    const authOverrides: Partial<AuthStoreState> = {
+      currentUser: cloneJson(DEMO_DATA.currentUser),
+      userProfiles: [cloneJson(DEMO_DATA.currentUser)],
+      accessibleRestaurants: cloneJson(DEMO_DATA.accessibleRestaurants),
       pendingInvitations: [],
       isInitialized: true,
       activeRestaurantId: DEMO_DATA.orgId,
       activeRestaurantCode: DEMO_DATA.restaurant.restaurantCode,
-      subscriptionStatus: 'active' as const,
+      subscriptionStatus: 'active',
       subscriptionDetails: null,
 
-      // No-op auth operations
       init: async () => {},
       signIn: async () => ({ error: 'Demo mode' }),
       signOut: async () => {},
@@ -197,27 +541,47 @@ export function DemoProvider({ children }: DemoProviderProps) {
       setActiveOrganization: () => {},
       clearActiveOrganization: () => {},
       updateProfile: async () => {
-        i('update your profile');
+        interceptOnly('update your profile');
         return { success: false, error: 'Demo mode' };
       },
     };
-
     useAuthStore.setState(authOverrides);
 
-    // -----------------------------------------------------------------------
-    // 4. Restore originals on unmount
-    // -----------------------------------------------------------------------
+    const unsubscribe = useScheduleStore.subscribe(() => {
+      if (restoringRef.current) return;
+      if (persistTimerRef.current !== null) {
+        window.clearTimeout(persistTimerRef.current);
+      }
+      persistTimerRef.current = window.setTimeout(() => {
+        persistTimerRef.current = null;
+        persistNow();
+      }, PERSIST_DEBOUNCE_MS);
+    });
+
+    persistNow();
+
     return () => {
+      unsubscribe();
+      if (persistTimerRef.current !== null) {
+        window.clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+      }
+      restoringRef.current = true;
       if (scheduleOriginals.current) {
         useScheduleStore.setState(scheduleOriginals.current);
       }
       if (authOriginals.current) {
         useAuthStore.setState(authOriginals.current);
       }
+      restoringRef.current = false;
     };
-  }, [intercept]);
+  }, [applySnapshotToStore, intercept, persistNow]);
 
-  const contextValue: DemoContextValue = { isDemo: true, intercept };
+  const contextValue: DemoContextValue = {
+    isDemo: true,
+    intercept,
+    resetDemo,
+  };
 
   return (
     <DemoContext.Provider value={contextValue}>

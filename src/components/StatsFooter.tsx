@@ -22,32 +22,32 @@ function parseTimeToDecimal(value?: string | null): number {
   return Number.isNaN(asNumber) ? 0 : asNumber;
 }
 
-export function StatsFooter() {
+type StatsFooterProps = {
+  compact?: boolean;
+};
+
+export function StatsFooter({ compact = false }: StatsFooterProps) {
   const {
     selectedDate,
     viewMode,
     selectedEmployeeIds,
-    shifts,      // Subscribe directly to shifts for reactivity
-    employees,   // Subscribe directly to employees for reactivity
+    shifts,
+    employees,
     coreHours,
     scheduleViewSettings,
     getShiftsForRestaurant,
   } = useScheduleStore();
   const { activeRestaurantId, currentUser } = useAuthStore();
 
-  // Filter to restaurant scope - these will recompute when shifts/employees change
-  const scopedEmployees = useMemo(() =>
-    activeRestaurantId ? employees.filter((e) => e.restaurantId === activeRestaurantId) : [],
-    [employees, activeRestaurantId]
+  const scopedEmployees = useMemo(
+    () => (activeRestaurantId ? employees.filter((e) => e.restaurantId === activeRestaurantId) : []),
+    [employees, activeRestaurantId],
   );
-  const scopedShifts = useMemo(() =>
-    activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : [],
-    [activeRestaurantId, shifts, getShiftsForRestaurant]
+  const scopedShifts = useMemo(
+    () => (activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : []),
+    [activeRestaurantId, shifts, getShiftsForRestaurant],
   );
-  const activeEmployees = useMemo(() => 
-    scopedEmployees.filter((e) => e.isActive),
-    [scopedEmployees]
-  );
+  const activeEmployees = useMemo(() => scopedEmployees.filter((e) => e.isActive), [scopedEmployees]);
 
   const role = getUserRole(currentUser?.role);
   const isManager = isManagerRole(role);
@@ -62,10 +62,8 @@ export function StatsFooter() {
   const monthEndDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 1);
   const monthStart = dateToString(monthStartDate);
   const monthEnd = dateToString(monthEndDate);
-  const rangeStart =
-    viewMode === 'week' ? weekStart : viewMode === 'month' ? monthStart : dayString;
-  const rangeEnd =
-    viewMode === 'week' ? weekEnd : viewMode === 'month' ? monthEnd : dayString;
+  const rangeStart = viewMode === 'week' ? weekStart : viewMode === 'month' ? monthStart : dayString;
+  const rangeEnd = viewMode === 'week' ? weekEnd : viewMode === 'month' ? monthEnd : dayString;
 
   const myEmployeeId = isEmployee ? currentUser?.id ?? null : null;
 
@@ -88,28 +86,25 @@ export function StatsFooter() {
     });
   }, [scopedShifts, rangeStart, rangeEnd, viewMode, isEmployee, myEmployeeId, selectedEmployeeIds]);
 
-  const totalHours = useMemo(() => 
-    relevantShifts.reduce((sum, shift) => sum + (shift.endHour - shift.startHour), 0),
-    [relevantShifts]
-  );
-  
-  const workingCount = useMemo(() => 
-    new Set(relevantShifts.map((s) => s.employeeId)).size,
-    [relevantShifts]
+  const totalHours = useMemo(
+    () => relevantShifts.reduce((sum, shift) => sum + (shift.endHour - shift.startHour), 0),
+    [relevantShifts],
   );
 
-  const shiftsBySection = useMemo(() => 
-    relevantShifts.reduce((acc, shift) => {
-      const employee = scopedEmployees.find((e) => e.id === shift.employeeId);
-      if (employee) {
-        acc[employee.section] = (acc[employee.section] || 0) + 1;
-      }
-      return acc;
-    }, {} as Record<Section, number>),
-    [relevantShifts, scopedEmployees]
+  const workingCount = useMemo(() => new Set(relevantShifts.map((s) => s.employeeId)).size, [relevantShifts]);
+
+  const shiftsBySection = useMemo(
+    () =>
+      relevantShifts.reduce((acc, shift) => {
+        const employee = scopedEmployees.find((e) => e.id === shift.employeeId);
+        if (employee) {
+          acc[employee.section] = (acc[employee.section] || 0) + 1;
+        }
+        return acc;
+      }, {} as Record<Section, number>),
+    [relevantShifts, scopedEmployees],
   );
 
-  // Calculate estimated labor cost using shift.payRate (from DB) or fallback to employee rates
   const { estimatedCost, missingPayCount } = useMemo(() => {
     let total = 0;
     let missing = 0;
@@ -119,12 +114,10 @@ export function StatsFooter() {
       let rate = 0;
       let foundRate = false;
 
-      // Primary: use payRate from shift (set by DB trigger)
       if (shift.payRate !== undefined && shift.payRate > 0) {
         rate = shift.payRate;
         foundRate = true;
       } else {
-        // Fallback: look up from employee data
         const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
 
         if (shift.job && employee?.jobPay && employee.jobPay[shift.job] !== undefined) {
@@ -142,7 +135,7 @@ export function StatsFooter() {
       if (!foundRate && process.env.NODE_ENV === 'development') {
         const employee = scopedEmployees.find((emp) => emp.id === shift.employeeId);
         console.warn(
-          `[StatsFooter] Missing pay rate for shift ${shift.id}, employee ${employee?.name ?? shift.employeeId}, job: ${shift.job ?? 'none'}`
+          `[StatsFooter] Missing pay rate for shift ${shift.id}, employee ${employee?.name ?? shift.employeeId}, job: ${shift.job ?? 'none'}`,
         );
         missing++;
       }
@@ -214,7 +207,7 @@ export function StatsFooter() {
         shiftsForDate.forEach((shift) => {
           const overlap = Math.max(
             0,
-            Math.min(shift.endHour, range.end) - Math.max(shift.startHour, range.start)
+            Math.min(shift.endHour, range.end) - Math.max(shift.startHour, range.start),
           );
           covered += overlap;
         });
@@ -227,48 +220,61 @@ export function StatsFooter() {
     return (covered / totalCore) * 100;
   }, [coreHours, relevantShifts, selectedDate, viewMode, weekDates]);
 
+  const footerClassName = compact
+    ? 'fixed bottom-0 left-0 right-0 h-10 sm:h-11 bg-theme-secondary border-t border-theme-primary flex items-center px-2 sm:px-4 gap-2 sm:gap-5 shrink-0 transition-theme z-40'
+    : 'fixed bottom-0 left-0 right-0 h-12 sm:h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-3 sm:px-6 gap-3 sm:gap-8 shrink-0 transition-theme z-40';
+  const iconWrapClassName = compact
+    ? 'w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center'
+    : 'w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center';
+  const iconClassName = compact ? 'w-3 h-3 sm:w-3.5 sm:h-3.5' : 'w-3.5 h-3.5 sm:w-4 sm:h-4';
+  const labelClassName = compact
+    ? 'text-[9px] sm:text-[10px] text-theme-muted leading-tight'
+    : 'text-[10px] sm:text-xs text-theme-muted leading-tight';
+  const valueClassName = compact
+    ? 'text-[11px] sm:text-xs font-semibold text-theme-primary'
+    : 'text-xs sm:text-sm font-semibold text-theme-primary';
+  const sectionWrapClassName = compact
+    ? 'hidden lg:flex items-center gap-2 px-3 py-1 bg-theme-tertiary rounded-lg'
+    : 'hidden md:flex items-center gap-3 px-4 py-2 bg-theme-tertiary rounded-lg';
+
   return (
-    <footer className="fixed bottom-0 left-0 right-0 h-12 sm:h-14 bg-theme-secondary border-t border-theme-primary flex items-center px-3 sm:px-6 gap-3 sm:gap-8 shrink-0 transition-theme z-40">
-      {/* Hours - always visible */}
+    <footer className={footerClassName}>
       <div className="flex items-center gap-2">
-        <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
-          <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-400" />
+        <div className={`${iconWrapClassName} bg-blue-500/10`}>
+          <Clock className={`${iconClassName} text-blue-400`} />
         </div>
         <div>
-          <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">{isEmployee ? 'My Hours' : 'Total Hours'}</p>
-          <p className="text-xs sm:text-sm font-semibold text-theme-primary">{totalHours}h</p>
+          <p className={labelClassName}>{isEmployee ? 'My Hours' : 'Total Hours'}</p>
+          <p className={valueClassName}>{totalHours}h</p>
         </div>
       </div>
 
-      {/* Staff Working - always visible */}
       <div className="flex items-center gap-2">
-        <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-green-500/10 flex items-center justify-center">
-          <Users className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-green-400" />
+        <div className={`${iconWrapClassName} bg-green-500/10`}>
+          <Users className={`${iconClassName} text-green-400`} />
         </div>
         <div>
-          <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">Staff</p>
-          <p className="text-xs sm:text-sm font-semibold text-theme-primary">
+          <p className={labelClassName}>Staff</p>
+          <p className={valueClassName}>
             {workingCount}/{activeEmployees.length}
           </p>
         </div>
       </div>
 
-      {/* Coverage - core hours */}
       <div className="flex items-center gap-2">
-        <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
-          <Percent className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" />
+        <div className={`${iconWrapClassName} bg-amber-500/10`}>
+          <Percent className={`${iconClassName} text-amber-400`} />
         </div>
         <div>
-          <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">Coverage</p>
-          <p className="text-xs sm:text-sm font-semibold text-theme-primary">
-            {coveragePercent === null ? '—' : `${coveragePercent.toFixed(1)}%`}
+          <p className={labelClassName}>Coverage</p>
+          <p className={valueClassName}>
+            {coveragePercent === null ? '-' : `${coveragePercent.toFixed(1)}%`}
           </p>
         </div>
       </div>
 
-      {/* Section breakdown - hidden on mobile */}
-      <div className="hidden md:flex items-center gap-3 px-4 py-2 bg-theme-tertiary rounded-lg">
-        {(Object.keys(SECTIONS) as Section[]).map(section => {
+      <div className={sectionWrapClassName}>
+        {(Object.keys(SECTIONS) as Section[]).map((section) => {
           const count = shiftsBySection[section] || 0;
           return (
             <div key={section} className="flex items-center gap-1.5">
@@ -282,13 +288,12 @@ export function StatsFooter() {
         })}
       </div>
 
-      {/* Labor Cost - manager only, hidden on small screens */}
       {!isEmployee && (
         <>
           <div className="flex-1" />
           <div className="hidden sm:flex items-center gap-2">
-            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-purple-500/10 flex items-center justify-center relative">
-              <DollarSign className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-purple-400" />
+            <div className={`${iconWrapClassName} bg-purple-500/10 relative`}>
+              <DollarSign className={`${iconClassName} text-purple-400`} />
               {missingPayCount > 0 && (
                 <span
                   className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-amber-500 text-zinc-900 text-[8px] font-bold rounded-full flex items-center justify-center"
@@ -299,10 +304,8 @@ export function StatsFooter() {
               )}
             </div>
             <div>
-              <p className="text-[10px] sm:text-xs text-theme-muted leading-tight">Est. Labor</p>
-              <p className="text-xs sm:text-sm font-semibold text-theme-primary">
-                ${estimatedCost.toFixed(0)}
-              </p>
+              <p className={labelClassName}>Est. Labor</p>
+              <p className={valueClassName}>${estimatedCost.toFixed(0)}</p>
             </div>
           </div>
         </>

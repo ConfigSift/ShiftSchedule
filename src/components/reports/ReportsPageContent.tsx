@@ -15,6 +15,7 @@ import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
 import {
   getPublishedShiftsForDate,
+  getPublishedShiftsForWeek,
   fetchPublishedShiftsForWeek,
   renderReportToWindow,
 } from './report-utils';
@@ -29,7 +30,7 @@ import {
   generateDailyTimelineHTML,
   generateWeeklyScheduleHTML,
 } from './report-html';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 
 type ReportType = 'roster' | 'timeline' | 'weekly';
 
@@ -197,6 +198,7 @@ function ReportsToolbar({
 
 export function ReportsPageContent({ initialView, initialDate }: ReportsPageContentProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const {
     selectedDate,
     shifts,
@@ -217,6 +219,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
   const [weeklyShifts, setWeeklyShifts] = useState<Shift[]>([]);
   const [weeklyLoading, setWeeklyLoading] = useState(false);
   const [weeklyError, setWeeklyError] = useState<string | null>(null);
+  const isDemoRoute = pathname?.startsWith('/demo') ?? false;
 
   const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
 
@@ -265,6 +268,14 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
   // Fetch weekly shifts from Supabase when weekly tab is active
   useEffect(() => {
     if (activeReport !== 'weekly' || !activeRestaurantId) return;
+
+    if (isDemoRoute) {
+      setWeeklyError(null);
+      setWeeklyLoading(false);
+      setWeeklyShifts(getPublishedShiftsForWeek(shifts, weekStartYmd, weekEndYmd));
+      return;
+    }
+
     let cancelled = false;
     setWeeklyLoading(true);
     setWeeklyError(null);
@@ -281,7 +292,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
     return () => {
       cancelled = true;
     };
-  }, [activeReport, activeRestaurantId, weekStartYmd, weekEndYmd]);
+  }, [activeReport, activeRestaurantId, isDemoRoute, shifts, weekStartYmd, weekEndYmd]);
 
   // Navigation – day-level for daily reports, week-level for weekly
   const isWeekly = activeReport === 'weekly';
@@ -361,8 +372,8 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
       router.back();
       return;
     }
-    router.push('/dashboard');
-  }, [router]);
+    router.push(isDemoRoute ? '/demo' : '/dashboard');
+  }, [isDemoRoute, router]);
 
   const navLabel = isWeekly
     ? formatWeekNav(weekDates[0], weekDates[6])

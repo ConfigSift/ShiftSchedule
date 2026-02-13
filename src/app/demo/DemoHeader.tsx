@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Calendar,
@@ -13,19 +13,28 @@ import {
   Menu,
   X,
   MoreHorizontal,
+  RotateCcw,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter, usePathname } from 'next/navigation';
 import { useThemeStore } from '../../store/themeStore';
 import { useUIStore } from '../../store/uiStore';
+import { useScheduleStore } from '../../store/scheduleStore';
 import { useDemoContext } from '../../demo/DemoProvider';
 
-/**
- * Demo-specific header — same visual layout as the real Header but with
- * CrewShyft branding and no auth/billing items.
- */
+function toYMD(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export function DemoHeader() {
+  const router = useRouter();
+  const pathname = usePathname();
   const { theme, toggleTheme } = useThemeStore();
   const { toggleSidebar } = useUIStore();
+  const { openModal, selectedDate, viewMode } = useScheduleStore();
   const demo = useDemoContext();
 
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -33,7 +42,8 @@ export function DemoHeader() {
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const moreMenuButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Close menu on outside click / Escape
+  const isReportsPage = pathname.startsWith('/demo/reports');
+
   useEffect(() => {
     if (!moreMenuOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
@@ -53,7 +63,6 @@ export function DemoHeader() {
     };
   }, [moreMenuOpen]);
 
-  // Position more-menu portal
   useEffect(() => {
     if (!moreMenuOpen) return;
     const updatePosition = () => {
@@ -77,17 +86,23 @@ export function DemoHeader() {
     };
   }, [moreMenuOpen]);
 
-  const handleIntercept = (action: string) => {
-    demo?.intercept(action);
-    setMoreMenuOpen(false);
-  };
+  const handleIntercept = useCallback(
+    (action: string) => {
+      demo?.intercept(action);
+      setMoreMenuOpen(false);
+    },
+    [demo],
+  );
+
+  const handleReportsClick = useCallback(() => {
+    const view = viewMode === 'week' || viewMode === 'month' ? 'weekly' : 'roster';
+    router.push(`/demo/reports?view=${view}&date=${toYMD(selectedDate)}`);
+  }, [router, selectedDate, viewMode]);
 
   return (
     <header className="sticky top-0 z-50 h-14 sm:h-16 bg-theme-secondary border-b border-theme-primary transition-theme shrink-0">
       <div className="h-full px-2 sm:px-4 lg:px-6 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4 relative">
-        {/* Left: Logo + sidebar toggle + nav */}
         <div className="flex items-center gap-1 sm:gap-2 min-w-0">
-          {/* Mobile sidebar toggle */}
           <button
             onClick={toggleSidebar}
             className="md:hidden p-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
@@ -96,25 +111,27 @@ export function DemoHeader() {
             <Menu className="w-5 h-5" />
           </button>
 
-          {/* Logo */}
-          <div className="flex items-center gap-2 shrink-0">
+          <Link href="/demo" className="flex items-center gap-2 shrink-0">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
               <Calendar className="w-4 h-4 text-zinc-900" />
             </div>
             <span className="hidden sm:inline font-semibold text-theme-primary">CrewShyft</span>
-          </div>
+          </Link>
 
-          {/* Primary nav */}
           <nav className="flex items-center gap-1 sm:gap-2">
-            <button
-              className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
+            <Link
+              href="/demo"
+              className={`inline-flex items-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg transition-colors text-sm font-medium ${
+                !isReportsPage
+                  ? 'bg-theme-hover text-theme-primary'
+                  : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
+              }`}
               aria-label="Schedule"
             >
               <Calendar className="w-4 h-4" />
               <span className="hidden sm:inline">Schedule</span>
-            </button>
+            </Link>
 
-            {/* Staff — intercepted */}
             <button
               onClick={() => handleIntercept('manage staff')}
               className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
@@ -124,7 +141,6 @@ export function DemoHeader() {
               <span className="hidden lg:inline">Staff</span>
             </button>
 
-            {/* Requests — intercepted */}
             <button
               onClick={() => handleIntercept('review requests')}
               className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
@@ -136,18 +152,21 @@ export function DemoHeader() {
           </nav>
         </div>
 
-        {/* Center: Restaurant name */}
         <div className="flex items-center justify-center min-w-0">
           <span className="text-sm sm:text-base md:text-lg font-semibold text-theme-primary truncate max-w-[50vw] sm:max-w-[40vw]">
             Coastal Kitchen Demo
           </span>
         </div>
 
-        {/* Right: Actions */}
         <div className="flex items-center gap-1 sm:gap-2 min-w-0 w-full justify-end">
-          {/* Add Shift — intercepted */}
           <button
-            onClick={() => handleIntercept('add a shift')}
+            onClick={() => {
+              if (isReportsPage) {
+                router.push('/demo');
+                return;
+              }
+              openModal('addShift');
+            }}
             className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:shadow-lg text-sm font-medium"
             aria-label="Add Shift"
           >
@@ -155,17 +174,19 @@ export function DemoHeader() {
             <span className="hidden sm:inline">Add Shift</span>
           </button>
 
-          {/* Reports — intercepted */}
           <button
-            onClick={() => handleIntercept('view reports')}
-            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
+            onClick={handleReportsClick}
+            className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg transition-colors text-sm font-medium ${
+              isReportsPage
+                ? 'bg-theme-hover text-theme-primary'
+                : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
+            }`}
             aria-label="Reports"
           >
             <BarChart3 className="w-4 h-4" />
             <span className="hidden lg:inline">Reports</span>
           </button>
 
-          {/* More menu */}
           <div className="relative">
             <button
               ref={moreMenuButtonRef}
@@ -190,7 +211,6 @@ export function DemoHeader() {
                     zIndex: 1100,
                   }}
                 >
-                  {/* Mobile-only nav items */}
                   <div className="sm:hidden border-b border-theme-primary pb-2 mb-2">
                     <button
                       onClick={() => handleIntercept('manage staff')}
@@ -207,7 +227,7 @@ export function DemoHeader() {
                       Requests
                     </button>
                     <button
-                      onClick={() => handleIntercept('view reports')}
+                      onClick={handleReportsClick}
                       className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
                     >
                       <BarChart3 className="w-4 h-4" />
@@ -215,7 +235,17 @@ export function DemoHeader() {
                     </button>
                   </div>
 
-                  {/* Theme toggle */}
+                  <button
+                    onClick={() => {
+                      demo?.resetDemo();
+                      setMoreMenuOpen(false);
+                    }}
+                    className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    Reset Demo
+                  </button>
+
                   <button
                     onClick={() => {
                       toggleTheme();
@@ -227,7 +257,6 @@ export function DemoHeader() {
                     {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
                   </button>
 
-                  {/* Get Started CTA in menu */}
                   <div className="border-t border-theme-primary pt-2 mt-2">
                     <Link
                       href="/start"
@@ -243,7 +272,6 @@ export function DemoHeader() {
               )}
           </div>
 
-          {/* Get Started CTA — always visible on desktop */}
           <Link
             href="/start"
             className="hidden sm:inline-flex items-center px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-sm font-semibold"

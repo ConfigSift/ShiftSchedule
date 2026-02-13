@@ -11,6 +11,7 @@ import { getUserRole, isManagerRole } from '../utils/role';
 import { supabase } from '../lib/supabase/client';
 import { normalizeUserRow } from '../utils/userMapper';
 import { getWeekDates } from '../utils/timeUtils';
+import { useDemoContext } from '../demo/DemoProvider';
 
 const STORAGE_KEY = 'schedule.sidebarCollapsed';
 
@@ -35,6 +36,7 @@ export function StaffSidebar() {
 
   const { activeRestaurantId, currentUser } = useAuthStore();
   const { isSidebarOpen, closeSidebar } = useUIStore();
+  const demo = useDemoContext();
 
   const [expandedSections, setExpandedSections] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -282,6 +284,10 @@ export function StaffSidebar() {
   }, [allSelected, deselectAllEmployees, selectAllEmployeesForRestaurant, activeRestaurantId]);
 
   const openProfileForEmployee = useCallback(async (employeeId: string) => {
+    if (demo?.isDemo) {
+      demo.intercept('view full staff profiles');
+      return;
+    }
     if (!activeRestaurantId) return;
     const { data, error } = await supabase
       .from('users')
@@ -309,7 +315,7 @@ export function StaffSidebar() {
       jobPay: normalized.jobPay,
     });
     setProfileOpen(true);
-  }, [activeRestaurantId, showToast]);
+  }, [activeRestaurantId, demo, showToast]);
 
   const sidebarContent = (
     <>
