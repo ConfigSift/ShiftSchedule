@@ -2,6 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
+import { loadStripe } from '@stripe/stripe-js';
 import {
   ArrowLeft,
   ArrowRight,
@@ -33,6 +35,7 @@ import { supabase } from '@/lib/supabase/client';
 type OnboardingRole = 'manager' | null;
 type ManagerStep = 1 | 2 | 3;
 type PlanId = 'monthly' | 'annual';
+type SupportedCurrency = 'USD' | 'CAD' | 'EUR' | 'GBP' | 'AUD' | 'JPY' | 'BRL' | 'MXN' | 'SGD';
 
 type CreateIntentResponse = {
   intentId: string;
@@ -48,8 +51,12 @@ type CommitIntentResponse = {
   restaurantCode?: string | null;
 };
 
-type CheckoutSessionResponse = {
-  checkoutUrl?: string | null;
+type CreatePaymentIntentResponse = {
+  clientSecret?: string | null;
+  subscriptionId?: string | null;
+  customerId?: string | null;
+  currency?: string | null;
+  priceType?: PlanId | null;
   redirect?: string | null;
 };
 
@@ -58,7 +65,7 @@ type SubscriptionStatusResponse = {
   status?: string;
 };
 
-type FinalizeCheckoutResponse = {
+type FinalizePaymentElementResponse = {
   ok: boolean;
   active?: boolean;
   status?: string;
@@ -95,6 +102,46 @@ function detectTimezone(): string {
   } catch {
     return 'America/New_York';
   }
+}
+
+function detectCurrency(): SupportedCurrency {
+  const localeMap: Record<string, SupportedCurrency> = {
+    US: 'USD',
+    CA: 'CAD',
+    GB: 'GBP',
+    IE: 'EUR',
+    FR: 'EUR',
+    DE: 'EUR',
+    ES: 'EUR',
+    IT: 'EUR',
+    PT: 'EUR',
+    NL: 'EUR',
+    BE: 'EUR',
+    AU: 'AUD',
+    NZ: 'AUD',
+    JP: 'JPY',
+    SG: 'SGD',
+    BR: 'BRL',
+    MX: 'MXN',
+  };
+
+  try {
+    const locale = Intl.DateTimeFormat().resolvedOptions().locale;
+    const region = locale.split('-')[1]?.toUpperCase() ?? '';
+    if (region && localeMap[region]) return localeMap[region];
+  } catch {
+    // ignore
+  }
+
+  const timezone = detectTimezone();
+  if (timezone.startsWith('America/Toronto') || timezone.startsWith('America/Vancouver')) return 'CAD';
+  if (timezone.startsWith('Europe/')) return 'EUR';
+  if (timezone.startsWith('Asia/Tokyo')) return 'JPY';
+  if (timezone.startsWith('Asia/Singapore')) return 'SGD';
+  if (timezone.startsWith('Australia/')) return 'AUD';
+  if (timezone.startsWith('America/Sao_Paulo')) return 'BRL';
+  if (timezone.startsWith('America/Mexico_City')) return 'MXN';
+  return 'USD';
 }
 
 const COMMON_TIMEZONES = [
@@ -153,13 +200,25 @@ type OnboardingSessionState = {
   organizationId?: string;
   restaurantCode?: string;
   ownerName?: string;
+  currency?: SupportedCurrency;
 };
 
 const SESSION_KEY = 'crewshyft_onboarding';
 const STAFF_DRAFTS_KEY_PREFIX = 'crewshyft_setup_staff_drafts:';
 const FINALIZE_TIMEOUT_MS = 12_000;
-const CHECKOUT_POLL_INTERVAL_MS = 1_500;
-const CHECKOUT_POLL_MAX_MS = 120_000;
+const STRIPE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '';
+const stripePromise = STRIPE_PUBLISHABLE_KEY ? loadStripe(STRIPE_PUBLISHABLE_KEY) : null;
+const SUPPORTED_CURRENCIES: Array<{ value: SupportedCurrency; label: string }> = [
+  { value: 'USD', label: 'USD - US Dollar' },
+  { value: 'CAD', label: 'CAD - Canadian Dollar' },
+  { value: 'EUR', label: 'EUR - Euro' },
+  { value: 'GBP', label: 'GBP - British Pound' },
+  { value: 'AUD', label: 'AUD - Australian Dollar' },
+  { value: 'JPY', label: 'JPY - Japanese Yen' },
+  { value: 'BRL', label: 'BRL - Brazilian Real' },
+  { value: 'MXN', label: 'MXN - Mexican Peso' },
+  { value: 'SGD', label: 'SGD - Singapore Dollar' },
+];
 
 function buildUniformHours(openTime: string, closeTime: string): DayHoursRow[] {
   return Array.from({ length: 7 }, (_, i) => ({
@@ -268,11 +327,11 @@ export function OnboardingStepper() {
     if (!requestedStepParam) return null;
     return resolveManagerStep(requestedStepParam);
   }, [requestedStepParam]);
-  const checkoutParams = useMemo(
+  const paymentReturnParams = useMemo(
     () => ({
-      checkout: String(searchParams.get('checkout') ?? '').trim().toLowerCase(),
-      sessionId: String(searchParams.get('session_id') ?? '').trim(),
-      intentId: String(searchParams.get('intent_id') ?? '').trim(),
+      pe: String(searchParams.get('pe') ?? '').trim().toLowerCase(),
+      subscriptionId: String(searchParams.get('subscription_id') ?? '').trim(),
+      organizationId: String(searchParams.get('organization_id') ?? '').trim(),
     }),
     [searchParams],
   );
@@ -323,24 +382,24 @@ export function OnboardingStepper() {
     { name: '', email: '', role: 'Server', hourlyPay: '' },
     { name: '', email: '', role: 'Server', hourlyPay: '' },
   ]);
-  const [latestIntentId, setLatestIntentId] = useState<string | null>(null);
+  const [selectedCurrency, setSelectedCurrency] = useState<SupportedCurrency>(
+    () => loadSession().currency ?? detectCurrency(),
+  );
   const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<PlanId | null>(null);
   const [checkoutFinalizing, setCheckoutFinalizing] = useState(false);
+  const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
   const [checkoutError, setCheckoutError] = useState('');
   const [checkoutNotice, setCheckoutNotice] = useState('');
-  const [checkoutCanceled, setCheckoutCanceled] = useState(false);
   const [paymentReceived, setPaymentReceived] = useState(false);
   const [checkoutManageUrl, setCheckoutManageUrl] = useState<string | null>(null);
-  const [finalizeSessionId, setFinalizeSessionId] = useState<string | null>(null);
-  const [finalizeIntentId, setFinalizeIntentId] = useState<string | null>(null);
+  const [paymentClientSecret, setPaymentClientSecret] = useState<string | null>(null);
+  const [paymentSubscriptionId, setPaymentSubscriptionId] = useState<string | null>(null);
+  const [paymentPanelOpen, setPaymentPanelOpen] = useState(false);
   const [subscriptionActive, setSubscriptionActive] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState('none');
-  const handledCheckoutRef = useRef<string | null>(null);
+  const handledPaymentReturnRef = useRef<string | null>(null);
   const autoAdvanceTimeoutRef = useRef<number | null>(null);
-  const checkoutPollIntervalRef = useRef<number | null>(null);
-  const checkoutPollTimeoutRef = useRef<number | null>(null);
-  const checkoutPollInFlightRef = useRef(false);
 
   // General
   const [loading, setLoading] = useState(false);
@@ -376,14 +435,14 @@ export function OnboardingStepper() {
     } else if (role === 'manager' && managerStep > 1) {
       params.set('step', String(managerStep));
     }
-    if (checkoutParams.checkout) {
-      params.set('checkout', checkoutParams.checkout);
+    if (paymentReturnParams.pe) {
+      params.set('pe', paymentReturnParams.pe);
     }
-    if (checkoutParams.sessionId) {
-      params.set('session_id', checkoutParams.sessionId);
+    if (paymentReturnParams.subscriptionId) {
+      params.set('subscription_id', paymentReturnParams.subscriptionId);
     }
-    if (checkoutParams.intentId) {
-      params.set('intent_id', checkoutParams.intentId);
+    if (paymentReturnParams.organizationId) {
+      params.set('organization_id', paymentReturnParams.organizationId);
     }
     const qs = params.toString();
     const newUrl = `${pathname}${qs ? `?${qs}` : ''}`;
@@ -392,12 +451,12 @@ export function OnboardingStepper() {
     if (currentUrl === newUrl) return;
     window.history.replaceState({}, '', newUrl);
   }, [
-    checkoutParams.checkout,
-    checkoutParams.intentId,
-    checkoutParams.sessionId,
     isSetupWizard,
     managerStep,
     pathname,
+    paymentReturnParams.organizationId,
+    paymentReturnParams.pe,
+    paymentReturnParams.subscriptionId,
     role,
   ]);
 
@@ -406,13 +465,6 @@ export function OnboardingStepper() {
       if (autoAdvanceTimeoutRef.current !== null) {
         window.clearTimeout(autoAdvanceTimeoutRef.current);
       }
-      if (checkoutPollIntervalRef.current !== null) {
-        window.clearInterval(checkoutPollIntervalRef.current);
-      }
-      if (checkoutPollTimeoutRef.current !== null) {
-        window.clearTimeout(checkoutPollTimeoutRef.current);
-      }
-      checkoutPollInFlightRef.current = false;
     };
   }, []);
 
@@ -643,7 +695,6 @@ export function OnboardingStepper() {
         }
 
         const intentId = intentResult.data.intentId;
-        setLatestIntentId(intentId);
 
         // Commit the org
         const commitResult = await apiFetch<CommitIntentResponse>('/api/orgs/commit-intent', {
@@ -839,66 +890,30 @@ export function OnboardingStepper() {
     void refreshSubscriptionState();
   }, [role, managerStep, organizationId, refreshSubscriptionState]);
 
-  const clearCheckoutPolling = useCallback(() => {
-    if (checkoutPollIntervalRef.current !== null) {
-      window.clearInterval(checkoutPollIntervalRef.current);
-      checkoutPollIntervalRef.current = null;
-    }
-    if (checkoutPollTimeoutRef.current !== null) {
-      window.clearTimeout(checkoutPollTimeoutRef.current);
-      checkoutPollTimeoutRef.current = null;
-    }
-    checkoutPollInFlightRef.current = false;
+  useEffect(() => {
+    saveSession({ currency: selectedCurrency });
+  }, [selectedCurrency]);
+
+  const clearPaymentPanelState = useCallback(() => {
+    setCheckoutSubmitting(false);
+    setPaymentClientSecret(null);
+    setPaymentSubscriptionId(null);
   }, []);
 
-  const startCheckoutPolling = useCallback(() => {
-    clearCheckoutPolling();
-
-    const pollOnce = async () => {
-      if (checkoutPollInFlightRef.current) return;
-      checkoutPollInFlightRef.current = true;
-      try {
-        const active = await refreshSubscriptionState();
-        if (active) {
-          clearCheckoutPolling();
-          await finishSetup();
-        }
-      } finally {
-        checkoutPollInFlightRef.current = false;
-      }
-    };
-
-    void pollOnce();
-    checkoutPollIntervalRef.current = window.setInterval(() => {
-      void pollOnce();
-    }, CHECKOUT_POLL_INTERVAL_MS);
-    checkoutPollTimeoutRef.current = window.setTimeout(() => {
-      clearCheckoutPolling();
-    }, CHECKOUT_POLL_MAX_MS);
-  }, [clearCheckoutPolling, finishSetup, refreshSubscriptionState]);
-
-  useEffect(() => {
-    if (!subscriptionActive) return;
-    clearCheckoutPolling();
-  }, [clearCheckoutPolling, subscriptionActive]);
-
-  const finalizeCheckoutFromSession = useCallback(
-    async (sessionIdInput: string, intentIdInput?: string) => {
-      const sessionId = String(sessionIdInput ?? '').trim();
-      const intentId = String(intentIdInput ?? '').trim() || '';
-      if (!sessionId) {
+  const finalizePaymentElement = useCallback(
+    async (subscriptionIdInput: string, organizationIdInput?: string | null) => {
+      const subscriptionId = String(subscriptionIdInput ?? '').trim();
+      const organizationIdToFinalize = String(organizationIdInput ?? organizationId ?? '').trim();
+      if (!subscriptionId || !organizationIdToFinalize) {
         setCheckoutFinalizing(false);
         setPaymentReceived(false);
         setCheckoutNotice('');
-        setCheckoutError('Missing checkout session details. Please retry checkout.');
+        setCheckoutError('Missing payment details. Please try again.');
         return;
       }
 
-      setFinalizeSessionId(sessionId);
-      setFinalizeIntentId(intentId || null);
       setCheckoutFinalizing(true);
       setCheckoutError('');
-      setCheckoutCanceled(false);
       setPaymentReceived(true);
       setCheckoutManageUrl(null);
       setCheckoutNotice('Payment received. Finalizing your CrewShyft subscription...');
@@ -911,16 +926,19 @@ export function OnboardingStepper() {
       }, FINALIZE_TIMEOUT_MS);
 
       try {
-        const finalizeResult = await apiFetch<FinalizeCheckoutResponse>('/api/billing/finalize-checkout', {
-          method: 'POST',
-          signal: controller.signal,
-          json: {
-            session_id: sessionId,
-            intent_id: intentId || undefined,
+        const finalizeResult = await apiFetch<FinalizePaymentElementResponse>(
+          '/api/billing/finalize-payment-element',
+          {
+            method: 'POST',
+            signal: controller.signal,
+            json: {
+              organizationId: organizationIdToFinalize,
+              subscriptionId,
+            },
           },
-        });
+        );
 
-        if (!finalizeResult.ok || !finalizeResult.data?.ok) {
+        if (!finalizeResult.ok || !finalizeResult.data?.ok || !finalizeResult.data.active) {
           setPaymentReceived(false);
           setCheckoutNotice('');
           setCheckoutError(
@@ -933,15 +951,14 @@ export function OnboardingStepper() {
         }
 
         await refreshProfile();
-        if (organizationId) {
-          await useAuthStore.getState().fetchSubscriptionStatus(organizationId);
-        }
+        await useAuthStore.getState().fetchSubscriptionStatus(organizationIdToFinalize);
         await refreshSubscriptionState();
 
         setCheckoutManageUrl(null);
         setCheckoutNotice('Payment received. Subscription active. Redirecting to your dashboard...');
         setCheckoutError('');
         setSubscriptionActive(true);
+        setCheckoutSubmitting(false);
         if (autoAdvanceTimeoutRef.current !== null) {
           window.clearTimeout(autoAdvanceTimeoutRef.current);
         }
@@ -968,75 +985,66 @@ export function OnboardingStepper() {
 
   useEffect(() => {
     if (role !== 'manager' || managerStep !== 3) return;
+    if (paymentReturnParams.pe !== 'return') return;
 
-    const checkoutState = checkoutParams.checkout;
-    if (!checkoutState) return;
+    const subscriptionId = paymentReturnParams.subscriptionId;
+    const orgId = paymentReturnParams.organizationId || organizationId || '';
+    const token = `${subscriptionId || 'none'}:${orgId || 'none'}`;
+    if (handledPaymentReturnRef.current === token) return;
+    handledPaymentReturnRef.current = token;
 
-    const sessionId = checkoutParams.sessionId;
-    const intentId = String(checkoutParams.intentId || latestIntentId || '').trim();
-    const token = `${checkoutState}:${sessionId || 'none'}:${intentId || 'none'}`;
-    if (handledCheckoutRef.current === token) return;
-    handledCheckoutRef.current = token;
-
-    if (checkoutState === 'cancel') {
-      clearCheckoutPolling();
-      setCheckoutLoading(null);
-      setCheckoutError('');
-      setCheckoutManageUrl(null);
-      setCheckoutFinalizing(false);
+    if (!subscriptionId || !orgId) {
       setPaymentReceived(false);
-      setCheckoutCanceled(true);
-      setFinalizeSessionId(null);
-      setFinalizeIntentId(null);
-      setCheckoutNotice('Payment canceled. You can retry checkout whenever you are ready.');
-      return;
-    }
-
-    if (checkoutState !== 'success') return;
-    setCheckoutCanceled(false);
-    if (!sessionId) {
-      setPaymentReceived(false);
-      setCheckoutError('Missing checkout session details. Please retry checkout.');
       setCheckoutNotice('');
+      setCheckoutError('Missing payment return details. Please try payment again.');
       return;
     }
-    void finalizeCheckoutFromSession(sessionId, intentId || undefined);
+
+    setPaymentPanelOpen(true);
+    void finalizePaymentElement(subscriptionId, orgId);
   }, [
-    clearCheckoutPolling,
-    checkoutParams.checkout,
-    checkoutParams.intentId,
-    checkoutParams.sessionId,
+    finalizePaymentElement,
     managerStep,
-    latestIntentId,
-    finalizeCheckoutFromSession,
+    organizationId,
+    paymentReturnParams.organizationId,
+    paymentReturnParams.pe,
+    paymentReturnParams.subscriptionId,
     role,
   ]);
 
   const handleStartCheckout = useCallback(async (priceType: PlanId) => {
+    if (!STRIPE_PUBLISHABLE_KEY || !stripePromise) {
+      setCheckoutError('Stripe is not configured. Please contact support.');
+      return;
+    }
     if (!organizationId) {
       setCheckoutError('Create your restaurant first.');
       return;
     }
 
     setSelectedPlan(priceType);
-    setCheckoutCanceled(false);
-    setPaymentReceived(false);
     setCheckoutError('');
-    setCheckoutNotice('Redirecting to Stripe Checkout...');
+    setCheckoutNotice('');
     setCheckoutManageUrl(null);
+    setPaymentReceived(false);
     setCheckoutLoading(priceType);
+    setPaymentPanelOpen(true);
+    setPaymentClientSecret(null);
+    setPaymentSubscriptionId(null);
+
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10_000);
 
     try {
-      const result = await apiFetch<CheckoutSessionResponse>(
-        '/api/billing/create-checkout-session',
+      const result = await apiFetch<CreatePaymentIntentResponse>(
+        '/api/billing/create-payment-intent',
         {
           method: 'POST',
           signal: controller.signal,
           json: {
             organizationId,
             priceType,
+            currency: selectedCurrency,
             flow: 'setup',
           },
         },
@@ -1046,57 +1054,74 @@ export function OnboardingStepper() {
         const redirect = String(result.data?.redirect ?? '').trim() || null;
         if (redirect) {
           setCheckoutManageUrl(redirect);
-          setCheckoutNotice('Manage billing in CrewShyft, then retry checkout.');
+          setCheckoutNotice('Manage billing in CrewShyft, then retry payment.');
         } else {
           setCheckoutNotice('');
         }
-        setCheckoutError(result.error || 'Unable to start checkout. Please try again.');
+        setCheckoutError(result.error || 'Unable to initialize secure payment. Please try again.');
         return;
       }
 
-      const checkoutUrl = String(result.data?.checkoutUrl ?? '').trim();
-      if (!checkoutUrl || !/^https?:\/\//i.test(checkoutUrl)) {
-        setCheckoutNotice('');
-        setCheckoutError('Unable to start checkout. CrewShyft did not receive a valid checkout URL.');
+      const clientSecret = String(result.data?.clientSecret ?? '').trim();
+      const subscriptionId = String(result.data?.subscriptionId ?? '').trim();
+      if (!clientSecret || !subscriptionId) {
+        setCheckoutError('Unable to initialize secure payment. Missing Stripe payment details.');
         return;
       }
 
-      const win = window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
-      if (win) {
-        setCheckoutNotice('Stripe opened in a new tab. Complete payment there, then come back here.');
-        startCheckoutPolling();
-        return;
-      }
-
-      window.location.assign(checkoutUrl);
-      return;
+      setPaymentClientSecret(clientSecret);
+      setPaymentSubscriptionId(subscriptionId);
+      setCheckoutNotice('');
+      setCheckoutError('');
     } catch {
       setCheckoutNotice('');
-      setCheckoutError('Unable to start checkout. Please try again.');
+      setCheckoutError('Unable to initialize secure payment. Please try again.');
     } finally {
       window.clearTimeout(timeout);
       setCheckoutLoading(null);
     }
-  }, [organizationId, startCheckoutPolling]);
+  }, [organizationId, selectedCurrency]);
 
-  const handleRetryCheckout = useCallback(() => {
-    if (!subscriptionActive && finalizeSessionId) {
-      void finalizeCheckoutFromSession(finalizeSessionId, finalizeIntentId ?? undefined);
+  const handlePaymentIntentModalClose = useCallback(() => {
+    if (checkoutSubmitting || checkoutFinalizing) return;
+    setPaymentPanelOpen(false);
+    clearPaymentPanelState();
+  }, [checkoutFinalizing, checkoutSubmitting, clearPaymentPanelState]);
+
+  const handlePaymentConfirmed = useCallback(async () => {
+    if (!paymentSubscriptionId) {
+      setCheckoutSubmitting(false);
+      setCheckoutError('Missing subscription details. Please try again.');
       return;
     }
-    clearCheckoutPolling();
-    setCheckoutCanceled(false);
-    setPaymentReceived(false);
+    await finalizePaymentElement(paymentSubscriptionId);
+  }, [finalizePaymentElement, paymentSubscriptionId]);
+
+  const handleRetryCheckout = useCallback(() => {
     setCheckoutError('');
     setCheckoutNotice('');
     setCheckoutLoading(null);
+    setCheckoutSubmitting(false);
+    if (paymentSubscriptionId && paymentReceived && !subscriptionActive) {
+      void finalizePaymentElement(paymentSubscriptionId);
+      return;
+    }
+    if (!paymentPanelOpen) {
+      clearPaymentPanelState();
+    }
   }, [
-    clearCheckoutPolling,
-    finalizeCheckoutFromSession,
-    finalizeIntentId,
-    finalizeSessionId,
+    clearPaymentPanelState,
+    finalizePaymentElement,
+    paymentPanelOpen,
+    paymentReceived,
+    paymentSubscriptionId,
     subscriptionActive,
   ]);
+
+  const handlePaymentError = useCallback((message: string) => {
+    setCheckoutNotice('');
+    setCheckoutError(message);
+  }, []);
 
   const handleSelectPlan = useCallback((planId: PlanId) => {
     setSelectedPlan(planId);
@@ -1224,18 +1249,27 @@ export function OnboardingStepper() {
                 <SubscriptionStepView
                   checkoutLoading={checkoutLoading}
                   checkoutFinalizing={checkoutFinalizing}
+                  checkoutSubmitting={checkoutSubmitting}
                   error={checkoutError}
                   notice={checkoutNotice}
-                  checkoutCanceled={checkoutCanceled}
                   paymentReceived={paymentReceived}
                   manageBillingUrl={checkoutManageUrl}
+                  selectedCurrency={selectedCurrency}
                   selectedPlan={selectedPlan}
+                  paymentPanelOpen={paymentPanelOpen}
+                  paymentClientSecret={paymentClientSecret}
+                  paymentSubscriptionId={paymentSubscriptionId}
+                  organizationId={organizationId}
                   subscriptionActive={subscriptionActive}
                   subscriptionStatus={subscriptionStatus}
                   onSelectPlan={handleSelectPlan}
+                  onSelectCurrency={setSelectedCurrency}
                   onStartCheckout={handleStartCheckout}
-                  retryLabel={finalizeSessionId && !subscriptionActive ? 'Retry finalize' : 'Try again'}
                   onRetry={handleRetryCheckout}
+                  onClosePaymentPanel={handlePaymentIntentModalClose}
+                  onPaymentConfirmed={handlePaymentConfirmed}
+                  onPaymentSubmittingChange={setCheckoutSubmitting}
+                  onPaymentError={handlePaymentError}
                   onGoToDashboard={finishSetup}
                   onManageBilling={() => router.push('/billing')}
                   onBack={() => {
@@ -1855,18 +1889,27 @@ function ScheduleStepView({
 function SubscriptionStepView({
   checkoutLoading,
   checkoutFinalizing,
+  checkoutSubmitting,
   error,
   notice,
-  checkoutCanceled,
   paymentReceived,
   manageBillingUrl,
+  selectedCurrency,
   selectedPlan,
+  paymentPanelOpen,
+  paymentClientSecret,
+  paymentSubscriptionId,
+  organizationId,
   subscriptionActive,
   subscriptionStatus,
   onSelectPlan,
+  onSelectCurrency,
   onStartCheckout,
-  retryLabel,
   onRetry,
+  onClosePaymentPanel,
+  onPaymentConfirmed,
+  onPaymentSubmittingChange,
+  onPaymentError,
   onGoToDashboard,
   onManageBilling,
   onBack,
@@ -1874,18 +1917,27 @@ function SubscriptionStepView({
 }: {
   checkoutLoading: PlanId | null;
   checkoutFinalizing: boolean;
+  checkoutSubmitting: boolean;
   error: string;
   notice: string;
-  checkoutCanceled: boolean;
   paymentReceived: boolean;
   manageBillingUrl: string | null;
+  selectedCurrency: SupportedCurrency;
   selectedPlan: PlanId | null;
+  paymentPanelOpen: boolean;
+  paymentClientSecret: string | null;
+  paymentSubscriptionId: string | null;
+  organizationId: string | null;
   subscriptionActive: boolean;
   subscriptionStatus: string;
   onSelectPlan: (planId: PlanId) => void;
+  onSelectCurrency: (currency: SupportedCurrency) => void;
   onStartCheckout: (priceType: PlanId) => void;
-  retryLabel: string;
   onRetry: () => void;
+  onClosePaymentPanel: () => void;
+  onPaymentConfirmed: () => Promise<void>;
+  onPaymentSubmittingChange: (submitting: boolean) => void;
+  onPaymentError: (message: string) => void;
   onGoToDashboard: () => void;
   onManageBilling: () => void;
   onBack: () => void;
@@ -1894,6 +1946,14 @@ function SubscriptionStepView({
   const canManageBilling = Boolean(manageBillingUrl);
   const [pendingCheckoutPlan, setPendingCheckoutPlan] = useState<PlanId | null>(null);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  const showModal = showCheckoutModal || paymentPanelOpen || checkoutFinalizing;
+  const stripeUnavailable = !STRIPE_PUBLISHABLE_KEY || !stripePromise;
+  const canRenderPaymentElement = Boolean(
+    !stripeUnavailable
+    && paymentClientSecret
+    && paymentSubscriptionId
+    && organizationId,
+  );
 
   const openCheckoutModal = useCallback((planId: PlanId) => {
     onSelectPlan(planId);
@@ -1904,11 +1964,11 @@ function SubscriptionStepView({
   const closeCheckoutModal = useCallback(() => {
     setShowCheckoutModal(false);
     setPendingCheckoutPlan(null);
-  }, []);
+    onClosePaymentPanel();
+  }, [onClosePaymentPanel]);
 
   const handleContinueToStripe = useCallback(() => {
     if (!pendingCheckoutPlan) return;
-    setShowCheckoutModal(false);
     onStartCheckout(pendingCheckoutPlan);
   }, [onStartCheckout, pendingCheckoutPlan]);
 
@@ -1926,6 +1986,23 @@ function SubscriptionStepView({
       <p className="text-sm text-theme-tertiary mb-6">
         Choose a plan to finish setup. This stays inside your setup flow.
       </p>
+      <div className="mb-5">
+        <label className="block text-sm font-medium text-theme-secondary mb-1.5">
+          Billing currency
+        </label>
+        <select
+          value={selectedCurrency}
+          onChange={(event) => onSelectCurrency(event.target.value as SupportedCurrency)}
+          disabled={checkoutLoading !== null || checkoutSubmitting || checkoutFinalizing}
+          className="w-full px-3 py-2.5 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50 disabled:opacity-60"
+        >
+          {SUPPORTED_CURRENCIES.map((currency) => (
+            <option key={currency.value} value={currency.value}>
+              {currency.label}
+            </option>
+          ))}
+        </select>
+      </div>
 
       {paymentReceived && (
         <div className="mb-4 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3">
@@ -1948,15 +2025,6 @@ function SubscriptionStepView({
       {!paymentReceived && notice && (
         <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
           <p className="text-sm text-amber-400">{notice}</p>
-          {checkoutCanceled && (
-            <button
-              type="button"
-              onClick={onRetry}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-400/40 px-2.5 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/10 transition-colors"
-            >
-              Try again
-            </button>
-          )}
         </div>
       )}
 
@@ -1968,7 +2036,7 @@ function SubscriptionStepView({
             onClick={onRetry}
             className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-red-400/40 px-2.5 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-500/10 transition-colors"
           >
-            {retryLabel}
+            Try again
           </button>
         </div>
       )}
@@ -1999,7 +2067,7 @@ function SubscriptionStepView({
                 plan={plan}
                 selected={selectedPlan === plan.id}
                 loading={checkoutLoading === plan.id}
-                disabled={checkoutLoading !== null || checkoutFinalizing}
+                disabled={checkoutLoading !== null || checkoutFinalizing || checkoutSubmitting}
                 onSelect={onSelectPlan}
                 onContinue={openCheckoutModal}
               />
@@ -2020,6 +2088,7 @@ function SubscriptionStepView({
             <button
               type="button"
               onClick={onSkip}
+              disabled={checkoutSubmitting || checkoutFinalizing}
               className="w-full py-2.5 text-sm text-theme-tertiary hover:text-theme-primary transition-colors inline-flex items-center justify-center gap-1"
             >
               Skip for now
@@ -2029,13 +2098,14 @@ function SubscriptionStepView({
         </>
       )}
 
-      {showCheckoutModal && (
+      {showModal && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center px-4">
           <button
             type="button"
             aria-label="Close secure checkout dialog"
             onClick={closeCheckoutModal}
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            disabled={checkoutSubmitting || checkoutFinalizing}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm disabled:pointer-events-none"
           />
           <div
             role="dialog"
@@ -2046,34 +2116,211 @@ function SubscriptionStepView({
             <h3 id="secure-checkout-title" className="text-lg font-semibold text-theme-primary">
               Secure checkout
             </h3>
-            <p className="mt-2 text-sm text-theme-tertiary">
-              You&rsquo;ll complete payment with Stripe and return to CrewShyft to finish setup.
-            </p>
-            <p className="mt-4 text-xs font-medium uppercase tracking-wide text-theme-muted">
-              Powered by Stripe
-            </p>
-            <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={closeCheckoutModal}
-                className="w-full rounded-lg border border-theme-primary px-3 py-2.5 text-sm font-medium text-theme-secondary hover:bg-theme-hover transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleContinueToStripe}
-                disabled={!pendingCheckoutPlan || checkoutLoading !== null || checkoutFinalizing}
-                className="w-full rounded-lg bg-amber-500 px-3 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-amber-400 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2"
-              >
-                <CreditCard className="w-4 h-4" />
-                Continue to Stripe
-              </button>
-            </div>
+            {error && (
+              <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2">
+                <p className="text-xs text-red-400">{error}</p>
+              </div>
+            )}
+            {!canRenderPaymentElement ? (
+              <>
+                <p className="mt-2 text-sm text-theme-tertiary">
+                  Checkout is securely processed by Stripe. You&rsquo;ll enter payment details here to activate CrewShyft.
+                </p>
+                {checkoutLoading !== null && (
+                  <div className="mt-4 inline-flex items-center gap-2 text-sm text-theme-secondary">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Preparing your secure payment form...
+                  </div>
+                )}
+                {stripeUnavailable && (
+                  <p className="mt-3 text-sm text-red-400">
+                    Stripe publishable key is missing. Add `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`.
+                  </p>
+                )}
+                <p className="mt-4 text-xs font-medium uppercase tracking-wide text-theme-muted">
+                  Powered by Stripe
+                </p>
+                <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={closeCheckoutModal}
+                    disabled={checkoutSubmitting || checkoutFinalizing}
+                    className="w-full rounded-lg border border-theme-primary px-3 py-2.5 text-sm font-medium text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                    <button
+                      type="button"
+                      onClick={handleContinueToStripe}
+                      disabled={
+                        stripeUnavailable
+                      || !pendingCheckoutPlan
+                      || checkoutLoading !== null
+                      || checkoutFinalizing
+                      || checkoutSubmitting
+                    }
+                    className="w-full rounded-lg bg-amber-500 px-3 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-amber-400 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2"
+                    >
+                      {checkoutLoading !== null ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Loading...
+                      </>
+                      ) : (
+                        <>
+                          <CreditCard className="w-4 h-4" />
+                          Continue to checkout
+                        </>
+                      )}
+                    </button>
+                  </div>
+              </>
+            ) : (
+              <>
+                <div className="mt-3 rounded-lg border border-theme-primary bg-theme-tertiary/30 px-3 py-2 text-xs text-theme-secondary">
+                  {selectedPlan ? `${selectedPlan === 'annual' ? 'Annual' : 'Monthly'} plan` : 'Selected plan'} · {selectedCurrency}
+                </div>
+                <div className="mt-4">
+                  <Elements
+                    stripe={stripePromise}
+                    options={{
+                      clientSecret: paymentClientSecret as string,
+                      appearance: { theme: 'stripe' },
+                      loader: 'auto',
+                    }}
+                  >
+                    <PaymentElementCheckoutForm
+                      organizationId={organizationId as string}
+                      subscriptionId={paymentSubscriptionId as string}
+                      submitting={checkoutSubmitting}
+                      finalizing={checkoutFinalizing}
+                      onSubmittingChange={onPaymentSubmittingChange}
+                      onPaymentConfirmed={onPaymentConfirmed}
+                      onError={onPaymentError}
+                    />
+                  </Elements>
+                </div>
+                <div className="mt-4 flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-theme-muted">
+                    Powered by Stripe
+                  </p>
+                  <button
+                    type="button"
+                    onClick={closeCheckoutModal}
+                    disabled={checkoutSubmitting || checkoutFinalizing}
+                    className="rounded-md border border-theme-primary px-2.5 py-1.5 text-xs font-medium text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+function PaymentElementCheckoutForm({
+  organizationId,
+  subscriptionId,
+  submitting,
+  finalizing,
+  onSubmittingChange,
+  onPaymentConfirmed,
+  onError,
+}: {
+  organizationId: string;
+  subscriptionId: string;
+  submitting: boolean;
+  finalizing: boolean;
+  onSubmittingChange: (submitting: boolean) => void;
+  onPaymentConfirmed: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+
+  const handleSubmit = useCallback(async (event: FormEvent) => {
+    event.preventDefault();
+    if (!stripe || !elements || submitting || finalizing) return;
+
+    onError('');
+    onSubmittingChange(true);
+
+    try {
+      const origin = window.location.origin;
+      const returnUrl = `${origin}/setup?step=3&pe=return&subscription_id=${encodeURIComponent(subscriptionId)}&organization_id=${encodeURIComponent(organizationId)}`;
+      const result = await stripe.confirmPayment({
+        elements,
+        confirmParams: { return_url: returnUrl },
+        redirect: 'if_required',
+      });
+
+      if (result.error) {
+        onError(result.error.message || 'Unable to complete payment. Please try again.');
+        return;
+      }
+
+      const status = String(result.paymentIntent?.status ?? '').trim().toLowerCase();
+      if (status === 'succeeded' || status === 'processing' || status === 'requires_capture') {
+        await onPaymentConfirmed();
+        return;
+      }
+
+      if (!status) {
+        onError('We could not verify payment yet. Please try again.');
+        return;
+      }
+
+      onError('Payment requires another step. Please try again.');
+    } catch {
+      onError('Unable to complete payment. Please try again.');
+    } finally {
+      onSubmittingChange(false);
+    }
+  }, [
+    elements,
+    finalizing,
+    onError,
+    onPaymentConfirmed,
+    onSubmittingChange,
+    organizationId,
+    stripe,
+    submitting,
+    subscriptionId,
+  ]);
+
+  const disabled = !stripe || !elements || submitting || finalizing;
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <p className="text-xs uppercase tracking-wide text-theme-muted">
+        Checkout powered by Stripe
+      </p>
+      <PaymentElement />
+      <button
+        type="submit"
+        disabled={disabled}
+        className="w-full rounded-lg bg-amber-500 px-3 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-amber-400 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2"
+      >
+        {submitting || finalizing ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" />
+            {finalizing ? 'Finalizing...' : 'Processing...'}
+          </>
+        ) : (
+          <>
+            <CreditCard className="w-4 h-4" />
+            Pay &amp; Activate
+          </>
+        )}
+      </button>
+      <p className="text-[11px] text-theme-muted text-center">
+        Secure payments by Stripe
+      </p>
+    </form>
   );
 }
 
