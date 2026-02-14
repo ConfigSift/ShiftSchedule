@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
-import { getSupabaseEnv } from '@/lib/supabase/env';
-import type { User } from '@supabase/supabase-js';
-import { isManagerRole } from '@/utils/role';
 
 const ROOT_DOMAIN = 'crewshyft.com';
 const WWW_DOMAIN = 'www.crewshyft.com';
@@ -51,9 +48,39 @@ const BILLING_EXEMPT_PREFIXES = [
 ];
 
 const BILLING_EXEMPT_EXACT = ['/', '/restaurants', '/start', '/onboarding'];
+const SUPABASE_URL_REGEX = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i;
+const SUPABASE_JWT_REGEX = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 function normalizeHost(rawHost: string | null) {
   return String(rawHost ?? '').split(':')[0].trim().toLowerCase();
+}
+
+function normalizeEnvValue(value?: string): string {
+  if (!value) return '';
+  let normalized = value.replace(/\r?\n/g, '').trim();
+  if (
+    (normalized.startsWith('"') && normalized.endsWith('"'))
+    || (normalized.startsWith("'") && normalized.endsWith("'"))
+  ) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized;
+}
+
+function getSupabaseEnvEdgeSafe() {
+  const supabaseUrl = normalizeEnvValue(process.env.NEXT_PUBLIC_SUPABASE_URL);
+  const supabaseAnonKey = normalizeEnvValue(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+  const isValid =
+    Boolean(supabaseUrl)
+    && Boolean(supabaseAnonKey)
+    && SUPABASE_URL_REGEX.test(supabaseUrl)
+    && SUPABASE_JWT_REGEX.test(supabaseAnonKey);
+  return { supabaseUrl, supabaseAnonKey, isValid };
+}
+
+function isManagerRole(value: unknown): boolean {
+  const role = String(value ?? '').trim().toUpperCase();
+  return role === 'ADMIN' || role === 'MANAGER';
 }
 
 function pathMatchesPrefix(pathname: string, prefix: string) {
@@ -151,7 +178,7 @@ function shouldRedirectToLoginFromApp(host: string, pathname: string) {
   return host === APP_SUBDOMAIN && isLoginRoute(pathname);
 }
 
-export async function middleware(req: NextRequest) {
+async function runMiddleware(req: NextRequest) {
   const host = normalizeHost(req.headers.get('host'));
   const localOrPreviewHost = isLocalOrPreviewHost(host);
   const requestUrl = req.nextUrl.clone();
@@ -200,7 +227,7 @@ export async function middleware(req: NextRequest) {
     return response;
   }
 
-  const { supabaseUrl, supabaseAnonKey, isValid } = getSupabaseEnv();
+  const { supabaseUrl, supabaseAnonKey, isValid } = getSupabaseEnvEdgeSafe();
   if (!isValid) {
     return response;
   }
@@ -218,7 +245,7 @@ export async function middleware(req: NextRequest) {
     },
   });
 
-  let user: User | null = null;
+  let user: { id: string; user_metadata?: Record<string, unknown> } | null = null;
 
   try {
     const { data } = await supabase.auth.getUser();
@@ -298,8 +325,19 @@ export async function middleware(req: NextRequest) {
   return response;
 }
 
+export async function middleware(req: NextRequest) {
+  try {
+    return await runMiddleware(req);
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const stack = err.stack ? ` | ${err.stack}` : '';
+    console.error(`[middleware] fail-open: ${err.message}${stack}`);
+    return NextResponse.next();
+  }
+}
+
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|manifest|api/|.*\\..*).*)',
+    '/((?!api/|_next/static|_next/image|_next/data|favicon.ico|robots.txt|sitemap.xml|manifest|manifest.webmanifest|manifest.json|.*\\..*).*)',
   ],
 };
