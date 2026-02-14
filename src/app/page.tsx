@@ -44,11 +44,12 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('deleted') !== 'true') return;
 
-    setShowDeletedToast(true);
+    const timer = setTimeout(() => setShowDeletedToast(true), 0);
     params.delete('deleted');
     const queryString = params.toString();
     const nextUrl = `${window.location.pathname}${queryString ? `?${queryString}` : ''}`;
     window.history.replaceState({}, '', nextUrl);
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {

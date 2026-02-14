@@ -12,10 +12,8 @@ type ScopeOption = 'ORG_BLACKOUT' | 'EMPLOYEE';
 export default function BlockedDaysPage() {
   const router = useRouter();
   const {
-    blockedDayRequests,
     createImmediateBlockedDay,
     updateBlockedDay,
-    deleteBlockedDay,
     loadRestaurantData,
     getEmployeesForRestaurant,
     showToast,
@@ -50,13 +48,15 @@ export default function BlockedDaysPage() {
   }, [isInitialized, currentUser, isManager, router]);
 
   useEffect(() => {
-    if (!startDate) {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const dateStr = tomorrow.toISOString().split('T')[0];
+    if (startDate) return;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const dateStr = tomorrow.toISOString().split('T')[0];
+    const timer = setTimeout(() => {
       setStartDate(dateStr);
       setEndDate(dateStr);
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [startDate]);
 
   const employees = getEmployeesForRestaurant(activeRestaurantId).filter((emp) =>
@@ -109,29 +109,6 @@ export default function BlockedDaysPage() {
     showToast(editingId ? 'Blocked day updated' : 'Blocked day created', 'success');
     resetForm();
     setSubmitting(false);
-  };
-
-  const handleEdit = (id: string) => {
-    const entry = blockedDayRequests.find((req) => req.id === id);
-    if (!entry) return;
-    setEditingId(entry.id);
-    setScope(entry.scope);
-    setEmployeeId(entry.userId ?? '');
-    setStartDate(entry.startDate);
-    setEndDate(entry.endDate);
-    setReason(entry.reason);
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!activeRestaurantId) return;
-    const confirmed = window.confirm('Delete this blocked day?');
-    if (!confirmed) return;
-    const result = await deleteBlockedDay(id, activeRestaurantId);
-    if (!result.success) {
-      showToast(result.error || 'Unable to delete blocked day', 'error');
-      return;
-    }
-    showToast('Blocked day deleted', 'success');
   };
 
   if (!isInitialized || !currentUser || !isManager) {

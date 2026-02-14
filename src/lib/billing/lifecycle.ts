@@ -159,7 +159,7 @@ async function resolveStripeSubscription(
   billingAccount: BillingAccountInfo | null,
 ) {
   let stripeCustomerId = String(billingAccount?.stripe_customer_id ?? '').trim() || null;
-  let stripeSubscriptionId =
+  const stripeSubscriptionId =
     String(billingAccount?.stripe_subscription_id ?? '').trim() || null;
 
   if (!stripeCustomerId) {

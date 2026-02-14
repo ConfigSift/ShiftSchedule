@@ -235,7 +235,7 @@ export async function POST(request: NextRequest) {
       jobs,
     };
 
-    const userUpsertResult = await (supabaseAdmin as any)
+    const userUpsertResult = await supabaseAdmin
       .from('users')
       .upsert(profilePayload, { onConflict: 'organization_id,auth_user_id' });
 
@@ -256,7 +256,7 @@ export async function POST(request: NextRequest) {
         role: 'admin',
         jobs,
       };
-      const legacyResult = await (supabaseAdmin as any)
+      const legacyResult = await supabaseAdmin
         .from('users')
         .upsert(legacyPayload, { onConflict: 'organization_id,auth_user_id' });
       if (legacyResult.error) {

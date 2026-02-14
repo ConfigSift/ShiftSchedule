@@ -11,6 +11,17 @@ type PickupPayload = {
   organizationId: string;
 };
 
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function toOptionalString(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (value == null) return null;
+  return String(value);
+}
+
 function parseTimeToMinutes(value: string | null | undefined) {
   if (!value) return null;
   const [hoursText, minutesText = '0'] = value.split(':');
@@ -76,7 +87,7 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
   }
 
-  let shiftRow: Record<string, any> | null = null;
+  let shiftRow: Record<string, unknown> | null = null;
   let hasMarketplaceColumn = true;
 
   const shiftWithMarketplace = await supabaseAdmin
@@ -94,7 +105,7 @@ export async function POST(request: NextRequest) {
     }
     hasMarketplaceColumn = false;
   } else {
-    shiftRow = shiftWithMarketplace.data as Record<string, any> | null;
+    shiftRow = shiftWithMarketplace.data as Record<string, unknown> | null;
   }
 
   if (!shiftRow) {
@@ -106,14 +117,19 @@ export async function POST(request: NextRequest) {
     if (fallback.error) {
       return applySupabaseCookies(jsonError(fallback.error.message, 400), response);
     }
-    shiftRow = fallback.data as Record<string, any> | null;
+    shiftRow = fallback.data as Record<string, unknown> | null;
   }
 
   if (!shiftRow) {
     return applySupabaseCookies(jsonError('Shift not found.', 404), response);
   }
 
-  if (shiftRow.organization_id !== payload.organizationId) {
+  const targetShiftDate = toOptionalString(shiftRow.shift_date) ?? '';
+  if (!targetShiftDate) {
+    return applySupabaseCookies(jsonError('Shift date is missing.', 400), response);
+  }
+
+  if (toOptionalString(shiftRow.organization_id) !== payload.organizationId) {
     return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
   }
 
@@ -121,17 +137,17 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Shift is not currently available to pick up.', 400), response);
   }
 
-  if (shiftRow.user_id && shiftRow.user_id === requesterRow.id) {
+  if (toOptionalString(shiftRow.user_id) === String(requesterRow.id)) {
     return applySupabaseCookies(jsonError('You cannot pick up your own shift.', 403), response);
   }
 
   const ignoredStatuses = new Set(['CANCELLED', 'CANCELED', 'DENIED', 'DROPPED', 'MARKETPLACE', 'OPEN', 'AVAILABLE']);
 
-  const targetStart = parseTimeToMinutes(shiftRow.start_time);
-  const targetEnd = parseTimeToMinutes(shiftRow.end_time);
+  const targetStart = parseTimeToMinutes(toOptionalString(shiftRow.start_time));
+  const targetEnd = parseTimeToMinutes(toOptionalString(shiftRow.end_time));
   if (targetStart == null || targetEnd == null || targetEnd <= targetStart) {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.debug('[shift-exchange:pickup] conflict', {
         authUserId,
         shiftId: payload.shiftId,
@@ -142,33 +158,35 @@ export async function POST(request: NextRequest) {
     return respondConflict([]);
   }
 
-  const buildConflicts = (rows: any[]) => {
+  const buildConflicts = (rows: unknown[]) => {
     const conflicts: Array<{
       id: string;
       shift_date: string | null;
       start_time: string | null;
       end_time: string | null;
     }> = [];
-    for (const row of rows ?? []) {
+    for (const value of rows ?? []) {
+      const row = toRecord(value);
+      if (!row) continue;
       if (row.is_blocked) continue;
       const statusValue = row.status ? String(row.status).toUpperCase() : '';
       if (statusValue && ignoredStatuses.has(statusValue)) continue;
       if (hasMarketplaceColumn && row.is_marketplace === true) continue;
-      const existingStart = parseTimeToMinutes(row.start_time);
-      const existingEnd = parseTimeToMinutes(row.end_time);
+      const existingStart = parseTimeToMinutes(toOptionalString(row.start_time));
+      const existingEnd = parseTimeToMinutes(toOptionalString(row.end_time));
       if (existingStart == null || existingEnd == null || existingEnd <= existingStart) {
         conflicts.push({
           id: String(row.id),
-          shift_date: row.shift_date ?? shiftRow.shift_date ?? null,
-          start_time: row.start_time ?? null,
-          end_time: row.end_time ?? null,
+          shift_date: toOptionalString(row.shift_date) ?? targetShiftDate,
+          start_time: toOptionalString(row.start_time),
+          end_time: toOptionalString(row.end_time),
         });
       } else if (existingStart < targetEnd && existingEnd > targetStart) {
         conflicts.push({
           id: String(row.id),
-          shift_date: row.shift_date ?? shiftRow.shift_date ?? null,
-          start_time: row.start_time ?? null,
-          end_time: row.end_time ?? null,
+          shift_date: toOptionalString(row.shift_date) ?? targetShiftDate,
+          start_time: toOptionalString(row.start_time),
+          end_time: toOptionalString(row.end_time),
         });
       }
       if (conflicts.length >= 5) break;
@@ -193,7 +211,7 @@ export async function POST(request: NextRequest) {
     .select(existingSelect)
     .eq('organization_id', payload.organizationId)
     .eq('user_id', requesterRow.id)
-    .eq('shift_date', shiftRow.shift_date)
+    .eq('shift_date', targetShiftDate)
     .neq('id', payload.shiftId);
 
   if (existingResult.error) {
@@ -215,7 +233,7 @@ export async function POST(request: NextRequest) {
         .select(fallbackSelect)
         .eq('organization_id', payload.organizationId)
         .eq('user_id', requesterRow.id)
-        .eq('shift_date', shiftRow.shift_date)
+        .eq('shift_date', targetShiftDate)
         .neq('id', payload.shiftId);
       if (fallbackExisting.error) {
         return applySupabaseCookies(jsonError(fallbackExisting.error.message, 400), response);
@@ -223,7 +241,7 @@ export async function POST(request: NextRequest) {
       const conflicts = buildConflicts(fallbackExisting.data ?? []);
       if (conflicts.length > 0) {
         if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
+           
           console.debug('[shift-exchange:pickup] conflict', {
             authUserId,
             shiftId: payload.shiftId,
@@ -241,7 +259,7 @@ export async function POST(request: NextRequest) {
     const conflicts = buildConflicts(existingResult.data ?? []);
     if (conflicts.length > 0) {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.debug('[shift-exchange:pickup] conflict', {
           authUserId,
           shiftId: payload.shiftId,
@@ -255,7 +273,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    // eslint-disable-next-line no-console
+     
     console.debug('[shift-exchange:pickup]', {
       authUserId,
       shiftId: payload.shiftId,
@@ -267,7 +285,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const updatePayload: Record<string, any> = { user_id: requesterRow.id };
+  const updatePayload: Record<string, unknown> = { user_id: requesterRow.id };
   if (hasMarketplaceColumn) {
     updatePayload.is_marketplace = false;
   }

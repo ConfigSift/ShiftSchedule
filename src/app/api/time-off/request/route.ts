@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
     status: 'PENDING',
   };
 
-  let insertData: Record<string, any> | null = null;
+  let insertData: Record<string, unknown> | null = null;
   let insertError: { message: string } | null = null;
 
   const primaryResult = await supabaseAdmin
@@ -100,23 +100,24 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (!primaryResult.error) {
-    insertData = primaryResult.data as Record<string, any>;
+    insertData = primaryResult.data as Record<string, unknown>;
   } else if (primaryResult.error.message?.toLowerCase().includes('requester_auth_user_id')) {
-    const { requester_auth_user_id, ...fallbackPayload } = insertPayload;
+    const fallbackPayload = { ...insertPayload };
+    delete fallbackPayload.requester_auth_user_id;
     const fallbackResult = await supabaseAdmin
       .from('time_off_requests')
       .insert({ ...fallbackPayload, auth_user_id: authUserId })
       .select('*')
       .single();
     if (!fallbackResult.error) {
-      insertData = fallbackResult.data as Record<string, any>;
+      insertData = fallbackResult.data as Record<string, unknown>;
     } else if (fallbackResult.error.message?.toLowerCase().includes('auth_user_id')) {
       const secondFallback = await supabaseAdmin
         .from('time_off_requests')
         .insert({ ...fallbackPayload, requester_user_id: authUserId })
         .select('*')
         .single();
-      insertData = secondFallback.data as Record<string, any>;
+      insertData = secondFallback.data as Record<string, unknown>;
       insertError = secondFallback.error as { message: string } | null;
     } else {
       insertError = fallbackResult.error as { message: string } | null;

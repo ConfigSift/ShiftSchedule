@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/stripe/server';
 import { STRIPE_WEBHOOK_SECRET } from '@/lib/stripe/config';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import {
   resolveAuthUserIdFromStripeCustomer,
   upsertBillingAccountFromSubscription,
@@ -11,7 +12,7 @@ import {
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-function getSupabaseAdminClient() {
+function getSupabaseAdminClient(): typeof supabaseAdmin {
   const supabaseUrl = process.env.SUPABASE_URL ?? '';
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
 
@@ -27,7 +28,7 @@ function getSupabaseAdminClient() {
       autoRefreshToken: false,
       persistSession: false,
     },
-  });
+  }) as typeof supabaseAdmin;
 }
 
 function toIsoFromUnixTimestamp(unixSeconds: number | null | undefined) {
@@ -54,7 +55,7 @@ function getSubscriptionCustomerId(subscription: Stripe.Subscription) {
 }
 
 async function resolveAuthUserIdForSubscription(
-  supabaseAdminClient: ReturnType<typeof createClient>,
+  supabaseAdminClient: typeof supabaseAdmin,
   subscription: Stripe.Subscription,
 ) {
   const metadataAuthUserId = String(subscription.metadata?.auth_user_id ?? '').trim();
@@ -96,7 +97,7 @@ async function resolveAuthUserIdForSubscription(
 }
 
 async function upsertBillingAccountRow(
-  supabaseAdminClient: ReturnType<typeof createClient>,
+  supabaseAdminClient: typeof supabaseAdmin,
   subscription: Stripe.Subscription,
   sourceEvent: string,
   eventId: string,
@@ -149,7 +150,7 @@ async function upsertBillingAccountRow(
 }
 
 async function upsertSubscriptionRow(
-  supabaseAdminClient: ReturnType<typeof createClient>,
+  supabaseAdminClient: typeof supabaseAdmin,
   subscription: Stripe.Subscription,
   organizationId: string,
   sourceEvent: string,
@@ -346,7 +347,7 @@ export async function POST(request: NextRequest) {
 async function handleCheckoutCompleted(
   session: Stripe.Checkout.Session,
   eventId: string,
-  supabaseAdminClient: ReturnType<typeof createClient>,
+  supabaseAdminClient: typeof supabaseAdmin,
 ) {
   console.log('[billing:webhook] checkout.session.completed payload', {
     eventId,
@@ -375,7 +376,7 @@ async function handleCheckoutCompleted(
     eventId,
   );
 
-  let organizationId = subscription.metadata?.organization_id ?? null;
+  let organizationId: string | null = subscription.metadata?.organization_id ?? null;
   if (!organizationId) {
     organizationId = session.metadata?.organization_id ?? null;
   }
@@ -439,7 +440,7 @@ async function handleSubscriptionCreatedOrUpdated(
   eventSubscription: Stripe.Subscription,
   sourceEvent: 'customer.subscription.created' | 'customer.subscription.updated',
   eventId: string,
-  supabaseAdminClient: ReturnType<typeof createClient>,
+  supabaseAdminClient: typeof supabaseAdmin,
 ) {
   const subscriptionId = getSubscriptionId(eventSubscription);
   if (!subscriptionId) {
@@ -506,7 +507,7 @@ async function handleSubscriptionCreatedOrUpdated(
 
 async function handleSubscriptionDeleted(
   subscription: Stripe.Subscription,
-  supabaseAdminClient: ReturnType<typeof createClient>,
+  supabaseAdminClient: typeof supabaseAdmin,
 ) {
   await upsertBillingAccountRow(
     supabaseAdminClient,
@@ -548,7 +549,7 @@ async function handleSubscriptionDeleted(
 
 async function handleInvoicePaid(
   invoice: Stripe.Invoice,
-  supabaseAdminClient: ReturnType<typeof createClient>,
+  supabaseAdminClient: typeof supabaseAdmin,
 ) {
   const subscriptionId = getSubscriptionId(invoice.subscription);
 
@@ -598,7 +599,7 @@ async function handleInvoicePaid(
 
 async function handleInvoicePaymentFailed(
   invoice: Stripe.Invoice,
-  supabaseAdminClient: ReturnType<typeof createClient>,
+  supabaseAdminClient: typeof supabaseAdmin,
 ) {
   const subscriptionId = getSubscriptionId(invoice.subscription);
 

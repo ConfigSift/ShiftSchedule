@@ -68,16 +68,6 @@ function normalizeName(text) {
   return text.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function splitFullName(fullName) {
-  const trimmed = fullName.trim().replace(/\s+/g, ' ');
-  if (!trimmed) return { firstName: '', lastName: '' };
-  const parts = trimmed.split(' ');
-  if (parts.length === 1) return { firstName: parts[0], lastName: '' };
-  const lastName = parts.pop();
-  const firstName = parts.join(' ');
-  return { firstName, lastName };
-}
-
 function parseDateString(input) {
   const trimmed = input.trim();
   if (!trimmed) return null;
@@ -531,7 +521,12 @@ async function main() {
       );
     });
   } else if (shifts.length > 0) {
-    const payload = shifts.map(({ employee_name, day, ...rest }) => rest);
+    const payload = shifts.map((shift) => {
+      const row = { ...shift };
+      delete row.employee_name;
+      delete row.day;
+      return row;
+    });
     const batches = [];
     for (let i = 0; i < payload.length; i += 50) batches.push(payload.slice(i, i + 50));
     for (const batch of batches) {

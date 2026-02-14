@@ -33,13 +33,19 @@ type UserLookup = {
   initials: string;
 };
 
-const mapRowToChatMessage = (row: Record<string, any>): ChatMessage => ({
-  id: row.id,
-  roomId: row.room_id,
-  organizationId: row.organization_id,
-  authorAuthUserId: row.author_auth_user_id,
-  body: row.body,
-  createdAt: row.created_at,
+const readString = (value: unknown, fallback = ''): string => {
+  if (typeof value === 'string') return value;
+  if (value == null) return fallback;
+  return String(value);
+};
+
+const mapRowToChatMessage = (row: Record<string, unknown>): ChatMessage => ({
+  id: readString(row.id),
+  roomId: readString(row.room_id),
+  organizationId: readString(row.organization_id),
+  authorAuthUserId: readString(row.author_auth_user_id),
+  body: readString(row.body),
+  createdAt: readString(row.created_at),
 });
 
 export default function ChatPage() {
@@ -95,11 +101,12 @@ export default function ChatPage() {
   });
 
   const handleIncomingMessage = useCallback(
-    (payload: RealtimePostgresChangesPayload<Record<string, any>>, roomId: string | null) => {
-      const row = payload.new as Record<string, any>;
-      if (!row?.id) return;
-      if (messageIdsRef.current.has(row.id)) return;
-      messageIdsRef.current.add(row.id);
+    (payload: RealtimePostgresChangesPayload<Record<string, unknown>>, roomId: string | null) => {
+      const row = payload.new as Record<string, unknown>;
+      const rowId = readString(row?.id);
+      if (!rowId) return;
+      if (messageIdsRef.current.has(rowId)) return;
+      messageIdsRef.current.add(rowId);
       const incoming = mapRowToChatMessage(row);
       setMessages((prev) => {
         const next = [...prev, incoming];
@@ -117,14 +124,14 @@ export default function ChatPage() {
     [isDev]
   );
 
-  const loadRooms = async (organizationId: string) => {
+  const loadRooms = useCallback(async (organizationId: string) => {
     setLoadingRooms(true);
     const { data, error: roomsError } = (await supabaseClient
       .from('chat_rooms')
       .select('id,name,organization_id,created_at')
       .eq('organization_id', organizationId)
       .order('created_at', { ascending: true })) as {
-        data: Array<Record<string, any>> | null;
+        data: Array<Record<string, unknown>> | null;
         error: { message: string } | null;
       };
 
@@ -135,10 +142,10 @@ export default function ChatPage() {
     }
 
     const mapped = (data || []).map((room) => ({
-      id: room.id,
-      name: room.name,
-      organizationId: room.organization_id,
-      createdAt: room.created_at,
+      id: readString(room.id),
+      name: readString(room.name),
+      organizationId: readString(room.organization_id),
+      createdAt: readString(room.created_at),
     }));
 
     setRooms(mapped);
@@ -146,7 +153,7 @@ export default function ChatPage() {
     if (!activeRoomId && mapped.length > 0) {
       setActiveRoomId(mapped[0].id);
     }
-  };
+  }, [activeRoomId, supabaseClient]);
 
   const loadMessages = useCallback(async (roomId: string) => {
     setLoadingMessages(true);
@@ -155,7 +162,7 @@ export default function ChatPage() {
       .select('id,room_id,organization_id,author_auth_user_id,body,created_at')
       .eq('room_id', roomId)
       .order('created_at', { ascending: true })) as {
-        data: Array<Record<string, any>> | null;
+        data: Array<Record<string, unknown>> | null;
         error: { message: string } | null;
       };
 
@@ -176,12 +183,12 @@ export default function ChatPage() {
     });
   }, [supabaseClient]);
 
-  const loadUsers = async (organizationId: string) => {
+  const loadUsers = useCallback(async (organizationId: string) => {
     const { data, error: usersError } = (await supabaseClient
       .from('users')
       .select('*')
       .eq('organization_id', organizationId)) as {
-        data: Array<Record<string, any>> | null;
+        data: Array<Record<string, unknown>> | null;
         error: { message: string } | null;
       };
 
@@ -202,7 +209,7 @@ export default function ChatPage() {
       }
     });
     setUsersByAuthId(lookup);
-  };
+  }, [supabaseClient]);
 
   useEffect(() => {
     init();
@@ -215,24 +222,35 @@ export default function ChatPage() {
   }, [isInitialized, currentUser, router]);
 
   useEffect(() => {
-    if (activeRestaurantId && currentUser) {
-      loadRooms(activeRestaurantId);
-      loadUsers(activeRestaurantId);
-    }
-  }, [activeRestaurantId, currentUser]);
+    if (!activeRestaurantId || !currentUser) return;
+    const timer = setTimeout(() => {
+      void loadRooms(activeRestaurantId);
+      void loadUsers(activeRestaurantId);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [activeRestaurantId, currentUser, loadRooms, loadUsers]);
 
   useEffect(() => {
     messageIdsRef.current = new Set();
-    setMessages([]);
-    setUnreadCount(0);
     isNearBottomRef.current = true;
+    const resetTimer = setTimeout(() => {
+      setMessages([]);
+      setUnreadCount(0);
+    }, 0);
 
     if (!activeRoomId) {
-      setLoadingMessages(false);
-      return;
+      const loadingTimer = setTimeout(() => {
+        setLoadingMessages(false);
+      }, 0);
+      return () => {
+        clearTimeout(resetTimer);
+        clearTimeout(loadingTimer);
+      };
     }
 
-    loadMessages(activeRoomId);
+    const loadTimer = setTimeout(() => {
+      void loadMessages(activeRoomId);
+    }, 0);
 
     const channel = supabaseClient.channel(`chat-room-${activeRoomId}`);
     channel.on(
@@ -243,7 +261,7 @@ export default function ChatPage() {
         table: 'chat_messages',
         filter: `room_id=eq.${activeRoomId}`,
       },
-      (payload: RealtimePostgresChangesPayload<Record<string, any>>) => {
+      (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
         handleIncomingMessage(payload, activeRoomId);
       }
     );
@@ -260,6 +278,8 @@ export default function ChatPage() {
     // Realtime streaming must be enabled for `chat_messages` and the RLS policies
     // must allow org members to SELECT so events can flow through Supabase Realtime.
     return () => {
+      clearTimeout(loadTimer);
+      clearTimeout(resetTimer);
       void supabaseClient.removeChannel(channel);
     };
   }, [activeRoomId, handleIncomingMessage, isDev, loadMessages, supabaseClient]);
@@ -442,7 +462,7 @@ export default function ChatPage() {
   const handleCreateRoom = async () => {
     if (!activeRestaurantId || !newRoomName.trim()) return;
     setError('');
-    const result = await apiFetch<{ room: Record<string, any> }>('/api/chat/rooms/create', {
+    const result = await apiFetch<{ room: Record<string, unknown> }>('/api/chat/rooms/create', {
       method: 'POST',
       json: {
         organizationId: activeRestaurantId,
@@ -457,10 +477,10 @@ export default function ChatPage() {
 
     const room = result.data.room;
     const mapped: ChatRoom = {
-      id: room.id,
-      name: room.name,
-      organizationId: room.organization_id,
-      createdAt: room.created_at,
+      id: readString(room.id),
+      name: readString(room.name),
+      organizationId: readString(room.organization_id),
+      createdAt: readString(room.created_at),
     };
     setRooms((prev) => [...prev, mapped]);
     setActiveRoomId(mapped.id);
@@ -519,7 +539,7 @@ export default function ChatPage() {
     const targetRoomId = renameRoomId ?? activeRoom?.id ?? null;
     if (!targetRoomId || !renameRoomName.trim()) return;
     setError('');
-    const result = await apiFetch<{ room: Record<string, any> }>('/api/chat/rooms/update', {
+    const result = await apiFetch<{ room: Record<string, unknown> }>('/api/chat/rooms/update', {
       method: 'PATCH',
       json: {
         roomId: targetRoomId,
@@ -530,7 +550,7 @@ export default function ChatPage() {
       setError(result.error || 'Unable to rename room.');
       return;
     }
-    const updatedName = result.data.room.name ?? renameRoomName.trim();
+    const updatedName = readString(result.data.room.name, renameRoomName.trim());
     setRooms((prev) => prev.map((room) => (room.id === targetRoomId ? { ...room, name: updatedName } : room)));
     setShowRenameModal(false);
     setRenameRoomId(null);
@@ -577,7 +597,7 @@ export default function ChatPage() {
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeRestaurantId || !activeRoomId || !messageText.trim()) return;
-    const result = await apiFetch<{ message: Record<string, any> }>('/api/chat/messages/send', {
+    const result = await apiFetch<{ message: Record<string, unknown> }>('/api/chat/messages/send', {
       method: 'POST',
       json: {
         organizationId: activeRestaurantId,
@@ -590,15 +610,16 @@ export default function ChatPage() {
       return;
     }
     const message = result.data?.message;
-    if (message?.id && !messageIdsRef.current.has(message.id)) {
-      messageIdsRef.current.add(message.id);
+    const messageId = readString(message?.id);
+    if (messageId && !messageIdsRef.current.has(messageId)) {
+      messageIdsRef.current.add(messageId);
       const mapped: ChatMessage = {
-        id: message.id,
-        roomId: message.room_id,
-        organizationId: message.organization_id,
-        authorAuthUserId: message.author_auth_user_id,
-        body: message.body,
-        createdAt: message.created_at,
+        id: messageId,
+        roomId: readString(message?.room_id),
+        organizationId: readString(message?.organization_id),
+        authorAuthUserId: readString(message?.author_auth_user_id),
+        body: readString(message?.body),
+        createdAt: readString(message?.created_at),
       };
       setMessages((prev) => [...prev, mapped]);
       if (!isNearBottomRef.current) {

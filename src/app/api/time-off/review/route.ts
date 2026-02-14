@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    // eslint-disable-next-line no-console
+     
     console.debug('[time-off:review]', {
       authUserId,
       organizationId: payload.organizationId,
@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
 
   if (error || !data) {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.debug('[time-off:review] update error', error);
     }
     return applySupabaseCookies(

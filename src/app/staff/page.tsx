@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { Plus, Trash2, Edit3, XCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabase/client';
 import { useAuthStore } from '../../store/authStore';
@@ -36,6 +35,10 @@ interface PendingInvite {
   expiresAt?: string | null;
   isInvite: true;
 }
+
+type InvitationsResponse = {
+  invites?: Array<Record<string, unknown>>;
+};
 
 type StaffRow = OrgUser | PendingInvite;
 
@@ -134,7 +137,7 @@ export default function StaffPage() {
     }
   }, [isInitialized, currentUser, isManager, activeRestaurantId, router]);
 
-  const loadUsers = async () => {
+  const loadUsers = useCallback(async () => {
     if (!activeRestaurantId) return null;
     setLoading(true);
     setError('');
@@ -144,7 +147,7 @@ export default function StaffPage() {
       .select('*')
       .eq('organization_id', activeRestaurantId)
       .order('email', { ascending: true })) as {
-      data: Array<Record<string, any>> | null;
+      data: Array<Record<string, unknown>> | null;
       error: { message: string } | null;
     };
 
@@ -172,12 +175,12 @@ export default function StaffPage() {
     });
 
     setUsers(mapped);
-    const inviteResult = await apiFetch(
+    const inviteResult = await apiFetch<InvitationsResponse>(
       `/api/admin/invitations?organization_id=${encodeURIComponent(activeRestaurantId)}`
     );
     if (!inviteResult.ok) {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.log('[invitations] status', inviteResult.status, 'error', inviteResult.error);
       }
       setInvites([]);
@@ -185,25 +188,25 @@ export default function StaffPage() {
       return { users: mapped, invites: [] };
     }
     const inviteRows = Array.isArray(inviteResult.data?.invites) ? inviteResult.data.invites : [];
-    const mappedInvites = inviteRows.map((invite: Record<string, any>) => ({
+    const mappedInvites = inviteRows.map((invite: Record<string, unknown>) => ({
       id: String(invite.id),
       email: String(invite.email ?? ''),
       role: String(invite.role ?? 'employee'),
       status: String(invite.status ?? 'pending'),
-      createdAt: invite.created_at ?? null,
-      expiresAt: invite.expires_at ?? null,
+      createdAt: invite.created_at == null ? null : String(invite.created_at),
+      expiresAt: invite.expires_at == null ? null : String(invite.expires_at),
       isInvite: true as const,
     }));
     setInvites(mappedInvites);
     setLoading(false);
     return { users: mapped, invites: mappedInvites };
-  };
+  }, [activeRestaurantId]);
 
   useEffect(() => {
     if (activeRestaurantId && isInitialized && currentUser) {
-      loadUsers();
+      void loadUsers();
     }
-  }, [activeRestaurantId, isInitialized, currentUser]);
+  }, [activeRestaurantId, isInitialized, currentUser, loadUsers]);
 
   useEffect(() => {
     if (!modalOpen || !activeRestaurantId) return;
@@ -281,8 +284,8 @@ export default function StaffPage() {
         hasMembershipInThisOrg,
         hasMembershipInOtherOrg,
       });
-      if (existsInAuth && formState.passcode) {
-        setFormState((prev) => ({ ...prev, passcode: '' }));
+      if (existsInAuth) {
+        setFormState((prev) => (prev.passcode ? { ...prev, passcode: '' } : prev));
       }
     }, 350);
 
@@ -524,7 +527,7 @@ export default function StaffPage() {
 
       if (!result.ok || !isSuccess) {
         if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
+           
           console.log('[create-user] status', result.status, 'error', result.error, 'data', result.data);
         }
         if (result.status === 409 && result.code === 'EMPLOYEE_ID_TAKEN') {
@@ -561,7 +564,7 @@ export default function StaffPage() {
           responseObject && typeof responseObject.error === 'string' ? responseObject.error : '';
         const errorObject =
           responseObject && typeof responseObject.error === 'object' && responseObject.error
-            ? responseObject.error as Record<string, any>
+            ? responseObject.error as Record<string, unknown>
             : null;
         const rawText = (result.rawText ?? '').trim();
         const details = errorObject?.details ? ` ${String(errorObject.details)}` : '';
@@ -740,7 +743,7 @@ export default function StaffPage() {
     setSubmitting(true);
     try {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.debug('[reset-pin] pin', normalizedPin, normalizedPin.length, 'confirm', normalizedConfirm, normalizedConfirm.length);
       }
       const payload = {
@@ -749,13 +752,13 @@ export default function StaffPage() {
         pinCode: normalizedPin,
       };
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.debug('[reset-pin]', {
           userId: resetTarget.id,
           email: resetTarget.email,
           pinLen: normalizedPin.length,
         });
-        // eslint-disable-next-line no-console
+         
         console.debug('[reset-pin] payload', payload);
       }
       const result = await apiFetch('/api/admin/set-passcode', {
@@ -765,7 +768,7 @@ export default function StaffPage() {
 
       if (!result.ok) {
         if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
+           
           console.log('[set-passcode] status', result.status, 'error', result.error, 'data', result.data);
         }
         if (result.status === 401) {

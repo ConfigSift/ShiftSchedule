@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     }
 
     const isEmail = identifierRaw.includes('@');
-    let employeeRow: Record<string, any> | null = null;
+    let employeeRow: Record<string, unknown> | null = null;
 
     if (isEmail) {
       const email = identifierRaw.toLowerCase();
@@ -77,7 +77,8 @@ export async function POST(req: NextRequest) {
       authUserId: employeeRow.auth_user_id ?? null,
       legacyEmail: employeeRow.email ?? employeeRow.real_email ?? null,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Unknown error.' }, { status: 500 });
+  } catch (e: unknown) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    return NextResponse.json({ error: err.message ?? 'Unknown error.' }, { status: 500 });
   }
 }

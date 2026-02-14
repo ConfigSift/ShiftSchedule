@@ -151,16 +151,11 @@ function resolveShiftPayRate(
   return employee.hourlyPay;
 }
 
-function makeInterceptor<T extends (...args: any[]) => any>(
-  action: string,
-  interceptFn: (action: string) => void,
-  returnValue?: ReturnType<T>,
-) {
-  return ((..._args: any[]) => {
+function makeInterceptor(action: string, interceptFn: (action: string) => void) {
+  return async (): Promise<{ success: boolean; error?: string }> => {
     interceptFn(action);
-    if (returnValue !== undefined) return Promise.resolve(returnValue);
-    return Promise.resolve({ success: false, error: 'Demo mode' });
-  }) as unknown as T;
+    return { success: false, error: 'Demo mode' };
+  };
 }
 
 interface DemoProviderProps {

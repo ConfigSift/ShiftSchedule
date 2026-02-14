@@ -65,8 +65,14 @@ export function EmployeeDashboard() {
     [accessibleRestaurants, activeRestaurantId]
   );
 
-  const restaurantEmployees = activeRestaurantId ? getEmployeesForRestaurant(activeRestaurantId) : [];
-  const restaurantShifts = activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : [];
+  const restaurantEmployees = useMemo(
+    () => (activeRestaurantId ? getEmployeesForRestaurant(activeRestaurantId) : []),
+    [activeRestaurantId, getEmployeesForRestaurant],
+  );
+  const restaurantShifts = useMemo(
+    () => (activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : []),
+    [activeRestaurantId, getShiftsForRestaurant],
+  );
   const loadKeyRestaurantId = useMemo(
     () => (lastAppliedWorkingTodayKey ? lastAppliedWorkingTodayKey.split(':')[0] : null),
     [lastAppliedWorkingTodayKey]
@@ -85,28 +91,32 @@ export function EmployeeDashboard() {
   useEffect(() => {
     let isMounted = true;
     if (!activeRestaurantId) {
-      setIsLoading(false);
+      const timer = setTimeout(() => setIsLoading(false), 0);
       return () => {
+        clearTimeout(timer);
         isMounted = false;
       };
     }
     if (!shouldLoad) {
-      setIsLoading(false);
+      const timer = setTimeout(() => setIsLoading(false), 0);
       return () => {
+        clearTimeout(timer);
         isMounted = false;
       };
     }
-    setIsLoading(true);
+    const startTimer = setTimeout(() => setIsLoading(true), 0);
     loadRestaurantData(activeRestaurantId).finally(() => {
       if (isMounted) setIsLoading(false);
     });
     return () => {
+      clearTimeout(startTimer);
       isMounted = false;
     };
   }, [activeRestaurantId, loadRestaurantData, shouldLoad]);
 
   useEffect(() => {
-    setMounted(true);
+    const timer = setTimeout(() => setMounted(true), 0);
+    return () => clearTimeout(timer);
   }, []);
 
   const isReady = Boolean(isInitialized && currentUser && activeRestaurantId && !isLoading);
@@ -145,9 +155,9 @@ export function EmployeeDashboard() {
   useEffect(() => {
     const prevDate = lastSelectedDateRef.current;
     if (dayShiftsSorted.length === 0) {
-      setActiveShiftIndex(0);
+      const timer = setTimeout(() => setActiveShiftIndex(0), 0);
       lastSelectedDateRef.current = selectedDateString;
-      return;
+      return () => clearTimeout(timer);
     }
 
     if (prevDate !== selectedDateString) {
@@ -161,13 +171,16 @@ export function EmployeeDashboard() {
           nextIndex = upcomingIndex;
         }
       }
-      setActiveShiftIndex(nextIndex);
+      const timer = setTimeout(() => setActiveShiftIndex(nextIndex), 0);
       lastSelectedDateRef.current = selectedDateString;
-      return;
+      return () => clearTimeout(timer);
     }
 
-    setActiveShiftIndex((prev) => Math.min(Math.max(prev, 0), dayShiftsSorted.length - 1));
+    const timer = setTimeout(() => {
+      setActiveShiftIndex((prev) => Math.min(Math.max(prev, 0), dayShiftsSorted.length - 1));
+    }, 0);
     lastSelectedDateRef.current = selectedDateString;
+    return () => clearTimeout(timer);
   }, [dayShiftsSorted, selectedDateString, isSelectedToday]);
 
   const weekShifts = myShifts.filter((shift) => shift.date >= weekStart && shift.date <= weekEnd);

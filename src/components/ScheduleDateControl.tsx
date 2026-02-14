@@ -81,9 +81,10 @@ export function ScheduleDateControl({
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
-    if (!open) {
-      setMonthCursor(startOfDay(selectedDate));
-    }
+    if (open) return;
+    const nextCursor = startOfDay(selectedDate);
+    const timer = setTimeout(() => setMonthCursor(nextCursor), 0);
+    return () => clearTimeout(timer);
   }, [open, selectedDate]);
 
   useEffect(() => {
@@ -133,14 +134,15 @@ export function ScheduleDateControl({
 
   useLayoutEffect(() => {
     if (!open) {
-      setDropdownPosition(null);
-      return;
+      const timer = setTimeout(() => setDropdownPosition(null), 0);
+      return () => clearTimeout(timer);
     }
-    updateDropdownPosition();
+    const timer = setTimeout(() => updateDropdownPosition(), 0);
     const handleReposition = () => updateDropdownPosition();
     window.addEventListener('scroll', handleReposition, true);
     window.addEventListener('resize', handleReposition);
     return () => {
+      clearTimeout(timer);
       window.removeEventListener('scroll', handleReposition, true);
       window.removeEventListener('resize', handleReposition);
     };
@@ -159,7 +161,6 @@ export function ScheduleDateControl({
   const weekdayHeaders = useMemo(() => getWeekdayHeaders(weekStartDay).short, [weekStartDay]);
   const displayMonth = monthCursor.getMonth();
   const displayYear = monthCursor.getFullYear();
-  const monthLabel = `${MONTHS[displayMonth]} ${displayYear}`;
 
   const years = useMemo(() => {
     const base = displayYear;

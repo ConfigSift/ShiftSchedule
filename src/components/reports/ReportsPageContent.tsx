@@ -31,6 +31,7 @@ import {
   generateWeeklyScheduleHTML,
 } from './report-html';
 import { usePathname, useRouter } from 'next/navigation';
+import { getAppHomeHref } from '../../lib/routing/getAppHomeHref';
 
 type ReportType = 'roster' | 'timeline' | 'weekly';
 
@@ -326,7 +327,8 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
           ? `${toYMD(weekDates[0])} to ${toYMD(weekDates[6])}`
           : toYMD(reportDate);
       const title = `${titlePrefix ? `${titlePrefix} ` : ''}${reportTitle} - ${dateLabel}`;
-      const orientation = activeReport === 'roster' ? 'portrait' : 'landscape';
+      const orientation: 'portrait' | 'landscape' =
+        activeReport === 'roster' ? 'portrait' : 'landscape';
 
       let bodyHTML = '';
       if (activeReport === 'roster') {
@@ -372,7 +374,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
       router.back();
       return;
     }
-    router.push(isDemoRoute ? '/demo' : '/dashboard');
+    router.push(isDemoRoute ? '/demo' : getAppHomeHref());
   }, [isDemoRoute, router]);
 
   const navLabel = isWeekly

@@ -7,7 +7,7 @@ import { Modal } from './Modal';
 import { formatDateLong } from '../utils/timeUtils';
 
 export function BlockedDayRequestModal() {
-  const { modalType, modalData, closeModal, submitBlockedDayRequest, showToast } = useScheduleStore();
+  const { modalType, closeModal, submitBlockedDayRequest, showToast } = useScheduleStore();
   const { currentUser, activeRestaurantId } = useAuthStore();
 
   const isOpen = modalType === 'blockedDayRequest';
@@ -16,14 +16,16 @@ export function BlockedDayRequestModal() {
   const [reason, setReason] = useState('');
 
   useEffect(() => {
-    if (isOpen) {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+    if (!isOpen) return;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+    const timer = setTimeout(() => {
       setStartDate(tomorrowStr);
       setEndDate(tomorrowStr);
       setReason('');
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [isOpen]);
 
   const handleSubmit = async (e: React.FormEvent) => {

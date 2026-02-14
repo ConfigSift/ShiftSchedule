@@ -32,7 +32,6 @@ export function WeekView() {
     goToNext,
     getFilteredEmployeesForRestaurant,
     getShiftsForRestaurant,
-    locations,
     setSelectedDate,
     setViewMode,
     openModal,
@@ -52,7 +51,6 @@ export function WeekView() {
 
   const { activeRestaurantId, currentUser } = useAuthStore();
   const isManager = isManagerRole(getUserRole(currentUser?.role));
-  const isToday = isSameDay(selectedDate, new Date());
   const todayStr = dateToString(new Date());
   const isEditableDate = useCallback((dateStr: string) => dateStr >= todayStr, [todayStr]);
   const canEditDate = useCallback((dateStr: string) => isManager && isEditableDate(dateStr), [isManager, isEditableDate]);
@@ -66,10 +64,6 @@ export function WeekView() {
   );
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
-  const locationMap = useMemo(
-    () => new Map(locations.map((location) => [location.id, location.name])),
-    [locations]
-  );
   const today = new Date();
   const hasDraftInWeek = useMemo(
     () =>
@@ -283,10 +277,15 @@ export function WeekView() {
 
   useEffect(() => {
     if (!dateNavDirection) return;
-    setSlideDirection(dateNavDirection);
-    setIsSliding(true);
+    const startTimer = setTimeout(() => {
+      setSlideDirection(dateNavDirection);
+      setIsSliding(true);
+    }, 0);
     const timeout = setTimeout(() => setIsSliding(false), 220);
-    return () => clearTimeout(timeout);
+    return () => {
+      clearTimeout(startTimer);
+      clearTimeout(timeout);
+    };
   }, [dateNavKey, dateNavDirection]);
 
   const handleCellMouseDown = (employeeId: string, date: string, e: React.MouseEvent<HTMLDivElement>) => {

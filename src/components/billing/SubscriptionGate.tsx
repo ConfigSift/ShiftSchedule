@@ -46,14 +46,17 @@ export function SubscriptionGate({ children }: SubscriptionGateProps) {
 
   useEffect(() => {
     if (!subscribedParamPresent) {
-      setGraceActive(false);
-      return;
+      const timer = setTimeout(() => setGraceActive(false), 0);
+      return () => clearTimeout(timer);
     }
-    setGraceActive(true);
+    const enableTimer = setTimeout(() => {
+      setGraceActive(true);
+    }, 0);
     const timer = setTimeout(() => {
       setGraceActive(false);
     }, SUBSCRIBED_GRACE_MS);
     return () => {
+      clearTimeout(enableTimer);
       clearTimeout(timer);
     };
   }, [subscribedParamPresent]);
@@ -66,8 +69,9 @@ export function SubscriptionGate({ children }: SubscriptionGateProps) {
     const params = new URLSearchParams(window.location.search);
     params.delete('subscribed');
     const query = params.toString();
-    setSubscribedParamPresent(false);
+    const timer = setTimeout(() => setSubscribedParamPresent(false), 0);
     router.replace(`${pathname}${query ? `?${query}` : ''}`);
+    return () => clearTimeout(timer);
   }, [subscribedParamPresent, subscriptionStatus, pathname, router]);
 
   useEffect(() => {

@@ -6,7 +6,7 @@ import { useAuthStore } from '../store/authStore';
 import { SECTIONS, Section } from '../types';
 import { Clock, Users, DollarSign, Percent } from 'lucide-react';
 import { getWeekDates, dateToString } from '../utils/timeUtils';
-import { getUserRole, isManagerRole } from '../utils/role';
+import { getUserRole } from '../utils/role';
 
 function parseTimeToDecimal(value?: string | null): number {
   if (!value) return 0;
@@ -31,7 +31,6 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
     selectedDate,
     viewMode,
     selectedEmployeeIds,
-    shifts,
     employees,
     coreHours,
     scheduleViewSettings,
@@ -45,12 +44,11 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
   );
   const scopedShifts = useMemo(
     () => (activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : []),
-    [activeRestaurantId, shifts, getShiftsForRestaurant],
+    [activeRestaurantId, getShiftsForRestaurant],
   );
   const activeEmployees = useMemo(() => scopedEmployees.filter((e) => e.isActive), [scopedEmployees]);
 
   const role = getUserRole(currentUser?.role);
-  const isManager = isManagerRole(role);
   const isEmployee = role === 'EMPLOYEE';
 
   const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';

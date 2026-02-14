@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
 
   const weekStartDay = payload.weekStartDay === 'monday' ? 'monday' : 'sunday';
 
-  const updatePayload: Record<string, any> = {
+  const updatePayload: Record<string, unknown> = {
     updated_at: new Date().toISOString(),
   };
 

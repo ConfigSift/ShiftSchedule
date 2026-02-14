@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { getAdminAuthApi } from '@/lib/supabase/adminAuth';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -9,7 +10,7 @@ const isUuid = (value: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
 async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | null> {
-  const adminAuth: any = supabaseAdmin.auth.admin;
+  const adminAuth = getAdminAuthApi();
   if (typeof adminAuth.getUserByEmail === 'function') {
     const { data, error } = await adminAuth.getUserByEmail(normalizedEmail);
     if (!error && data?.user?.id) return data.user.id;
@@ -27,7 +28,7 @@ async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | 
       return null;
     }
     const users = listData?.users ?? [];
-    const match = users.find((user: any) => String(user.email ?? '').toLowerCase() === normalizedEmail);
+    const match = users.find((user) => String(user.email ?? '').toLowerCase() === normalizedEmail);
     if (match?.id) return match.id;
     if (users.length < perPage) break;
     page += 1;
@@ -97,7 +98,7 @@ export async function GET(req: NextRequest) {
           response
         );
       }
-      membershipOrgIds = (membershipRows ?? []).map((row: any) => String(row.organization_id));
+      membershipOrgIds = (membershipRows ?? []).map((row: { organization_id?: string }) => String(row.organization_id ?? ''));
       hasMembershipInThisOrg = membershipOrgIds.includes(organizationId);
       hasMembershipInOtherOrg = membershipOrgIds.some((id) => id !== organizationId);
     }
@@ -142,7 +143,8 @@ export async function GET(req: NextRequest) {
       }),
       response
     );
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Unknown error.' }, { status: 500 });
+  } catch (e: unknown) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    return NextResponse.json({ error: err.message || 'Unknown error.' }, { status: 500 });
   }
 }

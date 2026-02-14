@@ -7,6 +7,13 @@ import { Modal } from './Modal';
 import { formatDateLong } from '../utils/timeUtils';
 import { useUIStore } from '../store/uiStore';
 
+function getModalEmployeeId(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const employeeId = (value as { employeeId?: unknown }).employeeId;
+  if (typeof employeeId === 'string') return employeeId;
+  return employeeId == null ? undefined : String(employeeId);
+}
+
 export function TimeOffRequestModal() {
   const { 
     modalType, 
@@ -26,17 +33,20 @@ export function TimeOffRequestModal() {
   const [endDate, setEndDate] = useState('');
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
-  const employeeId = modalData?.employeeId || currentUser?.id;
+  const employeeId = getModalEmployeeId(modalData) || currentUser?.id;
 
   useEffect(() => {
-    if (isOpen) {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      setStartDate(tomorrow.toISOString().split('T')[0]);
-      setEndDate(tomorrow.toISOString().split('T')[0]);
+    if (!isOpen) return;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const dateString = tomorrow.toISOString().split('T')[0];
+    const timer = setTimeout(() => {
+      setStartDate(dateString);
+      setEndDate(dateString);
       setReason('');
       setNote('');
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [isOpen]);
 
   const handleClose = () => {

@@ -13,7 +13,6 @@ import { Toast } from '../../../components/Toast';
 function DemoShiftExchangeInner() {
   const { activeRestaurantId } = useAuthStore();
   const {
-    shifts,
     dropRequests,
     getShiftsForRestaurant,
     getEmployeesForRestaurant,
@@ -39,7 +38,7 @@ function DemoShiftExchangeInner() {
     return getShiftsForRestaurant(activeRestaurantId)
       .filter((shift) => !shift.isBlocked && shift.date >= today)
       .sort((a, b) => (a.date === b.date ? a.startHour - b.startHour : a.date.localeCompare(b.date)));
-  }, [activeRestaurantId, getShiftsForRestaurant, shifts]);
+  }, [activeRestaurantId, getShiftsForRestaurant]);
 
   const openRequests = useMemo(
     () => dropRequests.filter((request) => request.status === 'open'),

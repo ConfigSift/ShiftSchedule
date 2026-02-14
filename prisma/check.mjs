@@ -1,7 +1,10 @@
-const fs = require("fs");
-const path = require("path");
-const net = require("net");
+import fs from "node:fs";
+import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 const envFiles = [".env", ".env.local"];
 
@@ -85,7 +88,7 @@ function printParsed(label, value) {
     console.log(`  db: ${url.pathname.replace(/^\//, "") || "(missing)"}`);
     console.log(`  password: ${masked || "(missing)"}`);
     return url;
-  } catch (error) {
+  } catch {
     console.error(`${label}: invalid URL`);
     return null;
   }

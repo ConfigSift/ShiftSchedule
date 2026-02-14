@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getSupabaseClient } from '../../../lib/supabase/client';
 import { formatSupabaseEnvError, getSupabaseEnv } from '../../../lib/supabase/env';
 import { useAuthStore } from '../../../store/authStore';
@@ -201,7 +201,7 @@ export default function SupabaseDebugPage() {
     }
   };
 
-  const fetchJobsInfo = async () => {
+  const fetchJobsInfo = useCallback(async () => {
     if (!currentUser?.authUserId || !isValid) {
       setJobsInfo(null);
       return;
@@ -227,11 +227,11 @@ export default function SupabaseDebugPage() {
     } catch {
       setJobsInfo(null);
     }
-  };
+  }, [currentUser?.authUserId, isValid]);
 
   useEffect(() => {
-    fetchJobsInfo();
-  }, [currentUser?.authUserId, isValid]);
+    void fetchJobsInfo();
+  }, [fetchJobsInfo]);
 
   return (
     <div className="min-h-screen bg-theme-primary p-6">

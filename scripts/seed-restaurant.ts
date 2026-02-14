@@ -15,7 +15,7 @@ async function main() {
   }
 
   if (existing) {
-    // eslint-disable-next-line no-console
+     
     console.log(`Restaurant already exists: ${RESTAURANT_CODE}`);
     return;
   }
@@ -29,12 +29,12 @@ async function main() {
     throw insertError;
   }
 
-  // eslint-disable-next-line no-console
+   
   console.log(`Restaurant seeded: ${RESTAURANT_NAME} (${RESTAURANT_CODE})`);
 }
 
 main().catch((error) => {
-  // eslint-disable-next-line no-console
+   
   console.error(error);
   process.exit(1);
 });

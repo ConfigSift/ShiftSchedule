@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase/admin';
+import { getAdminAuthApi } from '@/lib/supabase/adminAuth';
 
 // DEV ONLY: check auth user existence by email. Do not enable in prod.
 export const dynamic = 'force-dynamic';
@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'email is required' }, { status: 400 });
   }
 
-  const adminAuth: any = supabaseAdmin.auth.admin;
+  const adminAuth = getAdminAuthApi();
   if (typeof adminAuth.getUserByEmail === 'function') {
     const { data, error } = await adminAuth.getUserByEmail(email);
     if (error) {
@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: listErr.message }, { status: 500 });
     }
     const users = listData?.users ?? [];
-    const match = users.find((user: any) => String(user.email ?? '').toLowerCase() === email);
+    const match = users.find((user) => String(user.email ?? '').toLowerCase() === email);
     if (match?.id) {
       return NextResponse.json({ exists: true, auth_user_id: match.id });
     }

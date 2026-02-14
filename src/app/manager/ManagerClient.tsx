@@ -31,6 +31,17 @@ type DeleteRestaurantError = {
   hint?: string;
 };
 
+type CreateRestaurantResponse = {
+  id: string;
+  restaurant_code?: string | null;
+};
+
+function isDeleteRestaurantResponse(
+  value: DeleteRestaurantResponse | DeleteRestaurantError | null | undefined,
+): value is DeleteRestaurantResponse {
+  return Boolean(value && typeof value === 'object' && 'ok' in value);
+}
+
 export default function ManagerClient() {
   const router = useRouter();
   const {
@@ -149,7 +160,7 @@ export default function ManagerClient() {
       return;
     }
 
-    const result = await apiFetch('/api/organizations/create', {
+    const result = await apiFetch<CreateRestaurantResponse>('/api/organizations/create', {
       method: 'POST',
       json: { name },
     });
@@ -169,13 +180,13 @@ export default function ManagerClient() {
     const orgId = String(restaurant.id ?? '').trim();
     if (!orgId) {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.log('[manager] delete modal skipped (missing org id)', restaurant);
       }
       return;
     }
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.log('[manager] open delete modal', { organizationId: orgId });
     }
     setDeleteTarget({ ...restaurant, id: orgId });
@@ -210,7 +221,7 @@ export default function ManagerClient() {
     if (!result.ok) {
       const body = (result.data ?? null) as DeleteRestaurantError | null;
       setDeleteError(body?.message || body?.error || result.error || 'Unable to delete restaurant.');
-      setDeleteErrorDetails(body);
+      setDeleteErrorDetails(body ?? null);
       setDeleteSubmitting(false);
       return;
     }
@@ -219,8 +230,9 @@ export default function ManagerClient() {
     }
     await refreshProfile();
     await useAuthStore.getState().fetchSubscriptionStatus();
-    const quantitySynced = result.data?.quantitySynced !== false;
-    const newQuantity = Number(result.data?.newQuantity ?? 0);
+    const successPayload = isDeleteRestaurantResponse(result.data) ? result.data : undefined;
+    const quantitySynced = successPayload?.quantitySynced !== false;
+    const newQuantity = Number(successPayload?.newQuantity ?? 0);
     if (!quantitySynced) {
       setDeleteToast({
         type: 'warning',

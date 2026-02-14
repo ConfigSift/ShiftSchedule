@@ -1,5 +1,5 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const baseUrl = process.env.TEST_BASE_URL;
 const adminToken = process.env.TEST_ADMIN_TOKEN;

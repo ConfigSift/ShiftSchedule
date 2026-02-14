@@ -143,7 +143,7 @@ export function generateDailyRosterHTML(
       entries.sort((a, b) => a.shift.startHour - b.shift.startHour || a.employee.name.localeCompare(b.employee.name))
     );
 
-    const result: Array<{ job: string; key: string; entries: typeof groupMap extends Map<any, infer T> ? T : never }> = [];
+    const result: Array<{ job: string; key: string; entries: typeof groupMap extends Map<unknown, infer T> ? T : never }> = [];
     const jobList = Array.from(groupMap.keys()).sort(compareJobs);
     for (const job of jobList) {
       const entries = groupMap.get(job);

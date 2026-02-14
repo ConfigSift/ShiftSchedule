@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient } from '../../../lib/supabase/client';
 import { formatSupabaseEnvError, getSupabaseEnv } from '../../../lib/supabase/env';
 
@@ -88,6 +88,37 @@ const SHIFT_EXCHANGE_REQUIRED_COLUMNS = [
   'created_at',
 ];
 
+const isMissingTableError = (message: string, table: string) =>
+  message.toLowerCase().includes('relation') && message.toLowerCase().includes(table);
+
+const isMissingColumnError = (message: string, column: string) =>
+  message.toLowerCase().includes(column) && message.toLowerCase().includes('does not exist');
+
+async function checkTable(client: ReturnType<typeof getSupabaseClient>, table: string) {
+  const result = await client.from(table).select('id').limit(1);
+  if (!result.error) return { ok: true };
+  if (isMissingTableError(result.error.message, table)) {
+    return { ok: false, error: result.error.message };
+  }
+  return { ok: true, error: result.error.message };
+}
+
+async function checkColumn(
+  client: ReturnType<typeof getSupabaseClient>,
+  table: string,
+  column: string,
+) {
+  const result = await client.from(table).select(column).limit(1);
+  if (!result.error) return { ok: true };
+  if (isMissingTableError(result.error.message, table)) {
+    return { ok: false, error: result.error.message };
+  }
+  if (isMissingColumnError(result.error.message, column)) {
+    return { ok: false, error: result.error.message };
+  }
+  return { ok: true, error: result.error.message };
+}
+
 export default function DebugDbPage() {
   const { supabaseUrl, isValid } = getSupabaseEnv();
   const [checks, setChecks] = useState<CheckItem[]>([]);
@@ -96,68 +127,7 @@ export default function DebugDbPage() {
   const [missingColumns, setMissingColumns] = useState<Record<string, string[]>>({});
   const isDev = process.env.NODE_ENV !== 'production';
 
-  const isMissingTableError = (message: string, table: string) =>
-    message.toLowerCase().includes('relation') && message.toLowerCase().includes(table);
-  const isMissingColumnError = (message: string, column: string) =>
-    message.toLowerCase().includes(column) && message.toLowerCase().includes('does not exist');
-
-  const checkTable = async (client: ReturnType<typeof getSupabaseClient>, table: string) => {
-    const result = await client.from(table).select('id').limit(1);
-    if (!result.error) return { ok: true };
-    if (isMissingTableError(result.error.message, table)) {
-      return { ok: false, error: result.error.message };
-    }
-    return { ok: true, error: result.error.message };
-  };
-
-  const checkColumn = async (client: ReturnType<typeof getSupabaseClient>, table: string, column: string) => {
-    const result = await client.from(table).select(column).limit(1);
-    if (!result.error) return { ok: true };
-    if (isMissingTableError(result.error.message, table)) {
-      return { ok: false, error: result.error.message };
-    }
-    if (isMissingColumnError(result.error.message, column)) {
-      return { ok: false, error: result.error.message };
-    }
-    return { ok: true, error: result.error.message };
-  };
-
-  const checkIndex = async (client: ReturnType<typeof getSupabaseClient>, table: string, indexName: string) => {
-    const result = await client
-      .from('pg_indexes')
-      .select('indexname')
-      .eq('tablename', table)
-      .eq('indexname', indexName);
-    if (!result.error) {
-      return { ok: (result.data || []).length > 0 };
-    }
-    return { ok: false, error: result.error.message };
-  };
-
-  const checkPolicy = async (client: ReturnType<typeof getSupabaseClient>, table: string, policyName: string) => {
-    const result = await client
-      .from('pg_policies')
-      .select('policyname')
-      .eq('tablename', table)
-      .eq('policyname', policyName);
-    if (!result.error) {
-      return { ok: (result.data || []).length > 0 };
-    }
-    return { ok: false, error: result.error.message };
-  };
-
-  const checkConstraint = async (client: ReturnType<typeof getSupabaseClient>, constraintName: string) => {
-    const result = await client
-      .from('pg_constraint')
-      .select('conname')
-      .eq('conname', constraintName);
-    if (!result.error) {
-      return { ok: (result.data || []).length > 0 };
-    }
-    return { ok: false, error: result.error.message };
-  };
-
-  const runChecks = async () => {
+  const runChecks = useCallback(async () => {
     setLoading(true);
     setError(null);
     setMissingColumns({});
@@ -598,11 +568,11 @@ export default function DebugDbPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [isDev, isValid]);
 
   useEffect(() => {
-    runChecks();
-  }, []);
+    void runChecks();
+  }, [runChecks]);
 
   const sqlBlocks = useMemo(() => {
     const blocks: string[] = [];

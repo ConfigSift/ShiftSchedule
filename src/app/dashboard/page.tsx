@@ -25,7 +25,11 @@ function consumeQueryFlag(param: string): boolean {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('notice');
+  });
   const { hydrate, isHydrated, showToast } = useScheduleStore();
   const {
     currentUser,
@@ -43,8 +47,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      setNotice(params.get('notice'));
 
       // Post-checkout toasts — consume the flag and clean URL
       if (consumeQueryFlag('subscribed')) {
@@ -127,9 +129,9 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (subscriptionStatus !== 'loading') {
-      setSubLoadingTimedOut(false);
+      const timeout = setTimeout(() => setSubLoadingTimedOut(false), 0);
       if (subTimerRef.current) clearTimeout(subTimerRef.current);
-      return;
+      return () => clearTimeout(timeout);
     }
     subTimerRef.current = setTimeout(() => setSubLoadingTimedOut(true), 5000);
     return () => {

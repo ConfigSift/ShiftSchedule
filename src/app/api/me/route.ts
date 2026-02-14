@@ -6,6 +6,11 @@ import { getUserRole } from '@/utils/role';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+type MembershipRow = {
+  organization_id?: string | null;
+  role?: string | null;
+};
+
 export async function GET(request: NextRequest) {
   try {
     const { supabase, response } = createSupabaseRouteClient(request);
@@ -40,8 +45,9 @@ export async function GET(request: NextRequest) {
         .eq('auth_user_id', user.id);
 
       if (!membershipError && memberships && memberships.length > 0) {
-        organizationId = memberships[0].organization_id ?? null;
-        const ranked = memberships
+        const membershipRows = memberships as MembershipRow[];
+        organizationId = membershipRows[0].organization_id ?? null;
+        const ranked = membershipRows
           .map((row) => getUserRole(row.role))
           .sort((a, b) => {
             const rank = (value: string) =>

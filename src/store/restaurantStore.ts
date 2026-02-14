@@ -11,6 +11,10 @@ function normalizeCode(code: string): string {
   return code.trim().toUpperCase();
 }
 
+function toStringValue(value: unknown): string {
+  return typeof value === 'string' ? value : String(value ?? '');
+}
+
 export function generateRestaurantCode(length = 8): string {
   const body = Array.from({ length }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join('');
   return `${CODE_PREFIX}${body}`;
@@ -40,7 +44,7 @@ export const useRestaurantStore = create<RestaurantState>((set, get) => ({
       .from('organizations')
       .select('id,name,restaurant_code,created_at')
       .in('id', restaurantIds)) as {
-      data: Array<Record<string, any>> | null;
+      data: Array<Record<string, unknown>> | null;
       error: { message: string } | null;
     };
 
@@ -50,10 +54,10 @@ export const useRestaurantStore = create<RestaurantState>((set, get) => ({
     }
 
     const restaurants: Restaurant[] = (data || []).map((row) => ({
-      id: row.id,
-      name: row.name,
-      restaurantCode: row.restaurant_code,
-      createdAt: row.created_at,
+      id: toStringValue(row.id),
+      name: toStringValue(row.name),
+      restaurantCode: toStringValue(row.restaurant_code),
+      createdAt: toStringValue(row.created_at),
       createdByUserId: '',
     }));
 
@@ -61,7 +65,7 @@ export const useRestaurantStore = create<RestaurantState>((set, get) => ({
   },
 
   addRestaurant: async (restaurant) => {
-    const { data, error } = (await (supabase as any)
+    const { data, error } = (await supabase
       .from('organizations')
       .insert({
         name: restaurant.name,
@@ -69,7 +73,7 @@ export const useRestaurantStore = create<RestaurantState>((set, get) => ({
       })
       .select('id,name,restaurant_code,created_at')
       .single()) as {
-      data: Record<string, any> | null;
+      data: Record<string, unknown> | null;
       error: { message: string } | null;
     };
 
@@ -78,10 +82,10 @@ export const useRestaurantStore = create<RestaurantState>((set, get) => ({
     }
 
     const newRestaurant: Restaurant = {
-      id: data.id,
-      name: data.name,
-      restaurantCode: data.restaurant_code,
-      createdAt: data.created_at,
+      id: toStringValue(data.id),
+      name: toStringValue(data.name),
+      restaurantCode: toStringValue(data.restaurant_code),
+      createdAt: toStringValue(data.created_at),
       createdByUserId: restaurant.createdByUserId,
     };
 
@@ -95,7 +99,7 @@ export const useRestaurantStore = create<RestaurantState>((set, get) => ({
       .select('id,name,restaurant_code,created_at')
       .eq('restaurant_code', normalizeCode(code))
       .single()) as {
-      data: Record<string, any> | null;
+      data: Record<string, unknown> | null;
       error: { message: string } | null;
     };
 
@@ -104,10 +108,10 @@ export const useRestaurantStore = create<RestaurantState>((set, get) => ({
     }
 
     return {
-      id: data.id,
-      name: data.name,
-      restaurantCode: data.restaurant_code,
-      createdAt: data.created_at,
+      id: toStringValue(data.id),
+      name: toStringValue(data.name),
+      restaurantCode: toStringValue(data.restaurant_code),
+      createdAt: toStringValue(data.created_at),
       createdByUserId: '',
     };
   },
@@ -117,3 +121,4 @@ export const useRestaurantStore = create<RestaurantState>((set, get) => ({
     return get().restaurants.filter((r) => lookup.has(r.id));
   },
 }));
+

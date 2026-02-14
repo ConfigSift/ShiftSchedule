@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { CalendarOff, Shield, Trash2 } from 'lucide-react';
@@ -83,7 +83,7 @@ export default function StaffProfilePage() {
     }
   }, [isInitialized, currentUser, activeRestaurantId, currentRole, userId, router]);
 
-  const loadUser = async () => {
+  const loadUser = useCallback(async () => {
     if (!activeRestaurantId || !userId) return;
     setLoading(true);
     setError('');
@@ -94,7 +94,7 @@ export default function StaffProfilePage() {
       .eq('id', userId)
       .eq('organization_id', activeRestaurantId)
       .maybeSingle()) as {
-      data: Record<string, any> | null;
+      data: Record<string, unknown> | null;
       error: { message: string } | null;
     };
 
@@ -138,13 +138,13 @@ export default function StaffProfilePage() {
     setEmail(mapped.email);
     setEmployeeNumber(mapped.employeeNumber ? String(mapped.employeeNumber).padStart(4, '0') : '');
     setLoading(false);
-  };
+  }, [activeRestaurantId, userId]);
 
   useEffect(() => {
     if (isInitialized && currentUser && activeRestaurantId && userId) {
-      loadUser();
+      void loadUser();
     }
-  }, [isInitialized, currentUser, activeRestaurantId, userId]);
+  }, [isInitialized, currentUser, activeRestaurantId, userId, loadUser]);
 
   const blockedShifts = useMemo(() => {
     if (!user) return [];

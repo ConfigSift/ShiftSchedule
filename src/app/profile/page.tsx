@@ -59,11 +59,13 @@ export default function ProfilePage() {
   }, [isHydrated, isInitialized, currentUser, router]);
 
   useEffect(() => {
-    if (currentUser) {
+    if (!currentUser) return;
+    const timer = setTimeout(() => {
       setFullName(currentUser.fullName || '');
       setEmail(currentUser.email || '');
       setPhone(currentUser.phone || '');
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [currentUser]);
 
   useEffect(() => {

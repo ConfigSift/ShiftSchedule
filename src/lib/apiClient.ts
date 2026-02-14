@@ -22,7 +22,7 @@ function normalizeApiUrl(input: string) {
     return trimmed;
   }
 
-  let normalized = trimmed;
+  const normalized = trimmed;
   const isDev = process.env.NODE_ENV !== 'production';
   if (normalized.startsWith('/api/')) {
     return normalized;
@@ -31,7 +31,7 @@ function normalizeApiUrl(input: string) {
   if (normalized.startsWith('api/')) {
     const fixed = `/${normalized}`;
     if (isDev) {
-      // eslint-disable-next-line no-console
+       
       console.warn('[apiFetch] Normalized API path to include leading "/":', input, '->', fixed);
     }
     return fixed;
@@ -39,7 +39,7 @@ function normalizeApiUrl(input: string) {
 
   const fixed = normalized.startsWith('/') ? `/api${normalized}` : `/api/${normalized}`;
   if (isDev) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[apiFetch] Normalized API path to include "/api/":', input, '->', fixed);
   }
   return fixed;
@@ -57,7 +57,7 @@ async function parseJsonSafe(response: Response) {
   }
 }
 
-export async function apiFetch<T = any>(url: string, options: ApiFetchOptions = {}): Promise<ApiResult<T>> {
+export async function apiFetch<T = unknown>(url: string, options: ApiFetchOptions = {}): Promise<ApiResult<T>> {
   const { json, skipAuthDebug, headers, ...rest } = options;
   const mergedHeaders = new Headers(headers);
   const requestUrl = normalizeApiUrl(url);
@@ -107,7 +107,7 @@ export async function apiFetch<T = any>(url: string, options: ApiFetchOptions = 
       const { data: whoData } = await parseJsonSafe(whoResponse);
       if (whoData?.hasSession) {
         const origin = typeof window !== 'undefined' ? window.location.origin : 'unknown';
-        // eslint-disable-next-line no-console
+         
         console.warn(
           '[auth-debug] /api/me reports a session but this request returned 401.',
           {

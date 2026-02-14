@@ -18,9 +18,7 @@ const STORAGE_KEY = 'schedule.sidebarCollapsed';
 export function StaffSidebar() {
   const {
     getEmployeesForRestaurant,
-    selectedSections,
     selectedEmployeeIds,
-    setSectionSelectedForRestaurant,
     toggleEmployee,
     setSelectedEmployeeIds,
     selectAllEmployeesForRestaurant,
@@ -40,7 +38,10 @@ export function StaffSidebar() {
 
   const [expandedSections, setExpandedSections] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(STORAGE_KEY) === 'true';
+  });
   const [profileUser, setProfileUser] = useState<{
     id: string;
     authUserId: string | null;
@@ -81,14 +82,6 @@ export function StaffSidebar() {
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
   }, [isSidebarOpen, closeSidebar]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (stored !== null) {
-      setSidebarCollapsed(stored === 'true');
-    }
-  }, []);
 
   const toggleSidebarCollapsed = useCallback(() => {
     setSidebarCollapsed((prev) => {
@@ -132,14 +125,19 @@ export function StaffSidebar() {
     const toLocalYMD = (value: Date) =>
       `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 
-    const getBreakMinutes = (shift: any) => {
-      const raw = shift?.breakMinutes ?? shift?.break_minutes ?? 0;
+    const asRecord = (value: unknown): Record<string, unknown> =>
+      typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+
+    const getBreakMinutes = (shift: unknown) => {
+      const shiftRecord = asRecord(shift);
+      const raw = shiftRecord.breakMinutes ?? shiftRecord.break_minutes ?? 0;
       const minutes = Number(raw);
       return Number.isFinite(minutes) ? minutes : 0;
     };
 
-    const calcDuration = (shift: any) => {
-      const base = Number(shift.endHour) - Number(shift.startHour);
+    const calcDuration = (shift: unknown) => {
+      const shiftRecord = asRecord(shift);
+      const base = Number(shiftRecord.endHour) - Number(shiftRecord.startHour);
       const breakMinutes = getBreakMinutes(shift);
       const hours = base - breakMinutes / 60;
       return Number.isFinite(hours) ? Math.max(0, hours) : 0;
@@ -179,7 +177,7 @@ export function StaffSidebar() {
     });
 
     return { lastWeek, thisWeek, today };
-  }, [isEmployee, currentUser, scopedShifts, selectedDate, dateString]);
+  }, [isEmployee, currentUser, scopedShifts, selectedDate, dateString, scheduleViewSettings?.weekStartDay]);
 
   const formatHours = (value: number) => {
     const safe = Number.isFinite(value) ? Math.round(value * 10) / 10 : 0;

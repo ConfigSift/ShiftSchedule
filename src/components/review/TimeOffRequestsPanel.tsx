@@ -51,7 +51,7 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
   useEffect(() => {
     if (process.env.NODE_ENV === 'production') return;
     const pendingCount = timeOffRequests.filter((request) => request.status === 'PENDING').length;
-    // eslint-disable-next-line no-console
+     
     console.debug('[TimeOffRequestsPanel]', {
       activeRestaurantId,
       effectiveRole,
@@ -188,6 +188,9 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
               {filteredRequests.map((request) => {
                 const employee = getEmployeeById(request.employeeId);
                 const { reason, note } = splitReason(request.reason);
+                const isPending = String(request.status).toUpperCase() === 'PENDING';
+                const isApproved = String(request.status).toUpperCase() === 'APPROVED';
+                const isDenied = String(request.status).toUpperCase() === 'DENIED';
                 return (
                   <tr key={request.id} className="text-theme-primary">
                     <td className="py-3 px-3">
@@ -204,11 +207,11 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
                     <td className="py-3 px-3">
                       <span
                         className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                          request.status === 'PENDING'
+                          isPending
                             ? 'bg-amber-500/20 text-amber-400'
-                            : request.status === 'APPROVED'
+                            : isApproved
                             ? 'bg-emerald-500/20 text-emerald-400'
-                            : request.status === 'DENIED'
+                            : isDenied
                             ? 'bg-red-500/20 text-red-400'
                             : 'bg-theme-tertiary text-theme-muted'
                         }`}
@@ -224,7 +227,7 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
                       {note && <div className="text-xs text-theme-muted mt-1">Note: {note}</div>}
                     </td>
                     <td className="py-3 px-3">
-                      {isManager && request.status === 'PENDING' ? (
+                      {isManager && isPending ? (
                         <input
                           type="text"
                           value={notesById[request.id] ?? ''}
@@ -239,7 +242,7 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
                       )}
                     </td>
                     <td className="py-3 px-3 text-right">
-                      {isManager && request.status === 'PENDING' ? (
+                      {isManager && isPending ? (
                         <div className="flex justify-end gap-2">
                           <button
                             onClick={() => handleDecision(request.id, 'DENIED')}

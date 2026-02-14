@@ -25,7 +25,6 @@ export default function BuilderClient() {
     scheduleMode,
     setScheduleMode,
     setSelectedDate,
-    selectedDate,
     setViewMode,
     applyRestaurantScope,
     loadRestaurantData,

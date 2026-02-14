@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
         ? 'Not signed in. Please sign out/in again.'
         : authError?.message || 'Unauthorized.';
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.error('[organizations:create] auth failed', { message });
     }
     return applySupabaseCookies(jsonError(message, 401), response);
@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
 
   if (membershipError) {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.error('[organizations:create] membership lookup failed', membershipError);
     }
     return applySupabaseCookies(
@@ -51,13 +51,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const membershipCount = membershipRows?.length ?? 0;
-  const hasAdminMembership = membershipRows?.some(
+  const typedMembershipRows = (membershipRows ?? []) as Array<{ role?: string | null }>;
+  const membershipCount = typedMembershipRows.length;
+  const hasAdminMembership = typedMembershipRows.some(
     (row) => String(row.role ?? '').trim().toLowerCase() === 'admin'
   );
 
   if (process.env.NODE_ENV !== 'production') {
-    // eslint-disable-next-line no-console
+     
     console.error('[organizations:create] membership check', {
       membershipCount,
       decision: membershipCount === 0 ? 'bootstrap-first-restaurant' : hasAdminMembership ? 'admin-allowed' : 'blocked-non-admin',
@@ -91,14 +92,14 @@ export async function POST(request: NextRequest) {
     .limit(1);
 
   if (requesterError && process.env.NODE_ENV !== 'production') {
-    // eslint-disable-next-line no-console
+     
     console.error('[organizations:create] requester lookup failed', requesterError);
   }
 
   const requesterRow = requesterRows?.[0] ?? null;
   const authUser = authData.user;
   const authEmail = String(authUser?.email ?? '').trim();
-  const authMeta = (authUser?.user_metadata ?? {}) as Record<string, any>;
+  const authMeta = (authUser?.user_metadata ?? {}) as Record<string, unknown>;
   const fallbackFullName = String(
     authMeta.full_name ?? authMeta.fullName ?? authMeta.name ?? authEmail.split('@')[0] ?? 'Team Member'
   ).trim();
@@ -126,7 +127,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.error('[organizations:create] org insert failed', {
         code: error?.code,
         message: error?.message,
@@ -140,7 +141,7 @@ export async function POST(request: NextRequest) {
 
   if (!createdOrg) {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.error('[organizations:create] org insert exhausted', lastError);
     }
     return applySupabaseCookies(
@@ -165,7 +166,7 @@ export async function POST(request: NextRequest) {
 
   if (membershipInsertError) {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.error('[organizations:create] membership insert failed', {
         role: membershipRole,
         error: membershipInsertError,
@@ -194,7 +195,7 @@ export async function POST(request: NextRequest) {
     if (message.includes('column') && message.includes('employee_number')) {
       employeeNumberSupported = false;
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.warn('[org-create] employee_id skipped (no column)');
       }
     }
@@ -219,7 +220,7 @@ export async function POST(request: NextRequest) {
         if (message.includes('column') && message.includes('employee_number')) {
           employeeNumberSupported = false;
           if (process.env.NODE_ENV !== 'production') {
-            // eslint-disable-next-line no-console
+             
             console.warn('[org-create] employee_id skipped (no column)');
           }
           break;
@@ -230,7 +231,7 @@ export async function POST(request: NextRequest) {
       if ((count ?? 0) === 0) {
         employeeNumberToAssign = candidate;
         if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
+           
           console.log('[org-create] assigned employee_id', candidate, 'for org', createdOrg.id);
         }
         break;
@@ -253,13 +254,13 @@ export async function POST(request: NextRequest) {
     insertPayload.employee_number = Number(employeeNumberToAssign);
   }
 
-  const userResult = await (supabaseAdmin as any)
+  const userResult = await supabaseAdmin
     .from('users')
     .upsert(insertPayload, { onConflict: 'organization_id,auth_user_id' });
 
   if (userResult.error) {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.error('[organizations:create] user upsert failed', userResult.error);
     }
     const errorMessage = userResult.error.message ?? 'Unable to attach admin profile.';
@@ -286,13 +287,13 @@ export async function POST(request: NextRequest) {
     if (employeeNumberSupported && employeeNumberToAssign) {
       legacyPayload.employee_number = Number(employeeNumberToAssign);
     }
-    const legacyResult = await (supabaseAdmin as any)
+    const legacyResult = await supabaseAdmin
       .from('users')
       .upsert(legacyPayload, { onConflict: 'organization_id,auth_user_id' });
 
     if (legacyResult.error) {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.error('[organizations:create] user upsert legacy failed', legacyResult.error);
       }
       await supabaseAdmin.from('organization_memberships').delete().eq('organization_id', createdOrg.id);

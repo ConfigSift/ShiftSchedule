@@ -1,4 +1,5 @@
 'use client';
+/* eslint-disable react-hooks/refs */
 
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
@@ -599,6 +600,7 @@ export function Timeline() {
   // Current time indicator
   // ─────────────────────────────────────────────────────────────────
   const now = new Date();
+  const todayDateString = toDateString(now);
   const currentHour = now.getHours() + now.getMinutes() / 60;
   const isToday = selectedDate.toDateString() === now.toDateString();
 
@@ -610,11 +612,10 @@ export function Timeline() {
   // Continuous mode current time position (in pixels)
   const currentTimePositionContinuous = useMemo(() => {
     if (!continuousDays) return null;
-    const todayString = toDateString(now);
-    const dayIndex = continuousDaysData.findIndex(d => d.dateString === todayString);
+    const dayIndex = continuousDaysData.findIndex(d => d.dateString === todayDateString);
     if (dayIndex === -1) return null;
     return (dayIndex * 24 + currentHour) * pxPerHour;
-  }, [continuousDays, continuousDaysData, currentHour, now, pxPerHour]);
+  }, [continuousDays, continuousDaysData, currentHour, pxPerHour, todayDateString]);
 
   // ─────────────────────────────────────────────────────────────────
   // Navigation
@@ -623,7 +624,7 @@ export function Timeline() {
 
   // Recenter scroll to a specific date in week view.
   // Keep this above any hooks that call it to avoid TDZ in dependency arrays.
-  const scrollToDate = useCallback((targetDate: Date, _options?: { reanchor?: boolean }) => {
+  const scrollToDate = useCallback((targetDate: Date) => {
     if (!continuousDays || !gridScrollRef.current) return;
     const normalizedTarget = getMidnight(targetDate);
     const weekStart = getWeekRange(normalizedTarget, weekStartDay).start;
@@ -675,8 +676,6 @@ export function Timeline() {
   // ─────────────────────────────────────────────────────────────────
   // Continuous mode: Recycling (infinite scroll feel)
   // ─────────────────────────────────────────────────────────────────
-  const checkAndRecycle = useCallback(() => {}, []);
-
   // ─────────────────────────────────────────────────────────────────
   // Shift interaction helpers
   // ─────────────────────────────────────────────────────────────────

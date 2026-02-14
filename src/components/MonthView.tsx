@@ -4,7 +4,7 @@ import { useMemo, useCallback } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { getUserRole } from '../utils/role';
-import { dateToString, getWeekStart, getWeekdayHeaders, isSameDay } from '../utils/timeUtils';
+import { dateToString, getWeekStart, getWeekdayHeaders } from '../utils/timeUtils';
 import { ScheduleToolbar } from './ScheduleToolbar';
 
 export function MonthView() {
@@ -13,7 +13,6 @@ export function MonthView() {
     viewMode,
     selectedEmployeeIds,
     getShiftsForRestaurant,
-    getEmployeesForRestaurant,
     setSelectedDate,
     setViewMode,
     hasOrgBlackoutOnDate,
@@ -24,7 +23,6 @@ export function MonthView() {
   const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
 
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
-  const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const role = getUserRole(currentUser?.role);
   const isEmployee = role === 'EMPLOYEE';
   const handlePrevious = useCallback(() => {

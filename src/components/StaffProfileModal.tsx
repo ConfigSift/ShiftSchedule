@@ -35,6 +35,28 @@ type StaffProfileModalProps = {
   onAuthError?: (message: string) => void;
 };
 
+type UpdateUserApiResponse = {
+  user?: {
+    id: string;
+    authUserId?: string | null;
+    fullName?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    employeeNumber?: number | null;
+    role?: string | null;
+    jobs?: string[] | null;
+    jobPay?: Record<string, number> | null;
+  };
+  count?: number;
+  earliestDate?: string;
+  exampleDates?: string[];
+  removedJobs?: string[];
+};
+
+type SetPasscodeApiResponse = {
+  authPasswordUpdated?: boolean;
+};
+
 export function StaffProfileModal({
   isOpen,
   mode,
@@ -114,9 +136,9 @@ export function StaffProfileModal({
     setPinSuccess('');
     setInitializedKey(userDataKey);
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.log('[StaffProfileModal] init user.jobPay', user.jobPay);
-      // eslint-disable-next-line no-console
+       
       console.log('[StaffProfileModal] init localJobPay', initialJobPay);
     }
   }, [isOpen, user, initializedKey, userDataKey]);
@@ -340,10 +362,10 @@ export function StaffProfileModal({
 
     try {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.log('[StaffProfileModal] save payload jobPay', jobPayNumeric);
       }
-      const result = await apiFetch('/api/admin/update-user', {
+      const result = await apiFetch<UpdateUserApiResponse>('/api/admin/update-user', {
         method: 'POST',
         json: {
           userId: user.id,
@@ -390,7 +412,7 @@ export function StaffProfileModal({
           setModalError(message);
         } else if (result.code === 'JOB_IN_USE' || result.code === 'JOB_REMOVAL_BLOCKED') {
           // Show job removal error inside modal and highlight blocked jobs
-          const payload = (result.data as any) ?? {};
+          const payload = result.data ?? {};
           const details: string[] = [];
           if (payload.count) details.push(`${payload.count} future shift(s)`);
           if (payload.earliestDate) details.push(`earliest ${payload.earliestDate}`);
@@ -413,7 +435,7 @@ export function StaffProfileModal({
         return;
       }
       // Extract updated user from API response if available
-      const returnedUser = (result.data as any)?.user;
+      const returnedUser = result.data?.user;
       const updatedUser: StaffProfileUser | undefined = returnedUser
         ? {
             id: returnedUser.id,
@@ -422,13 +444,13 @@ export function StaffProfileModal({
             email: returnedUser.email || '',
             phone: returnedUser.phone || '',
             employeeNumber: returnedUser.employeeNumber ?? null,
-            accountType: returnedUser.role,
+            accountType: String(returnedUser.role ?? user.accountType ?? 'EMPLOYEE'),
             jobs: returnedUser.jobs || [],
-            jobPay: returnedUser.jobPay,
+            jobPay: returnedUser.jobPay ?? undefined,
           }
         : undefined;
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.log('[StaffProfileModal] response user.jobPay', returnedUser?.jobPay);
       }
       await onSaved(updatedUser);
@@ -454,12 +476,12 @@ export function StaffProfileModal({
     const pinUrl = '/api/admin/set-passcode';
     try {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.log('[StaffProfileModal] Update PIN ->', pinUrl);
-        // eslint-disable-next-line no-console
+         
         console.log('[reset-pin] payload', { userId: user.id, organizationId });
       }
-      const result = await apiFetch(pinUrl, {
+      const result = await apiFetch<SetPasscodeApiResponse>(pinUrl, {
         method: 'POST',
         json: {
           userId: user.id,

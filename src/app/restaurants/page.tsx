@@ -163,7 +163,10 @@ export default function RestaurantSelectPage() {
 
   useEffect(() => {
     if (!isInitialized) return;
-    void refreshBillingSnapshot();
+    const timer = setTimeout(() => {
+      void refreshBillingSnapshot();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [isInitialized, refreshBillingSnapshot]);
 
   useEffect(() => {
@@ -187,7 +190,7 @@ export default function RestaurantSelectPage() {
       const only = accessibleRestaurants[0];
       setActiveOrganization(only.id, only.restaurantCode);
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.debug('[restaurants] single membership, no invitations, auto-selecting and redirecting');
       }
       router.push('/dashboard');
@@ -457,13 +460,13 @@ export default function RestaurantSelectPage() {
     const orgId = String(restaurant.id ?? '').trim();
     if (!orgId) {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.log('[restaurants] delete modal skipped (missing org id)', restaurant);
       }
       return;
     }
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.log('[restaurants] open delete modal', { organizationId: orgId });
     }
     setDeleteTarget({ ...restaurant, id: orgId });

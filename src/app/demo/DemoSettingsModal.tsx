@@ -60,14 +60,17 @@ export function DemoSettingsModal({ isOpen, onClose }: DemoSettingsModalProps) {
 
   useEffect(() => {
     if (!isOpen) return;
-    setWeekStartDay(scheduleViewSettings?.weekStartDay ?? 'monday');
-    setHourMode(scheduleViewSettings?.hourMode ?? 'business');
-    setCustomStartHour(scheduleViewSettings?.customStartHour ?? 9);
-    setCustomEndHour(scheduleViewSettings?.customEndHour ?? 24);
-    setBusinessOpenTime((businessSeed?.openTime ?? '10:00:00').slice(0, 5));
-    setBusinessCloseTime((businessSeed?.closeTime ?? '23:00:00').slice(0, 5));
-    setCoreOpenTime((coreSeed?.openTime ?? '11:00:00').slice(0, 5));
-    setCoreCloseTime((coreSeed?.closeTime ?? '22:00:00').slice(0, 5));
+    const timer = setTimeout(() => {
+      setWeekStartDay(scheduleViewSettings?.weekStartDay ?? 'monday');
+      setHourMode(scheduleViewSettings?.hourMode ?? 'business');
+      setCustomStartHour(scheduleViewSettings?.customStartHour ?? 9);
+      setCustomEndHour(scheduleViewSettings?.customEndHour ?? 24);
+      setBusinessOpenTime((businessSeed?.openTime ?? '10:00:00').slice(0, 5));
+      setBusinessCloseTime((businessSeed?.closeTime ?? '23:00:00').slice(0, 5));
+      setCoreOpenTime((coreSeed?.openTime ?? '11:00:00').slice(0, 5));
+      setCoreCloseTime((coreSeed?.closeTime ?? '22:00:00').slice(0, 5));
+    }, 0);
+    return () => clearTimeout(timer);
   }, [businessSeed, coreSeed, isOpen, scheduleViewSettings]);
 
   const applySettings = () => {

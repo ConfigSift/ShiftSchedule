@@ -9,6 +9,26 @@ import { apiFetch } from '../../lib/apiClient';
 import { ScheduleHourMode } from '../../types';
 import { HoursRangeSection, type HourRow } from '../../components/HoursRangeSection';
 
+const readString = (value: unknown, fallback = ''): string => {
+  if (typeof value === 'string') return value;
+  if (value == null) return fallback;
+  return String(value);
+};
+
+const makeRangeId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `range-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const buildDefaultRows = () =>
+  Array.from({ length: 7 }, (_, day) => ({
+    id: makeRangeId(),
+    dayOfWeek: day,
+    openTime: '09:00',
+    closeTime: '17:00',
+    enabled: true,
+  }));
+
 export default function BusinessHoursPage() {
   const router = useRouter();
   const {
@@ -52,27 +72,13 @@ export default function BusinessHoursPage() {
     }
   }, [isInitialized, currentUser, isManager, router]);
 
-  const makeId = () =>
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `range-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-  const buildDefaults = () =>
-    Array.from({ length: 7 }, (_, day) => ({
-      id: makeId(),
-      dayOfWeek: day,
-      openTime: '09:00',
-      closeTime: '17:00',
-      enabled: true,
-    }));
-
   useEffect(() => {
     if (businessHours.length === 0) {
-      setRows(buildDefaults());
+      setRows(buildDefaultRows());
       return;
     }
     const mapped = businessHours.map((range) => ({
-      id: range.id ?? makeId(),
+      id: range.id ?? makeRangeId(),
       dayOfWeek: range.dayOfWeek,
       openTime: range.openTime?.slice(0, 5) ?? '09:00',
       closeTime: range.closeTime?.slice(0, 5) ?? '17:00',
@@ -84,11 +90,11 @@ export default function BusinessHoursPage() {
 
   useEffect(() => {
     if (coreHours.length === 0) {
-      setCoreRows(buildDefaults());
+      setCoreRows(buildDefaultRows());
       return;
     }
     const mapped = coreHours.map((range) => ({
-      id: range.id ?? makeId(),
+      id: range.id ?? makeRangeId(),
       dayOfWeek: range.dayOfWeek,
       openTime: range.openTime?.slice(0, 5) ?? '09:00',
       closeTime: range.closeTime?.slice(0, 5) ?? '17:00',
@@ -294,7 +300,7 @@ export default function BusinessHoursPage() {
     };
     setSavingViewSettings(true);
     try {
-      const result = await apiFetch<{ settings: Record<string, any> }>('/api/schedule-view-settings/save', {
+      const result = await apiFetch<{ settings: Record<string, unknown> }>('/api/schedule-view-settings/save', {
         method: 'POST',
         json: payload,
       });
@@ -327,8 +333,8 @@ export default function BusinessHoursPage() {
       if (result.data?.settings) {
         const s = result.data.settings;
         setScheduleViewSettings({
-          id: s.id,
-          organizationId: s.organization_id,
+          id: readString(s.id),
+          organizationId: readString(s.organization_id),
           hourMode: s.hour_mode as ScheduleHourMode,
           customStartHour: Number(s.custom_start_hour ?? 0),
           customEndHour: Number(s.custom_end_hour ?? 24),
@@ -372,7 +378,7 @@ export default function BusinessHoursPage() {
 
     setSavingWeekStart(true);
     try {
-      const result = await apiFetch<{ settings: Record<string, any> }>('/api/schedule-view-settings/save', {
+      const result = await apiFetch<{ settings: Record<string, unknown> }>('/api/schedule-view-settings/save', {
         method: 'POST',
         json: payload,
       });
@@ -404,8 +410,8 @@ export default function BusinessHoursPage() {
       if (result.data?.settings) {
         const s = result.data.settings;
         setScheduleViewSettings({
-          id: s.id,
-          organizationId: s.organization_id,
+          id: readString(s.id),
+          organizationId: readString(s.organization_id),
           hourMode: s.hour_mode as ScheduleHourMode,
           customStartHour: Number(s.custom_start_hour ?? 0),
           customEndHour: Number(s.custom_end_hour ?? 24),

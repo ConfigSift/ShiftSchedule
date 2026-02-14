@@ -29,6 +29,13 @@ type ShiftRow = {
   is_marketplace?: boolean | null;
 };
 
+type UserRow = {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  auth_user_id: string | null;
+};
+
 function parseTimeToDecimal(value: string | null | undefined) {
   if (!value) return 0;
   const [hours, minutes = '0'] = value.split(':');
@@ -162,10 +169,16 @@ export async function GET(request: NextRequest) {
     : { data: [] };
 
   const shiftMap = new Map((shiftRows ?? []).map((row: ShiftRow) => [row.id, row]));
-  const userIdMap = new Map((usersById ?? []).map((row: any) => [row.id, row]));
-  const authMap = new Map((usersByAuth ?? []).map((row: any) => [row.auth_user_id, row]));
+  const userIdRows = (usersById ?? []) as UserRow[];
+  const userAuthRows = (usersByAuth ?? []) as UserRow[];
+  const userIdMap = new Map(userIdRows.map((row) => [row.id, row]));
+  const authMap = new Map(
+    userAuthRows
+      .filter((row) => Boolean(row.auth_user_id))
+      .map((row) => [String(row.auth_user_id), row]),
+  );
 
-  const responseRows = safeRequests.reduce<Array<Record<string, any>>>((acc, row) => {
+  const responseRows = safeRequests.reduce<Array<Record<string, unknown>>>((acc, row) => {
     const shift = shiftMap.get(row.shift_id);
     if (!shift) return acc;
     if (hasMarketplaceColumn && shift.is_marketplace !== true) {

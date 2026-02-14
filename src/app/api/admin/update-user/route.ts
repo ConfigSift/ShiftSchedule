@@ -334,7 +334,7 @@ export async function POST(request: NextRequest) {
       .eq('auth_user_id', targetAuthUserId);
     if (membershipUpdateError) {
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.error('[update-user] membership update failed', {
           organizationId: payload.organizationId,
           authUserId: targetAuthUserId,

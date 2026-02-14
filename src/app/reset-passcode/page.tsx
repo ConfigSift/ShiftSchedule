@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Calendar, Lock } from 'lucide-react';
+import type { AuthChangeEvent } from '@supabase/supabase-js';
 import { supabase } from '../../lib/supabase/client';
 
 export default function ResetPasscodePage() {
@@ -53,7 +54,7 @@ export default function ResetPasscodePage() {
 
     hydrateSessionFromHash();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event: AuthChangeEvent) => {
       if (event === 'PASSWORD_RECOVERY') {
         setReady(true);
       }

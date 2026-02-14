@@ -48,6 +48,14 @@ supabase db reset
 - Apply Supabase migrations (CLI `supabase db push` or SQL Editor via `/debug/db`).
 - Confirm `/debug/db` shows ALL PASS.
 
+## Vercel Subdomains (App + Login)
+
+- Add these project domains in Vercel: `crewshyft.com`, `app.crewshyft.com`, `login.crewshyft.com`, and optionally `www.crewshyft.com`.
+- If the domain uses Vercel DNS, no manual A records are required.
+- If DNS is outside Vercel, point subdomains to `cname.vercel-dns.com` via CNAME records.
+- `login.crewshyft.com` is handled by middleware rewrite to the login route.
+- `app.crewshyft.com/` rewrites to the app dashboard route while keeping the clean `/` URL.
+
 ## Applying Supabase migrations
 
 Use one of the following:

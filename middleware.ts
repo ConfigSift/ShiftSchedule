@@ -1,8 +1,35 @@
-﻿import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { getSupabaseEnv } from '@/lib/supabase/env';
 import type { User } from '@supabase/supabase-js';
 import { isManagerRole } from '@/utils/role';
+
+const ROOT_DOMAIN = 'crewshyft.com';
+const WWW_DOMAIN = 'www.crewshyft.com';
+const LOGIN_SUBDOMAIN = 'login.crewshyft.com';
+const APP_SUBDOMAIN = 'app.crewshyft.com';
+const NO_ORG_REDIRECT_PATH = '/restaurants';
+
+const MARKETING_ROUTES = ['/', '/pricing', '/features', '/privacy', '/terms'];
+const LOGIN_ROUTE_PREFIXES = ['/login', '/signup', '/start', '/onboarding', '/auth', '/reset-passcode'];
+const APP_ROUTE_PREFIXES = [
+  '/dashboard',
+  '/restaurants',
+  '/staff',
+  '/reports',
+  '/chat',
+  '/blocked-days',
+  '/business-hours',
+  '/schedule',
+  '/profile',
+  '/review-requests',
+  '/time-off',
+  '/billing',
+  '/manager',
+  '/setup',
+  '/shift-exchange',
+  '/subscribe',
+];
 
 /** Routes that skip the subscription billing gate entirely */
 const BILLING_EXEMPT_PREFIXES = [
@@ -25,24 +52,159 @@ const BILLING_EXEMPT_PREFIXES = [
 
 const BILLING_EXEMPT_EXACT = ['/', '/restaurants', '/start', '/onboarding'];
 
+function normalizeHost(rawHost: string | null) {
+  return String(rawHost ?? '').split(':')[0].trim().toLowerCase();
+}
+
+function pathMatchesPrefix(pathname: string, prefix: string) {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+function isMarketingRoute(pathname: string) {
+  return MARKETING_ROUTES.some((route) => pathMatchesPrefix(pathname, route));
+}
+
+function isLoginRoute(pathname: string) {
+  return LOGIN_ROUTE_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
+}
+
+function isAppRoute(pathname: string) {
+  return APP_ROUTE_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
+}
+
 function isBillingExempt(pathname: string): boolean {
   if (BILLING_EXEMPT_EXACT.includes(pathname)) return true;
   return BILLING_EXEMPT_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
+function isNonPageAsset(pathname: string) {
+  return (
+    pathname.startsWith('/_next/')
+    || pathname.startsWith('/api/')
+    || pathname.startsWith('/favicon')
+    || pathname.startsWith('/manifest')
+    || pathname === '/robots.txt'
+    || pathname === '/sitemap.xml'
+    || /\.[A-Za-z0-9]+$/.test(pathname)
+  );
+}
+
+function isLocalOrPreviewHost(host: string) {
+  return (
+    host.includes('localhost')
+    || host.startsWith('127.0.0.1')
+    || host.endsWith('.vercel.app')
+  );
+}
+
+function isMarketingHost(host: string) {
+  return host === ROOT_DOMAIN || host === WWW_DOMAIN;
+}
+
+function mapToLoginSubdomainPath(pathname: string) {
+  if (pathMatchesPrefix(pathname, '/login')) {
+    return '/';
+  }
+  return pathname;
+}
+
+function mapToAppSubdomainPath(pathname: string) {
+  if (pathMatchesPrefix(pathname, '/dashboard')) {
+    return '/';
+  }
+  return pathname;
+}
+
+function buildHostRedirectUrl(req: NextRequest, targetHost: string, targetPathname: string) {
+  const url = req.nextUrl.clone();
+  url.protocol = 'https';
+  url.host = targetHost;
+  url.pathname = targetPathname;
+  return url;
+}
+
+function cloneSupabaseCookies(source: NextResponse, target: NextResponse) {
+  source.cookies.getAll().forEach((cookie) => {
+    target.cookies.set(cookie);
+  });
+}
+
+function buildLoginRedirectUrl(req: NextRequest, localOrPreviewHost: boolean, nextPath: string) {
+  const loginUrl = localOrPreviewHost
+    ? new URL('/login', req.url)
+    : buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, '/');
+  if (nextPath) {
+    loginUrl.searchParams.set('next', nextPath);
+  }
+  return loginUrl;
+}
+
+function shouldRedirectToLoginSubdomain(host: string, pathname: string) {
+  return isMarketingHost(host) && isLoginRoute(pathname);
+}
+
+function shouldRedirectToAppSubdomain(host: string, pathname: string) {
+  return (isMarketingHost(host) && isAppRoute(pathname)) || (host === LOGIN_SUBDOMAIN && isAppRoute(pathname));
+}
+
+function shouldRedirectToLoginFromApp(host: string, pathname: string) {
+  return host === APP_SUBDOMAIN && isLoginRoute(pathname);
+}
+
 export async function middleware(req: NextRequest) {
-  const { supabaseUrl, supabaseAnonKey, isValid } = getSupabaseEnv();
-  if (!isValid) {
+  const host = normalizeHost(req.headers.get('host'));
+  const localOrPreviewHost = isLocalOrPreviewHost(host);
+  const requestUrl = req.nextUrl.clone();
+  const originalPathname = requestUrl.pathname;
+
+  if (isNonPageAsset(originalPathname)) {
     return NextResponse.next();
   }
 
-  const response = NextResponse.next();
-  const isDev = process.env.NODE_ENV !== 'production';
-  const { pathname } = req.nextUrl;
-  const debugAuthRoute = pathname === '/dashboard'
-    || pathname.startsWith('/dashboard/')
-    || pathname === '/restaurants'
-    || pathname.startsWith('/restaurants/');
+  if (!localOrPreviewHost) {
+    if (shouldRedirectToLoginSubdomain(host, originalPathname)) {
+      const targetPath = mapToLoginSubdomainPath(originalPathname);
+      return NextResponse.redirect(buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, targetPath), 302);
+    }
+
+    if (shouldRedirectToAppSubdomain(host, originalPathname)) {
+      const targetPath = mapToAppSubdomainPath(originalPathname);
+      return NextResponse.redirect(buildHostRedirectUrl(req, APP_SUBDOMAIN, targetPath), 302);
+    }
+
+    if (shouldRedirectToLoginFromApp(host, originalPathname)) {
+      const targetPath = mapToLoginSubdomainPath(originalPathname);
+      return NextResponse.redirect(buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, targetPath), 302);
+    }
+  }
+
+  let response = NextResponse.next();
+  let routeForGuards = originalPathname;
+
+  if (!localOrPreviewHost && host === LOGIN_SUBDOMAIN && originalPathname === '/') {
+    const rewriteUrl = req.nextUrl.clone();
+    rewriteUrl.pathname = '/login';
+    response = NextResponse.rewrite(rewriteUrl);
+    routeForGuards = '/login';
+  }
+
+  if (!localOrPreviewHost && host === APP_SUBDOMAIN && (originalPathname === '/' || originalPathname === '/schedule')) {
+    routeForGuards = '/dashboard';
+  }
+
+  if (!isAppRoute(routeForGuards)) {
+    if (!localOrPreviewHost && host === LOGIN_SUBDOMAIN && isMarketingRoute(originalPathname)) {
+      const marketingUrl = buildHostRedirectUrl(req, ROOT_DOMAIN, originalPathname);
+      return NextResponse.redirect(marketingUrl, 302);
+    }
+    return response;
+  }
+
+  const { supabaseUrl, supabaseAnonKey, isValid } = getSupabaseEnv();
+  if (!isValid) {
+    return response;
+  }
+
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       getAll() {
@@ -55,6 +217,7 @@ export async function middleware(req: NextRequest) {
       },
     },
   });
+
   let user: User | null = null;
 
   try {
@@ -66,48 +229,43 @@ export async function middleware(req: NextRequest) {
       message.includes('Refresh Token Not Found')
       || message.includes('Invalid Refresh Token')
     ) {
-      // Ignore missing/invalid refresh tokens and proceed; user will naturally hit /login.
+      user = null;
     } else {
       throw error;
     }
   }
 
-  if (isDev && debugAuthRoute) {
-    // eslint-disable-next-line no-console
-    console.debug('[middleware] auth-check', {
-      pathname,
-      hasUser: Boolean(user),
-      userId: user?.id ?? null,
-      billingCookie: req.cookies.get('sf_billing_ok')?.value ?? null,
-    });
-  }
-
-  const redirectTo = (destination: string) => {
-    if (isDev && debugAuthRoute) {
-      // eslint-disable-next-line no-console
-      console.debug('[middleware] redirect', {
-        from: pathname,
-        to: destination,
-        hasUser: Boolean(user),
-        userId: user?.id ?? null,
-      });
-    }
-    const url = new URL(destination, req.url);
-    response.headers.set('location', url.toString());
-    const redirect = NextResponse.redirect(url, 302);
-
-// copy cookies from the existing response (important for Supabase auth cookies)
-response.cookies.getAll().forEach((c) => redirect.cookies.set(c));
-
-return redirect;
+  const redirectTo = (destination: string | URL, status = 302) => {
+    const redirectUrl =
+      destination instanceof URL
+        ? destination
+        : destination.startsWith('http')
+          ? new URL(destination)
+          : new URL(destination, req.url);
+    const redirect = NextResponse.redirect(redirectUrl, status);
+    cloneSupabaseCookies(response, redirect);
+    return redirect;
   };
 
-  // --- Manager route protection (existing) ---
-  if (pathname.startsWith('/manager')) {
-    if (!user) {
-      return redirectTo('/login');
-    }
+  if (!user) {
+    const nextPath = `${originalPathname}${requestUrl.search}`;
+    return redirectTo(buildLoginRedirectUrl(req, localOrPreviewHost, nextPath));
+  }
 
+  const onRestaurantsRoute = pathMatchesPrefix(routeForGuards, '/restaurants');
+  const onSetupRoute = pathMatchesPrefix(routeForGuards, '/setup');
+  if (!onRestaurantsRoute && !onSetupRoute) {
+    const { count, error: membershipCountError } = await supabase
+      .from('organization_memberships')
+      .select('organization_id', { count: 'exact', head: true })
+      .eq('auth_user_id', user.id);
+
+    if (!membershipCountError && (count ?? 0) === 0) {
+      return redirectTo(NO_ORG_REDIRECT_PATH);
+    }
+  }
+
+  if (pathMatchesPrefix(routeForGuards, '/manager')) {
     try {
       const { data: profile } = await supabase
         .from('users')
@@ -117,27 +275,21 @@ return redirect;
 
       const roleValue = profile?.role ?? user.user_metadata?.role ?? undefined;
       if (!isManagerRole(roleValue)) {
-        return redirectTo('/dashboard');
+        return redirectTo('/dashboard?notice=forbidden');
       }
     } catch {
-      return redirectTo('/dashboard');
+      return redirectTo('/dashboard?notice=forbidden');
     }
   }
 
-  // --- Billing gate (lightweight, cookie-based) ---
   const billingEnabled = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
-
-  if (billingEnabled && user && !isBillingExempt(pathname)) {
+  if (billingEnabled && !isBillingExempt(routeForGuards)) {
     const billingCookie = req.cookies.get('sf_billing_ok')?.value;
 
     if (!billingCookie) {
-      // No billing cookie — redirect to /subscribe as safety net.
-      // The client-side SubscriptionGate does the authoritative check;
-      // this redirect catches direct URL access without a valid cookie.
       return redirectTo('/subscribe');
     }
 
-    // If subscription is past_due, set a response header the UI can read
     if (billingCookie === 'past_due') {
       response.headers.set('x-sf-billing-warning', 'past_due');
     }
@@ -148,20 +300,6 @@ return redirect;
 
 export const config = {
   matcher: [
-    '/dashboard/:path*',
-    '/restaurants/:path*',
-    '/manager/:path*',
-    '/staff/:path*',
-    '/time-off/:path*',
-    '/debug/:path*',
-    '/api/:path*',
-    '/schedule/:path*',
-    '/blocked-days/:path*',
-    '/business-hours/:path*',
-    '/chat/:path*',
-    '/reports/:path*',
-    '/review-requests/:path*',
-    '/shift-exchange/:path*',
-    '/profile/:path*',
+    '/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|manifest|api/|.*\\..*).*)',
   ],
 };

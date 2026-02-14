@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CalendarClock, HandHeart, RefreshCw } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
@@ -35,6 +35,23 @@ type ExchangeRequest = {
   claimedByName?: string | null;
   shift?: ExchangeShift | null;
 };
+
+type PickupConflictRow = {
+  shift_date?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+};
+
+type PickupErrorPayload = {
+  conflicts?: PickupConflictRow[];
+};
+
+function toPickupErrorPayload(value: unknown): PickupErrorPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return value as PickupErrorPayload;
+}
 
 export default function ShiftExchangePage() {
   const router = useRouter();
@@ -126,7 +143,7 @@ export default function ShiftExchangePage() {
     [locations]
   );
 
-  const loadRequests = async () => {
+  const loadRequests = useCallback(async () => {
     if (!activeRestaurantId) return;
     setLoading(true);
     const result = await apiFetch<{ requests: ExchangeRequest[] }>(
@@ -139,13 +156,13 @@ export default function ShiftExchangePage() {
     }
     setRequests(result.data?.requests ?? []);
     setLoading(false);
-  };
+  }, [activeRestaurantId, showToast]);
 
   useEffect(() => {
     if (activeRestaurantId && currentUser && isInitialized) {
-      loadRequests();
+      void loadRequests();
     }
-  }, [activeRestaurantId, currentUser, isInitialized]);
+  }, [activeRestaurantId, currentUser, isInitialized, loadRequests]);
 
   if (!isInitialized || !currentUser) {
     return (
@@ -193,7 +210,7 @@ export default function ShiftExchangePage() {
         'error'
       );
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.error('[shift-exchange] drop error', result);
       }
       setSubmittingById((prev) => {
@@ -234,7 +251,7 @@ export default function ShiftExchangePage() {
           'error'
         );
         if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
+           
           console.error('[shift-exchange] cancel error', result);
         }
         return;
@@ -245,7 +262,7 @@ export default function ShiftExchangePage() {
       const message = error instanceof Error ? error.message : 'Unable to cancel request.';
       showToast(message, 'error');
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.debug('[shift-exchange] cancel exception', { error });
       }
     } finally {
@@ -272,12 +289,9 @@ export default function ShiftExchangePage() {
       });
       if (!result.ok) {
         const isConflict = result.status === 409;
-        const conflictRows = Array.isArray((result.data as any)?.conflicts)
-          ? ((result.data as any)?.conflicts as Array<{
-              shift_date?: string | null;
-              start_time?: string | null;
-              end_time?: string | null;
-            }>)
+        const payload = toPickupErrorPayload(result.data);
+        const conflictRows = Array.isArray(payload.conflicts)
+          ? payload.conflicts
           : [];
         if (isConflict) {
           setConflictMessage(
@@ -289,7 +303,7 @@ export default function ShiftExchangePage() {
           showToast(result.error || 'Unable to pick up shift.', 'error');
         }
         if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
+           
           console.debug('[shift-exchange] pickup failed', {
             status: result.status,
             error: result.error,
@@ -304,7 +318,7 @@ export default function ShiftExchangePage() {
       const message = error instanceof Error ? error.message : 'Unable to pick up shift.';
       showToast(message, 'error');
       if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
+         
         console.debug('[shift-exchange] pickup exception', { error });
       }
     } finally {

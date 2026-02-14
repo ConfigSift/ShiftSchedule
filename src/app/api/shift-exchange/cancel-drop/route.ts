@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Requester profile not found.', 403), response);
   }
 
-  let shiftRow: Record<string, any> | null = null;
+  let shiftRow: Record<string, unknown> | null = null;
   let hasMarketplaceColumn = true;
 
   const shiftWithMarketplace = await supabaseAdmin
@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
     }
     hasMarketplaceColumn = false;
   } else {
-    shiftRow = shiftWithMarketplace.data as Record<string, any> | null;
+    shiftRow = shiftWithMarketplace.data as Record<string, unknown> | null;
   }
 
   if (!shiftRow) {
@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
     if (fallback.error) {
       return applySupabaseCookies(jsonError(fallback.error.message, 400), response);
     }
-    shiftRow = fallback.data as Record<string, any> | null;
+    shiftRow = fallback.data as Record<string, unknown> | null;
   }
 
   if (!shiftRow) {
@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
 
   if (!isDropped) {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.debug('[shift-exchange:cancel-drop] not dropped', {
         authUserId,
         shiftId: payload.shiftId,
@@ -141,7 +141,7 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Shift is not currently dropped.', 400), response);
   }
 
-  const updatePayload: Record<string, any> = {};
+  const updatePayload: Record<string, unknown> = {};
   if (hasMarketplaceColumn) {
     updatePayload.is_marketplace = false;
   }
@@ -186,7 +186,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    // eslint-disable-next-line no-console
+     
     console.debug('[shift-exchange:cancel-drop]', {
       authUserId,
       shiftId: payload.shiftId,

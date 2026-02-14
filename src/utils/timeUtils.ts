@@ -1,4 +1,4 @@
-import { HOURS_START, HOURS_END, TOTAL_HOURS, type WeekStartDay } from '../types';
+import { HOURS_START, TOTAL_HOURS, type WeekStartDay } from '../types';
 
 export function formatHour(hour: number): string {
   const h = Math.floor(hour);

@@ -87,7 +87,8 @@ export async function POST(req: NextRequest) {
     }
 
     return applySupabaseCookies(NextResponse.json({ ok: true }), response);
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Unknown error.' }, { status: 500 });
+  } catch (e: unknown) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    return NextResponse.json({ error: err.message ?? 'Unknown error.' }, { status: 500 });
   }
 }

@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase/client';
-import { UserProfile, UserRole } from '../types';
+import { UserProfile } from '../types';
 import { clearStorage, loadFromStorage, saveToStorage, STORAGE_KEYS } from '../utils/storage';
 import { getUserRole } from '../utils/role';
 import { normalizeUserRow } from '../utils/userMapper';
@@ -19,6 +19,14 @@ interface PendingInvitation {
   role: string;
   status: string;
 }
+
+type InvitationsResponse = {
+  invitations?: Array<Record<string, unknown>>;
+};
+
+type RestaurantsResponse = {
+  restaurants?: Array<Record<string, unknown>>;
+};
 
 type SubscriptionStatus = 'loading' | 'active' | 'past_due' | 'canceled' | 'none';
 
@@ -45,7 +53,7 @@ const IS_DEV = process.env.NODE_ENV !== 'production';
 
 function devAuthLog(event: string, payload?: Record<string, unknown>) {
   if (!IS_DEV) return;
-  // eslint-disable-next-line no-console
+   
   console.debug(`[authStore] ${event}`, payload ?? {});
 }
 
@@ -112,10 +120,10 @@ interface AuthState {
 
 /** Fetches pending invitations for the current user */
 async function fetchPendingInvitations(): Promise<PendingInvitation[]> {
-  const result = await apiFetch('/api/auth/invitations');
+  const result = await apiFetch<InvitationsResponse>('/api/auth/invitations');
   if (!result.ok) return [];
   const rows = Array.isArray(result.data?.invitations) ? result.data.invitations : [];
-  return rows.map((invite: Record<string, any>) => ({
+  return rows.map((invite: Record<string, unknown>) => ({
     id: String(invite.id),
     organizationId: String(invite.organization_id ?? invite.organizationId ?? ''),
     organizationName: String(invite.organization_name ?? invite.organizationName ?? ''),
@@ -131,7 +139,7 @@ async function fetchUserProfiles(authUserId: string) {
     .from('users')
     .select('*')
     .eq('auth_user_id', authUserId)) as {
-    data: Array<Record<string, any>> | null;
+    data: Array<Record<string, unknown>> | null;
     error: { message: string } | null;
   };
 
@@ -335,7 +343,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Fetch profiles, restaurants, and invitations in parallel
       const [profiles, restaurantsResult, invitations, accountProfile] = await Promise.all([
         fetchUserProfiles(sessionUser.id),
-        apiFetch('/api/auth/restaurants'),
+        apiFetch<RestaurantsResponse | Array<Record<string, unknown>>>('/api/auth/restaurants'),
         fetchPendingInvitations(),
         fetchAccountProfile(sessionUser.id),
       ]);
@@ -345,11 +353,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         ? restaurantsPayload
         : restaurantsPayload?.restaurants ?? [];
       const accessibleRestaurants: AccessibleRestaurant[] = restaurants.map(
-        (row: any) => ({
-          id: row.id,
-          name: row.name,
-          restaurantCode: row.restaurant_code,
-          role: row.role,
+        (row: Record<string, unknown>) => ({
+          id: String(row.id ?? ''),
+          name: String(row.name ?? ''),
+          restaurantCode: String(row.restaurant_code ?? ''),
+          role: String(row.role ?? ''),
         })
       );
       devAuthLog('init:loadedData', {
@@ -472,7 +480,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Fetch profiles, restaurants, and invitations in parallel
     const [profiles, restaurantsResult, invitations, accountProfile] = await Promise.all([
       fetchUserProfiles(authUserId),
-      apiFetch('/api/auth/restaurants'),
+      apiFetch<RestaurantsResponse | Array<Record<string, unknown>>>('/api/auth/restaurants'),
       fetchPendingInvitations(),
       fetchAccountProfile(authUserId),
     ]);
@@ -482,11 +490,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       ? restaurantsPayload
       : restaurantsPayload?.restaurants ?? [];
     const accessibleRestaurants: AccessibleRestaurant[] = restaurants.map(
-      (row: any) => ({
-        id: row.id,
-        name: row.name,
-        restaurantCode: row.restaurant_code,
-        role: row.role,
+      (row: Record<string, unknown>) => ({
+        id: String(row.id ?? ''),
+        name: String(row.name ?? ''),
+        restaurantCode: String(row.restaurant_code ?? ''),
+        role: String(row.role ?? ''),
       })
     );
     devAuthLog('refreshProfile:loadedData', {

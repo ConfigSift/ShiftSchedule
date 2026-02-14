@@ -98,8 +98,8 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
 
   useEffect(() => {
     if (!shouldShowEmployeeNav) {
-      setEmployeeNavHeight(0);
-      return;
+      const timer = setTimeout(() => setEmployeeNavHeight(0), 0);
+      return () => clearTimeout(timer);
     }
 
     const measure = () => {
@@ -109,10 +109,11 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
       setEmployeeNavHeight((prev) => (Math.abs(prev - height) > 1 ? height : prev));
     };
 
-    measure();
+    const timer = setTimeout(measure, 0);
     window.addEventListener('resize', measure);
     window.addEventListener('orientationchange', measure);
     return () => {
+      clearTimeout(timer);
       window.removeEventListener('resize', measure);
       window.removeEventListener('orientationchange', measure);
     };

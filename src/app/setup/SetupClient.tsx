@@ -153,7 +153,7 @@ export default function SetupClient() {
         jobs: ['Manager'],
       };
 
-      const userResult = await (supabase as any).from('users').insert(insertPayload);
+      const userResult = await supabase.from('users').insert(insertPayload);
 
       if (userResult.error) {
         if (
@@ -161,7 +161,7 @@ export default function SetupClient() {
           || userResult.error.message?.toLowerCase().includes('account_type')
         ) {
           const { firstName, lastName } = splitFullName(name);
-          const legacyResult = await (supabase as any).from('users').insert({
+          const legacyResult = await supabase.from('users').insert({
             auth_user_id: userId,
             organization_id: restaurant.id,
             email: email.trim().toLowerCase(),
@@ -401,3 +401,4 @@ export default function SetupClient() {
     </div>
   );
 }
+

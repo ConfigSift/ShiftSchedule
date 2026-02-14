@@ -109,7 +109,7 @@ export async function POST(request: NextRequest) {
     )
   );
 
-  const inserts: Array<Record<string, any>> = [];
+  const inserts: Array<Record<string, unknown>> = [];
   let skippedCount = 0;
 
   sourceShifts.forEach((shift) => {

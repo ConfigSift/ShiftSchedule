@@ -131,7 +131,7 @@ function DemoReportsInner({ initialView, initialDate }: DemoReportsContentProps)
   const router = useRouter();
   const demo = useDemoContext();
   const { activeRestaurantId, accessibleRestaurants } = useAuthStore();
-  const { shifts, employees, scheduleViewSettings, selectedDate, getShiftsForRestaurant } = useScheduleStore();
+  const { employees, scheduleViewSettings, selectedDate, getShiftsForRestaurant } = useScheduleStore();
 
   const [activeReport, setActiveReport] = useState<DemoReportView>(mapInitialView(initialView));
   const [reportDate, setReportDate] = useState<Date>(parseDateParam(initialDate) ?? selectedDate);
@@ -163,7 +163,7 @@ function DemoReportsInner({ initialView, initialDate }: DemoReportsContentProps)
 
   const scopedShifts = useMemo(
     () => (activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : []),
-    [activeRestaurantId, shifts, getShiftsForRestaurant],
+    [activeRestaurantId, getShiftsForRestaurant],
   );
 
   const dailyPublishedShifts = useMemo(

@@ -11,7 +11,7 @@ interface UIState {
   uiLockedForOnboarding: boolean;
   openProfileModal: () => void;
   closeProfileModal: () => void;
-  openTimeOffModal: (payload?: Record<string, any>) => void;
+  openTimeOffModal: (payload?: Record<string, unknown>) => void;
   closeTimeOffModal: () => void;
   openSidebar: () => void;
   closeSidebar: () => void;

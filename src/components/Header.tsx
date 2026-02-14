@@ -29,6 +29,7 @@ import {
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { getUserRole, isManagerRole } from '../utils/role';
+import { getAppHomeHref } from '../lib/routing/getAppHomeHref';
 
 type HeaderProps = {
   /** If true, renders a minimal header without schedule-specific actions */
@@ -81,6 +82,11 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
   const pendingReviewCount = pendingRequests.length + pendingBlockedRequests.length;
   const hasRestaurants = (accessibleRestaurants?.length ?? 0) > 0;
   const hasActiveRestaurant = Boolean(activeRestaurantId);
+  const noRestaurants = !hasRestaurants;
+  const onboardingWithoutOrg =
+    !hasActiveRestaurant
+    && (pathname.startsWith('/setup') || pathname.startsWith('/onboarding') || pathname.startsWith('/persona'));
+  const hideNavLinks = noRestaurants || onboardingWithoutOrg;
   const showReports = hasRestaurants && hasActiveRestaurant;
   // Always allow access to Restaurants/Site Manager for signed-in users
   const showRestaurantsLink = Boolean(currentUser);
@@ -112,7 +118,8 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
 
   // Close menu on route change
   useEffect(() => {
-    setMoreMenuOpen(false);
+    const timer = setTimeout(() => setMoreMenuOpen(false), 0);
+    return () => clearTimeout(timer);
   }, [pathname]);
 
   // Position menu using button rect (portal-friendly)
@@ -152,11 +159,12 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
     pathname === '/review-requests' ||
     pathname === '/profile' ||
     pathname === '/chat';
-  const locked = onboardingMode || uiLockedForOnboarding;
+  const locked = onboardingMode || uiLockedForOnboarding || hideNavLinks;
   const isEmployee = currentRole === 'EMPLOYEE';
   const isRestrictedHeader = isSubscriptionBlocked && !locked;
   const showEmployeeMobileHeader = !locked && isEmployee && isEmployeeNavPage && !minimal;
-  const logoHref = locked || isRestrictedHeader ? '/setup' : '/dashboard';
+  const appHomeHref = getAppHomeHref();
+  const logoHref = locked || isRestrictedHeader ? '/setup' : appHomeHref;
 
   function toYMD(date: Date): string {
     const year = date.getFullYear();
@@ -195,7 +203,7 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
           {!locked && !minimal && !isRestrictedHeader && (
             <nav className={`flex items-center gap-1 sm:gap-2 ${showEmployeeMobileHeader ? 'hidden md:flex' : ''}`}>
               <Link
-                href="/dashboard"
+                href={appHomeHref}
                 className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
                 aria-label="Schedule"
               >
@@ -398,7 +406,7 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
                     {/* Back to Schedule - shown in minimal mode */}
                     {minimal && (
                       <Link
-                        href="/dashboard"
+                        href={appHomeHref}
                         onClick={() => setMoreMenuOpen(false)}
                         className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
                       >

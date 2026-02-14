@@ -300,7 +300,7 @@ export async function POST(request: NextRequest) {
   let skippedOverlap = 0;
   let skippedBlocked = 0;
   let skippedDuplicate = 0;
-  const inserts: Array<Record<string, any>> = [];
+  const inserts: Array<Record<string, unknown>> = [];
 
   for (const sourceShift of sourceShifts) {
     const sourceDate = String(sourceShift.shift_date);

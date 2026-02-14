@@ -6,6 +6,7 @@ import { normalizeJobs } from '@/utils/jobs';
 import { splitFullName } from '@/utils/userMapper';
 import { normalizeEmployeeNumber, validateEmployeeNumber } from '@/utils/employeeAuth';
 import { normalizePin } from '@/utils/pinNormalize';
+import { getAdminAuthApi } from '@/lib/supabase/adminAuth';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -79,7 +80,7 @@ function sanitizeJobs(jobs: string[]) {
 }
 
 async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | null> {
-  const adminAuth: any = supabaseAdmin.auth.admin;
+  const adminAuth = getAdminAuthApi();
   if (typeof adminAuth.getUserByEmail === 'function') {
     const { data, error } = await adminAuth.getUserByEmail(normalizedEmail);
     if (!error && data?.user?.id) return data.user.id;
@@ -94,12 +95,12 @@ async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | 
   while (true) {
     const { data: listData, error: listErr } = await adminAuth.listUsers({ page, perPage });
     if (listErr) {
-      // eslint-disable-next-line no-console
+       
       console.warn('[create-user] listUsers failed', listErr.message);
       return null;
     }
     const users = listData?.users ?? [];
-    const match = users.find((user: any) => String(user.email ?? '').toLowerCase() === normalizedEmail);
+    const match = users.find((user) => String(user.email ?? '').toLowerCase() === normalizedEmail);
     if (match?.id) return match.id;
     if (users.length < perPage) break;
     page += 1;
@@ -116,7 +117,7 @@ async function getInvitationColumns(): Promise<Set<string>> {
     .eq('table_name', 'organization_invitations');
   if (error || !data) {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
+       
       console.warn('[create-user] unable to inspect organization_invitations columns', error?.message);
     }
     return new Set();
@@ -317,7 +318,7 @@ export async function POST(request: NextRequest) {
           400
         );
       }
-      membershipOrgIds = (membershipRows ?? []).map((row: any) => String(row.organization_id));
+      membershipOrgIds = (membershipRows ?? []).map((row: { organization_id?: string }) => String(row.organization_id ?? ''));
       hasMembershipInThisOrg = membershipOrgIds.includes(payload.organizationId);
       hasMembershipInOtherOrg = membershipOrgIds.some((id) => id !== payload.organizationId);
     }
@@ -346,7 +347,6 @@ export async function POST(request: NextRequest) {
         {
           created: false,
           invited: false,
-          already_member: false,
           action: 'ALREADY_MEMBER',
           already_member: true,
           code: 'ALREADY_MEMBER',
@@ -515,7 +515,7 @@ export async function POST(request: NextRequest) {
           .eq('id', existingInvite.id);
         if (inviteUpdateError) {
           if (process.env.NODE_ENV !== 'production') {
-            // eslint-disable-next-line no-console
+             
             console.error('[create-user] invite update failed', inviteUpdateError);
           }
           return toPostgrestErrorResponse(inviteUpdateError, 400);
@@ -530,7 +530,7 @@ export async function POST(request: NextRequest) {
 
       if (inviteInsertError) {
         if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
+           
           console.error('[create-user] invite insert failed', inviteInsertError);
         }
         return toPostgrestErrorResponse(inviteInsertError, 400);
@@ -602,7 +602,8 @@ export async function POST(request: NextRequest) {
       }
       const message = insertResult.error.message?.toLowerCase() ?? '';
       if (message.includes('hourly_pay')) {
-        const { hourly_pay, ...withoutPay } = insertPayload;
+        const withoutPay = { ...insertPayload };
+        delete withoutPay.hourly_pay;
         const pinFallbackResult = await supabaseAdmin.from('users').insert(withoutPay);
         if (pinFallbackResult.error) {
           return toResponse(
@@ -660,7 +661,8 @@ export async function POST(request: NextRequest) {
             );
           }
           if (legacyResult.error.message?.toLowerCase().includes('hourly_pay')) {
-            const { hourly_pay, ...legacyNoPay } = legacyPayload;
+            const legacyNoPay = { ...legacyPayload };
+            delete legacyNoPay.hourly_pay;
             const secondLegacy = await supabaseAdmin.from('users').insert(legacyNoPay);
             if (secondLegacy.error) {
               if (isRealEmailConflict(secondLegacy.error)) {
@@ -739,8 +741,9 @@ export async function POST(request: NextRequest) {
     }
 
     return toResponse({ created: true, invited: false, already_member: false, action });
-  } catch (e: any) {
-    const message = e?.message ?? 'Unknown error.';
+  } catch (e: unknown) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    const message = err.message ?? 'Unknown error.';
     return toResponse(
       { created: false, invited: false, already_member: false, error: message },
       500

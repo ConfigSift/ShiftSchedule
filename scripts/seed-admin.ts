@@ -53,12 +53,12 @@ async function main() {
     throw upsertError;
   }
 
-  // eslint-disable-next-line no-console
+   
   console.log(`Admin seeded: ${email}`);
 }
 
 main().catch((error) => {
-  // eslint-disable-next-line no-console
+   
   console.error(error);
   process.exit(1);
 });

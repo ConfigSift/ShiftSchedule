@@ -8,6 +8,13 @@ import { formatDateLong } from '../utils/timeUtils';
 import { CalendarOff } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 
+function getModalEmployeeId(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const employeeId = (value as { employeeId?: unknown }).employeeId;
+  if (typeof employeeId === 'string') return employeeId;
+  return employeeId == null ? undefined : String(employeeId);
+}
+
 export function BlockedPeriodModal() {
   const {
     modalType,
@@ -22,7 +29,7 @@ export function BlockedPeriodModal() {
 
   const isManager = isManagerRole(getUserRole(currentUser?.role));
   const isOpen = modalType === 'blockedPeriod';
-  const modalEmployeeId = modalData?.employeeId as string | undefined;
+  const modalEmployeeId = getModalEmployeeId(modalData);
 
   const employees = getEmployeesForRestaurant(activeRestaurantId).filter((employee) =>
     currentUser && getUserRole(currentUser.role) === 'MANAGER' ? employee.userRole !== 'ADMIN' : true
@@ -34,15 +41,17 @@ export function BlockedPeriodModal() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (isOpen) {
-      const nextWeek = new Date();
-      nextWeek.setDate(nextWeek.getDate() + 7);
-      const nextWeekStr = nextWeek.toISOString().split('T')[0];
+    if (!isOpen) return;
+    const nextWeek = new Date();
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    const nextWeekStr = nextWeek.toISOString().split('T')[0];
+    const timer = setTimeout(() => {
       setEmployeeId(modalEmployeeId || '');
       setStartDate(nextWeekStr);
       setEndDate(nextWeekStr);
       setNote('');
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [isOpen, modalEmployeeId]);
 
   const blockedRequests = useMemo(() => {

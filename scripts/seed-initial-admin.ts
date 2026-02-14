@@ -113,14 +113,14 @@ async function main() {
     throw upsertError;
   }
 
-  // eslint-disable-next-line no-console
+   
   console.log(
     `Seeded ADMIN ${email} for ${restaurantCode}. Passcode ending: ${passcode.slice(-2)}`
   );
 }
 
 main().catch((error) => {
-  // eslint-disable-next-line no-console
+   
   console.error(error);
   process.exit(1);
 });

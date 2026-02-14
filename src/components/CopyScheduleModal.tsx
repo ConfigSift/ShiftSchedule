@@ -64,18 +64,21 @@ export function CopyScheduleModal() {
     const nextEnd = new Date(nextWeekStart);
     nextEnd.setDate(nextEnd.getDate() + 6);
     const nextEndStr = dateToString(nextEnd);
-    setMode('nextWeek');
-    setWeeksAhead(1);
-    setRangeStart(nextStartStr);
-    setRangeEnd(nextEndStr);
-    setAllowOverride(false);
-    setSummary(null);
-    setShowSkipped(false);
+    const timer = setTimeout(() => {
+      setMode('nextWeek');
+      setWeeksAhead(1);
+      setRangeStart(nextStartStr);
+      setRangeEnd(nextEndStr);
+      setAllowOverride(false);
+      setSummary(null);
+      setShowSkipped(false);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [isOpen, weekDates]);
 
   const buildPayload = (targetMode: CopyMode) => {
     const sourceScheduleState: 'draft' | 'published' = scheduleMode === 'draft' ? 'draft' : 'published';
-    const payload: Record<string, any> = {
+    const payload: Record<string, unknown> = {
       sourceWeekStart,
       sourceWeekEnd,
       mode: targetMode,

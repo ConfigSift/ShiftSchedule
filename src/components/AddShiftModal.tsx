@@ -9,6 +9,22 @@ import { formatHour, timeRangesOverlap } from '../utils/timeUtils';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { useDemoContext } from '../demo/DemoProvider';
 
+type ShiftModalData = {
+  id?: string;
+  modalKey?: string;
+  employeeId?: string;
+  date?: string;
+  draftDate?: string;
+  startHour?: number;
+  draftStartHour?: number;
+  endHour?: number;
+  draftEndHour?: number;
+  notes?: string | null;
+  job?: string | null;
+  locationId?: string | null;
+  restaurantId?: string | null;
+};
+
 export function AddShiftModal() {
   const { 
     modalType, 
@@ -32,13 +48,14 @@ export function AddShiftModal() {
   const { activeRestaurantId, currentUser } = useAuthStore();
   const isManager = isManagerRole(getUserRole(currentUser?.role));
   const demo = useDemoContext();
+  const shiftModalData = (modalData ?? null) as ShiftModalData | null;
   
   const isOpen = modalType === 'addShift' || modalType === 'editShift';
   const isEditing = modalType === 'editShift';
-  const modalKey = isEditing && modalData?.modalKey
-    ? String(modalData.modalKey)
-    : isEditing && modalData?.id
-    ? `${modalData.id}:${modalData.date ?? ''}:${modalData.startHour ?? ''}:${modalData.endHour ?? ''}`
+  const modalKey = isEditing && shiftModalData?.modalKey
+    ? String(shiftModalData.modalKey)
+    : isEditing && shiftModalData?.id
+    ? `${shiftModalData.id}:${shiftModalData.date ?? ''}:${shiftModalData.startHour ?? ''}:${shiftModalData.endHour ?? ''}`
     : 'shift-modal';
   
   const [employeeId, setEmployeeId] = useState('');
@@ -52,7 +69,7 @@ export function AddShiftModal() {
 
   const overlapWarning = (() => {
     if (!employeeId || !date || startHour >= endHour) return null;
-    const excludeId = isEditing && modalData?.id ? String(modalData.id) : null;
+    const excludeId = isEditing && shiftModalData?.id ? String(shiftModalData.id) : undefined;
     const conflicts = shifts.filter(
       (shift) =>
         shift.employeeId === employeeId &&
@@ -69,31 +86,33 @@ export function AddShiftModal() {
   })();
 
   useEffect(() => {
-    if (isOpen) {
-      if (isEditing && modalData) {
-        const draftDate = modalData.draftDate ?? modalData.date;
-        const draftStart = modalData.draftStartHour ?? modalData.startHour;
-        const draftEnd = modalData.draftEndHour ?? modalData.endHour;
-        setEmployeeId(modalData.employeeId);
+    if (!isOpen) return;
+    const timer = setTimeout(() => {
+      if (isEditing && shiftModalData) {
+        const draftDate = shiftModalData.draftDate ?? shiftModalData.date ?? '';
+        const draftStart = shiftModalData.draftStartHour ?? shiftModalData.startHour ?? 9;
+        const draftEnd = shiftModalData.draftEndHour ?? shiftModalData.endHour ?? 17;
+        setEmployeeId(shiftModalData.employeeId ?? '');
         setDate(draftDate);
         setStartHour(draftStart);
         setEndHour(draftEnd);
-        setNotes(modalData.notes || '');
-        setJob(modalData.job || '');
-        setLocationId(modalData.locationId || '');
+        setNotes(shiftModalData.notes || '');
+        setJob(shiftModalData.job || '');
+        setLocationId(shiftModalData.locationId || '');
         setShowAllJobs(false);
       } else {
-        setEmployeeId(modalData?.employeeId || '');
-        setDate(modalData?.date || selectedDate.toISOString().split('T')[0]);
-        setStartHour(modalData?.startHour || 9);
-        setEndHour(modalData?.endHour || 17);
+        setEmployeeId(shiftModalData?.employeeId || '');
+        setDate(shiftModalData?.date || selectedDate.toISOString().split('T')[0]);
+        setStartHour(shiftModalData?.startHour || 9);
+        setEndHour(shiftModalData?.endHour || 17);
         setNotes('');
         setJob('');
         setLocationId('');
         setShowAllJobs(false);
       }
-    }
-  }, [isOpen, isEditing, modalData, selectedDate]);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [isOpen, isEditing, selectedDate, shiftModalData]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -150,9 +169,9 @@ export function AddShiftModal() {
 
     const normalizedLocationId = locationId || null;
 
-    if (isEditing && modalData?.id) {
+    if (isEditing && shiftModalData?.id) {
       const result = await updateShift(
-        modalData.id,
+        shiftModalData.id,
         {
         employeeId,
         date,
@@ -161,7 +180,7 @@ export function AddShiftModal() {
         notes: notes || undefined,
         job,
         locationId: normalizedLocationId,
-        restaurantId: modalData.restaurantId ?? activeRestaurantId ?? '',
+        restaurantId: shiftModalData.restaurantId ?? activeRestaurantId ?? '',
         },
         { allowTimeOffOverride, allowBlockedOverride }
       );
@@ -195,8 +214,8 @@ export function AddShiftModal() {
   };
 
   const handleDelete = async () => {
-    if (isEditing && modalData?.id) {
-      const result = await deleteShift(modalData.id);
+    if (isEditing && shiftModalData?.id) {
+      const result = await deleteShift(shiftModalData.id);
       if (!result.success) {
         showToast(result.error || 'Failed to delete shift', 'error');
         return;
@@ -218,20 +237,20 @@ export function AddShiftModal() {
   const hasEligibleJobs = eligibleJobs.length > 0;
   const isJobEligible = job ? eligibleJobs.includes(job) : false;
   const openDropRequestForShift =
-    isEditing && modalData?.id
-      ? dropRequests.find((request) => request.shiftId === modalData.id && request.status === 'open')
+    isEditing && shiftModalData?.id
+      ? dropRequests.find((request) => request.shiftId === shiftModalData.id && request.status === 'open')
       : undefined;
 
   const hourOptions = Array.from({ length: 19 }, (_, i) => i + 6);
 
   const handleOfferShift = () => {
-    if (!isEditing || !modalData?.id) return;
+    if (!isEditing || !shiftModalData?.id) return;
     if (openDropRequestForShift) {
       cancelDropRequest(openDropRequestForShift.id);
       showToast('Shift offer canceled', 'success');
       return;
     }
-    createDropRequest(modalData.id, modalData.employeeId);
+    createDropRequest(shiftModalData.id, shiftModalData.employeeId ?? '');
     showToast('Shift offered in demo exchange', 'success');
   };
 
@@ -246,7 +265,7 @@ export function AddShiftModal() {
       <form onSubmit={handleSubmit} className="space-y-4">
         {!isManager && (
           <p className="text-sm text-red-400">
-            You don't have permission to create or edit shifts.
+            You don&apos;t have permission to create or edit shifts.
           </p>
         )}
         <div>

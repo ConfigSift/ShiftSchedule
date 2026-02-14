@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import type Stripe from 'stripe';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
@@ -184,7 +185,7 @@ export async function POST(request: NextRequest) {
     : `${appUrl}/subscribe?canceled=true${cancelIntentSegment}`;
 
   if (isDev) {
-    // eslint-disable-next-line no-console
+     
     console.debug('[billing:create-checkout-session] request', {
       authUserId,
       flow,
@@ -215,7 +216,7 @@ export async function POST(request: NextRequest) {
     checkoutMetadata.organization_id = effectiveOrganizationId;
   }
 
-  const params: Parameters<typeof stripe.checkout.sessions.create>[0] = {
+  const params: Stripe.Checkout.SessionCreateParams = {
     customer: stripeCustomerId,
     mode: 'subscription',
     line_items: [{ price: priceId, quantity: desiredQuantity }],
@@ -251,7 +252,7 @@ export async function POST(request: NextRequest) {
     const checkoutUrl = String(session.url ?? '').trim();
     if (!checkoutUrl) {
       if (isDev) {
-        // eslint-disable-next-line no-console
+         
         console.error('[billing:create-checkout-session] Stripe session missing URL', {
           sessionId: session.id,
           mode: session.mode,
@@ -268,7 +269,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (isDev) {
-      // eslint-disable-next-line no-console
+       
       console.debug('[billing:create-checkout-session] created', {
         sessionId: session.id,
         hasUrl: Boolean(checkoutUrl),
@@ -282,7 +283,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (isDev) {
-      // eslint-disable-next-line no-console
+       
       console.error('[billing:create-checkout-session] failed', {
         message,
       });

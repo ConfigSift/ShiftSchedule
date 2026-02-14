@@ -53,12 +53,9 @@ async function parseJsonBody(req: NextRequest): Promise<ParsedBody> {
     normalized = normalized.slice(1, -1);
   }
 
-  const parseObject = (value: unknown): Record<string, unknown> | unknown[] | null => {
-    if (!value || typeof value !== 'object') {
+  const parseObject = (value: unknown): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return null;
-    }
-    if (Array.isArray(value)) {
-      return value;
     }
     return value as Record<string, unknown>;
   };
@@ -66,7 +63,7 @@ async function parseJsonBody(req: NextRequest): Promise<ParsedBody> {
   const tryParse = (
     value: string
   ):
-    | { ok: true; data: Record<string, unknown> | unknown[] }
+    | { ok: true; data: Record<string, unknown> }
     | { ok: false; error: string; parseError?: string } => {
     try {
       let parsed: unknown = JSON.parse(value);
@@ -182,7 +179,7 @@ export async function setPasscodeHandler(req: NextRequest) {
           : Array.from(Buffer.from(parsedBody.raw, 'utf8').slice(0, 200))
               .map((byte) => byte.toString(16).padStart(2, '0'))
               .join(' ');
-        // eslint-disable-next-line no-console
+         
         console.warn(
           '[set-passcode] JSON parse failed',
           parsedBody.error,

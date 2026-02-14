@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Calendar, ExternalLink, Loader2, RefreshCw } from 'lucide-react';
 import { useAuthStore } from '../../../store/authStore';
@@ -212,7 +212,7 @@ export default function SubscribeSuccessPage() {
     return false;
   }
 
-  async function commitIntentAndRedirect(intentId: string) {
+  const commitIntentAndRedirect = useCallback(async (intentId: string) => {
     const commitResult = await apiFetch<CommitIntentResponse | CommitIntentError>(
       '/api/orgs/commit-intent',
       {
@@ -251,7 +251,7 @@ export default function SubscribeSuccessPage() {
     setViewState('retry');
     setErrorMessage(body?.message || body?.error || commitResult.error || 'Unable to create your restaurant.');
     return false;
-  }
+  }, [refreshProfile, router, setActiveOrganization]);
 
   useEffect(() => {
     if (runningRef.current) return;
@@ -343,6 +343,7 @@ export default function SubscribeSuccessPage() {
     router,
     setActiveOrganization,
     refreshProfile,
+    commitIntentAndRedirect,
   ]);
 
   return (

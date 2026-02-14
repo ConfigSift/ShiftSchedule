@@ -94,7 +94,7 @@ export function TimeOffReviewModal() {
                         </div>
                         {request.reason && (
                           <p className="text-sm text-theme-tertiary mt-2">
-                            "{request.reason}"
+                            &quot;{request.reason}&quot;
                           </p>
                         )}
                         <p className="text-xs text-theme-muted mt-2">

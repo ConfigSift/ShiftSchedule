@@ -49,8 +49,8 @@ export default function SubscribeClient() {
   // Check existing subscription status
   useEffect(() => {
     if (!activeRestaurantId && !intentId) {
-      setCheckingStatus(false);
-      return;
+      const timer = setTimeout(() => setCheckingStatus(false), 0);
+      return () => clearTimeout(timer);
     }
 
     let mounted = true;

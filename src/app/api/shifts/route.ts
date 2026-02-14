@@ -19,6 +19,18 @@ type SaveShiftPayload = {
   scheduleState?: 'draft' | 'published';
 };
 
+function readString(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value;
+  if (value == null) return fallback;
+  return String(value);
+}
+
+function readErrorCode(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const code = (value as { code?: unknown }).code;
+  return typeof code === 'string' ? code : null;
+}
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const isValidDate = (value?: string) => Boolean(value && DATE_RE.test(value));
@@ -110,7 +122,7 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Insufficient permissions.', 403), response);
   }
 
-  let existingRow: Record<string, any> | null = null;
+  let existingRow: Record<string, unknown> | null = null;
   if (payload.id) {
     const { data, error } = await supabaseAdmin
       .from('shifts')
@@ -128,7 +140,7 @@ export async function POST(request: NextRequest) {
       return applySupabaseCookies(NextResponse.json({ error: 'Shift not found.' }, { status: 404 }), response);
     }
     existingRow = data;
-    if (existingRow.organization_id !== payload.organizationId) {
+    if (readString(existingRow.organization_id) !== payload.organizationId) {
       return applySupabaseCookies(NextResponse.json({ error: 'Shift not found.' }, { status: 404 }), response);
     }
   }
@@ -146,15 +158,15 @@ export async function POST(request: NextRequest) {
   }
 
   const excludeId = payload.id != null ? String(payload.id) : null;
-  const conflicts = (existingShifts ?? []).filter((row: Record<string, any>) =>
+  const conflicts = (existingShifts ?? []).filter((row: Record<string, unknown>) =>
     excludeId ? String(row.id) !== excludeId : true
   );
-  const hasOverlap = conflicts.some((row: Record<string, any>) =>
+  const hasOverlap = conflicts.some((row: Record<string, unknown>) =>
     timeRangesOverlap(
       payload.startHour,
       payload.endHour,
-      parseTimeToDecimal(row.start_time),
-      parseTimeToDecimal(row.end_time)
+      parseTimeToDecimal(readString(row.start_time)),
+      parseTimeToDecimal(readString(row.end_time))
     )
   );
 
@@ -168,7 +180,7 @@ export async function POST(request: NextRequest) {
   const scheduleState =
     existingRow && existingRow.schedule_state === 'published'
       ? 'draft'
-      : payload.scheduleState ?? existingRow?.schedule_state ?? 'draft';
+      : payload.scheduleState ?? readString(existingRow?.schedule_state, 'draft');
 
   const basePayload = {
     organization_id: payload.organizationId,
@@ -192,8 +204,9 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      const status = isOverlapError(error.message, (error as any)?.code) ? 409 : 400;
-      const message = isOverlapError(error.message, (error as any)?.code)
+      const errorCode = readErrorCode(error);
+      const status = isOverlapError(error.message, errorCode) ? 409 : 400;
+      const message = isOverlapError(error.message, errorCode)
         ? 'Shift overlaps with existing shift.'
         : error.message;
       return applySupabaseCookies(NextResponse.json({ error: message }, { status }), response);
@@ -208,8 +221,9 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (error) {
-    const status = isOverlapError(error.message, (error as any)?.code) ? 409 : 400;
-    const message = isOverlapError(error.message, (error as any)?.code)
+    const errorCode = readErrorCode(error);
+    const status = isOverlapError(error.message, errorCode) ? 409 : 400;
+    const message = isOverlapError(error.message, errorCode)
       ? 'Shift overlaps with existing shift.'
       : error.message;
     return applySupabaseCookies(NextResponse.json({ error: message }, { status }), response);
