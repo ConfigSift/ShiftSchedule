@@ -1,5 +1,27 @@
 import type { NextConfig } from "next";
 
+const noIndexPrefixes = [
+  "dashboard",
+  "restaurants",
+  "manager",
+  "schedule",
+  "reports",
+  "staff",
+  "chat",
+  "billing",
+  "subscribe",
+  "review-requests",
+  "time-off",
+  "blocked-days",
+  "business-hours",
+  "profile",
+  "account",
+  "persona",
+  "reset-passcode",
+  "setup",
+  "onboarding",
+];
+
 const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
@@ -14,6 +36,44 @@ const nextConfig: NextConfig = {
     "http://169.254.5.254:3000",
     "http://localhost:3000",
   ],
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "login.crewshyft.com" }],
+        destination: "https://crewshyft.com/login",
+        statusCode: 302,
+      },
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.crewshyft.com" }],
+        destination: "https://crewshyft.com/:path*",
+        permanent: true,
+      },
+    ];
+  },
+  async headers() {
+    return noIndexPrefixes.flatMap((prefix) => [
+      {
+        source: `/${prefix}`,
+        headers: [
+          {
+            key: "X-Robots-Tag",
+            value: "noindex, nofollow",
+          },
+        ],
+      },
+      {
+        source: `/${prefix}/:path*`,
+        headers: [
+          {
+            key: "X-Robots-Tag",
+            value: "noindex, nofollow",
+          },
+        ],
+      },
+    ]);
+  },
 };
 
 export default nextConfig;
