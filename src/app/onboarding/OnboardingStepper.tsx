@@ -1947,6 +1947,7 @@ function SubscriptionStepView({
   const [pendingCheckoutPlan, setPendingCheckoutPlan] = useState<PlanId | null>(null);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
   const showModal = showCheckoutModal || paymentPanelOpen || checkoutFinalizing;
+  const paymentProcessing = checkoutSubmitting || checkoutFinalizing || (paymentReceived && !subscriptionActive);
   const stripeUnavailable = !STRIPE_PUBLISHABLE_KEY || !stripePromise;
   const canRenderPaymentElement = Boolean(
     !stripeUnavailable
@@ -1962,15 +1963,31 @@ function SubscriptionStepView({
   }, [onSelectPlan]);
 
   const closeCheckoutModal = useCallback(() => {
+    if (paymentProcessing) return;
     setShowCheckoutModal(false);
     setPendingCheckoutPlan(null);
     onClosePaymentPanel();
-  }, [onClosePaymentPanel]);
+  }, [onClosePaymentPanel, paymentProcessing]);
 
   const handleContinueToStripe = useCallback(() => {
     if (!pendingCheckoutPlan) return;
     onStartCheckout(pendingCheckoutPlan);
   }, [onStartCheckout, pendingCheckoutPlan]);
+
+  useEffect(() => {
+    if (!showModal || !paymentProcessing) return;
+
+    const preventEscapeClose = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener('keydown', preventEscapeClose, true);
+    return () => {
+      window.removeEventListener('keydown', preventEscapeClose, true);
+    };
+  }, [paymentProcessing, showModal]);
 
   return (
     <div>
@@ -2104,24 +2121,38 @@ function SubscriptionStepView({
             type="button"
             aria-label="Close secure checkout dialog"
             onClick={closeCheckoutModal}
-            disabled={checkoutSubmitting || checkoutFinalizing}
+            disabled={paymentProcessing}
             className="absolute inset-0 bg-black/60 backdrop-blur-sm disabled:pointer-events-none"
           />
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="secure-checkout-title"
+            aria-busy={paymentProcessing}
             className="relative z-10 w-full max-w-md rounded-2xl border border-theme-primary bg-theme-secondary p-5 shadow-2xl"
           >
             <h3 id="secure-checkout-title" className="text-lg font-semibold text-theme-primary">
-              Secure checkout
+              {paymentProcessing ? 'Processing payment...' : 'Secure checkout'}
             </h3>
             {error && (
               <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2">
                 <p className="text-xs text-red-400">{error}</p>
               </div>
             )}
-            {!canRenderPaymentElement ? (
+            {paymentProcessing ? (
+              <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+                <div className="inline-flex items-center gap-2 text-sm font-medium text-amber-300">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Processing payment...
+                </div>
+                <p className="mt-2 text-sm text-theme-tertiary">
+                  Securing your subscription with Stripe. Please don&rsquo;t close this tab.
+                </p>
+                <p className="mt-3 text-xs font-medium uppercase tracking-wide text-theme-muted">
+                  Powered by Stripe
+                </p>
+              </div>
+            ) : !canRenderPaymentElement ? (
               <>
                 <p className="mt-2 text-sm text-theme-tertiary">
                   Checkout is securely processed by Stripe. You&rsquo;ll enter payment details here to activate CrewShyft.
@@ -2144,7 +2175,7 @@ function SubscriptionStepView({
                   <button
                     type="button"
                     onClick={closeCheckoutModal}
-                    disabled={checkoutSubmitting || checkoutFinalizing}
+                    disabled={paymentProcessing}
                     className="w-full rounded-lg border border-theme-primary px-3 py-2.5 text-sm font-medium text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-60"
                   >
                     Cancel
@@ -2207,7 +2238,7 @@ function SubscriptionStepView({
                   <button
                     type="button"
                     onClick={closeCheckoutModal}
-                    disabled={checkoutSubmitting || checkoutFinalizing}
+                    disabled={paymentProcessing}
                     className="rounded-md border border-theme-primary px-2.5 py-1.5 text-xs font-medium text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-60"
                   >
                     Cancel
