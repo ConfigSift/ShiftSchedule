@@ -55,3 +55,9 @@ lint-after.txt
 lint-after2.txt
 tsc-errors.txt
 *.bak
+# local scratch outputs
+lint-before.txt
+lint-after.txt
+lint-after2.txt
+tsc-errors.txt
+*.bak
