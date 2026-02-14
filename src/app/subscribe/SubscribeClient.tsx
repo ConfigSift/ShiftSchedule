@@ -85,7 +85,7 @@ export default function SubscribeClient() {
     setError('');
     setLoading(priceType);
 
-    const result = await apiFetch<{ url: string }>('/api/billing/create-checkout-session', {
+    const result = await apiFetch<{ checkoutUrl?: string; redirect?: string }>('/api/billing/create-checkout-session', {
       method: 'POST',
       json: {
         organizationId: activeRestaurantId ?? undefined,
@@ -94,8 +94,9 @@ export default function SubscribeClient() {
       },
     });
 
-    if (result.ok && result.data?.url) {
-      window.location.href = result.data.url;
+    const checkoutUrl = String(result.data?.checkoutUrl ?? '').trim();
+    if (result.ok && checkoutUrl) {
+      window.location.assign(checkoutUrl);
     } else {
       const redirect = (result.data as { redirect?: string } | null)?.redirect;
       if (result.status === 409 && redirect) {

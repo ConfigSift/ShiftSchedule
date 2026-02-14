@@ -1,12 +1,14 @@
 'use client';
 
 import { create } from 'zustand';
+import type { User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase/client';
 import { UserProfile, UserRole } from '../types';
 import { clearStorage, loadFromStorage, saveToStorage, STORAGE_KEYS } from '../utils/storage';
 import { getUserRole } from '../utils/role';
 import { normalizeUserRow } from '../utils/userMapper';
 import { apiFetch } from '../lib/apiClient';
+import { normalizePersona, readStoredPersona } from '@/lib/persona';
 
 interface PendingInvitation {
   id: string;
@@ -31,7 +33,58 @@ interface SubscriptionDetails {
   status: string;
 }
 
+type AccessibleRestaurant = { id: string; name: string; restaurantCode: string; role: string };
+type AccountProfileType = 'owner' | 'employee';
+type AccountProfileState = {
+  accountType: AccountProfileType;
+  ownerName: string | null;
+};
+
 const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
+const IS_DEV = process.env.NODE_ENV !== 'production';
+
+function devAuthLog(event: string, payload?: Record<string, unknown>) {
+  if (!IS_DEV) return;
+  // eslint-disable-next-line no-console
+  console.debug(`[authStore] ${event}`, payload ?? {});
+}
+
+function normalizeAccountType(value: unknown): AccountProfileType {
+  return String(value ?? '').trim().toLowerCase() === 'employee' ? 'employee' : 'owner';
+}
+
+function normalizeOwnerName(value: unknown): string | null {
+  const normalized = String(value ?? '').trim();
+  return normalized || null;
+}
+
+function buildDisplayName({
+  accountType,
+  ownerName,
+  fullName,
+  firstName,
+  lastName,
+  email,
+}: {
+  accountType: AccountProfileType;
+  ownerName?: string | null;
+  fullName?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+}) {
+  const preferredOwnerName = accountType === 'owner' ? normalizeOwnerName(ownerName) : null;
+  if (preferredOwnerName) return preferredOwnerName;
+
+  const normalizedFullName = String(fullName ?? '').trim();
+  if (normalizedFullName) return normalizedFullName;
+
+  const combined = `${String(firstName ?? '').trim()} ${String(lastName ?? '').trim()}`.trim();
+  if (combined) return combined;
+
+  const normalizedEmail = String(email ?? '').trim();
+  return normalizedEmail || 'CrewShyft User';
+}
 
 interface AuthState {
   currentUser: UserProfile | null;
@@ -101,10 +154,117 @@ async function fetchUserProfiles(authUserId: string) {
       jobPay: normalized.jobPay,
       employeeNumber: normalized.employeeNumber ?? null,
       realEmail: normalized.realEmail ?? null,
+      persona: normalized.persona,
     };
   });
 
   return profiles;
+}
+
+async function fetchAccountProfile(authUserId: string): Promise<AccountProfileState> {
+  const { data, error } = (await supabase
+    .from('account_profiles')
+    .select('account_type, owner_name')
+    .eq('auth_user_id', authUserId)
+    .maybeSingle()) as {
+      data: { account_type?: string | null; owner_name?: string | null } | null;
+      error: { message: string } | null;
+    };
+
+  if (error) {
+    devAuthLog('accountProfile:error', { authUserId, message: error.message });
+    return { accountType: 'owner', ownerName: null };
+  }
+
+  return {
+    accountType: normalizeAccountType(data?.account_type),
+    ownerName: normalizeOwnerName(data?.owner_name),
+  };
+}
+
+function applyAccountProfileToUserProfile(
+  profile: UserProfile,
+  accountProfile: AccountProfileState,
+) {
+  return {
+    ...profile,
+    accountType: accountProfile.accountType,
+    ownerName: accountProfile.ownerName,
+    fullName: buildDisplayName({
+      accountType: accountProfile.accountType,
+      ownerName: accountProfile.ownerName,
+      fullName: profile.fullName,
+      email: profile.email,
+    }),
+  };
+}
+
+function resolveActiveRestaurantSelection(
+  accessibleRestaurants: AccessibleRestaurant[],
+  storedActiveId: string | null,
+) {
+  if (accessibleRestaurants.length === 1) {
+    return {
+      activeRestaurantId: accessibleRestaurants[0].id,
+      activeRestaurantCode: accessibleRestaurants[0].restaurantCode,
+    };
+  }
+
+  if (accessibleRestaurants.length > 1) {
+    const storedIsValid = Boolean(storedActiveId)
+      && accessibleRestaurants.some((restaurant) => restaurant.id === storedActiveId);
+    if (storedIsValid) {
+      return {
+        activeRestaurantId: storedActiveId,
+        activeRestaurantCode:
+          accessibleRestaurants.find((restaurant) => restaurant.id === storedActiveId)?.restaurantCode ?? null,
+      };
+    }
+  }
+
+  return {
+    activeRestaurantId: null,
+    activeRestaurantCode: null,
+  };
+}
+
+function buildSessionFallbackProfile(
+  authUser: User,
+  activeRestaurantId: string | null,
+  accountProfile: AccountProfileState = { accountType: 'owner', ownerName: null },
+): UserProfile {
+  const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
+  const metadataRole = metadata.role;
+  const persona = normalizePersona(metadata.persona) ?? readStoredPersona() ?? undefined;
+  const email = authUser.email ?? null;
+  const emailPrefix = email ? email.split('@')[0] : null;
+  const fullNameCandidate = String(metadata.full_name ?? metadata.name ?? emailPrefix ?? '').trim();
+  const fullName = buildDisplayName({
+    accountType: accountProfile.accountType,
+    ownerName: accountProfile.ownerName,
+    fullName: fullNameCandidate || null,
+    firstName: String(metadata.first_name ?? '').trim() || null,
+    lastName: String(metadata.last_name ?? '').trim() || null,
+    email,
+  });
+
+  return {
+    id: authUser.id,
+    authUserId: authUser.id,
+    organizationId: activeRestaurantId ?? '',
+    email,
+    phone: null,
+    fullName,
+    role: getUserRole(metadataRole),
+    accountType: accountProfile.accountType,
+    ownerName: accountProfile.ownerName,
+    jobs: [],
+    hourlyPay: undefined,
+    jobPay: {},
+    employeeNumber: null,
+    realEmail: email,
+    persona,
+  };
 }
 
 /** Set a short-lived cookie that middleware checks to avoid DB queries */
@@ -153,6 +313,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   init: async () => {
     const { data } = await supabase.auth.getSession();
     const sessionUser = data.session?.user ?? null;
+    devAuthLog('init:getSession', {
+      hasSession: Boolean(sessionUser),
+      userId: sessionUser?.id ?? null,
+      email: sessionUser?.email ?? null,
+    });
+
     if (!sessionUser) {
       set({
         currentUser: null,
@@ -167,17 +333,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     try {
       // Fetch profiles, restaurants, and invitations in parallel
-      const [profiles, restaurantsResult, invitations] = await Promise.all([
+      const [profiles, restaurantsResult, invitations, accountProfile] = await Promise.all([
         fetchUserProfiles(sessionUser.id),
         apiFetch('/api/auth/restaurants'),
         fetchPendingInvitations(),
+        fetchAccountProfile(sessionUser.id),
       ]);
 
       const restaurantsPayload = restaurantsResult.ok ? restaurantsResult.data : null;
       const restaurants = Array.isArray(restaurantsPayload)
         ? restaurantsPayload
         : restaurantsPayload?.restaurants ?? [];
-      const accessibleRestaurants: Array<{ id: string; name: string; restaurantCode: string; role: string }> = restaurants.map(
+      const accessibleRestaurants: AccessibleRestaurant[] = restaurants.map(
         (row: any) => ({
           id: row.id,
           name: row.name,
@@ -185,68 +352,65 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           role: row.role,
         })
       );
+      devAuthLog('init:loadedData', {
+        profileCount: profiles.length,
+        membershipCount: accessibleRestaurants.length,
+        invitationCount: invitations.length,
+        accountType: accountProfile.accountType,
+        hasOwnerName: Boolean(accountProfile.ownerName),
+      });
 
+      const storedActiveId = get().activeRestaurantId;
+      const { activeRestaurantId, activeRestaurantCode } = resolveActiveRestaurantSelection(
+        accessibleRestaurants,
+        storedActiveId,
+      );
       const primaryProfile = profiles[0] ?? null;
       if (!primaryProfile) {
+        devAuthLog('init:fallbackProfile', {
+          reason: 'no-users-row',
+          membershipCount: accessibleRestaurants.length,
+          activeRestaurantId,
+        });
+        const fallbackProfile = buildSessionFallbackProfile(
+          sessionUser,
+          activeRestaurantId,
+          accountProfile,
+        );
+        const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
         set({
-          currentUser: null,
+          currentUser: {
+            ...fallbackProfile,
+            role: getUserRole(activeMembership?.role ?? fallbackProfile.role),
+          },
           userProfiles: [],
           accessibleRestaurants,
           pendingInvitations: invitations,
           isInitialized: true,
-          activeRestaurantId: null,
-          activeRestaurantCode: null,
+          activeRestaurantId,
+          activeRestaurantCode,
         });
+        if (activeRestaurantId && activeRestaurantCode) {
+          saveToStorage(STORAGE_KEYS.ACTIVE_RESTAURANT, {
+            id: activeRestaurantId,
+            code: activeRestaurantCode,
+          });
+          get().fetchSubscriptionStatus(activeRestaurantId);
+        }
         return;
       }
-
-      // Read stored selection from localStorage (already loaded into state at creation)
-      const storedActiveId = get().activeRestaurantId;
-      let activeRestaurantId: string | null = null;
-      let activeRestaurantCode: string | null = null;
-
-      // ROUTING RULES:
-      // 1. If memberships == 1: auto-select
-      // 2. If memberships == 0: no selection possible
-      // 3. If memberships > 1: validate stored selection, keep if valid, else null (DO NOT auto-select)
-      if (accessibleRestaurants.length === 1) {
-        // Rule 3: Single restaurant - auto-select
-        activeRestaurantId = accessibleRestaurants[0].id;
-        activeRestaurantCode = accessibleRestaurants[0].restaurantCode;
-        if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
-          console.debug('[auth:init] single restaurant, auto-selecting:', activeRestaurantId);
-        }
-      } else if (accessibleRestaurants.length > 1) {
-        // Rule 4: Multiple restaurants - validate stored ID, keep if valid
-        const storedIsValid = storedActiveId && accessibleRestaurants.some((r) => r.id === storedActiveId);
-        if (storedIsValid) {
-          activeRestaurantId = storedActiveId;
-          activeRestaurantCode = accessibleRestaurants.find((r) => r.id === storedActiveId)?.restaurantCode ?? null;
-          if (process.env.NODE_ENV !== 'production') {
-            // eslint-disable-next-line no-console
-            console.debug('[auth:init] multiple restaurants, stored selection valid:', activeRestaurantId);
-          }
-        } else {
-          // Stored ID is invalid or missing - DO NOT auto-select first
-          activeRestaurantId = null;
-          activeRestaurantCode = null;
-          if (process.env.NODE_ENV !== 'production') {
-            // eslint-disable-next-line no-console
-            console.debug('[auth:init] multiple restaurants, no valid stored selection, clearing');
-          }
-        }
-      }
-      // else: accessibleRestaurants.length === 0, leave null
 
       const activeProfile =
         profiles.find((profile) => profile.organizationId === activeRestaurantId) ?? primaryProfile;
       const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
       const resolvedActiveProfile = activeProfile
-        ? {
-            ...activeProfile,
-            role: getUserRole(activeMembership?.role ?? activeProfile.role),
-          }
+        ? applyAccountProfileToUserProfile(
+            {
+              ...activeProfile,
+              role: getUserRole(activeMembership?.role ?? activeProfile.role),
+            },
+            accountProfile,
+          )
         : activeProfile;
 
       set({
@@ -257,6 +421,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isInitialized: true,
         activeRestaurantId,
         activeRestaurantCode,
+      });
+      devAuthLog('init:stateReady', {
+        currentUserId: resolvedActiveProfile?.authUserId ?? null,
+        currentUserRole: resolvedActiveProfile?.role ?? null,
+        membershipCount: accessibleRestaurants.length,
+        activeRestaurantId,
       });
 
       // Persist valid selection to localStorage
@@ -271,9 +441,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (activeRestaurantId) {
         get().fetchSubscriptionStatus(activeRestaurantId);
       }
-    } catch {
+    } catch (error: unknown) {
+      devAuthLog('init:error', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      const fallbackProfile = buildSessionFallbackProfile(sessionUser, null);
       set({
-        currentUser: null,
+        currentUser: fallbackProfile,
         userProfiles: [],
         accessibleRestaurants: [],
         pendingInvitations: [],
@@ -290,20 +464,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const { data } = await supabase.auth.getSession();
       authUserId = data.session?.user?.id;
     }
+    devAuthLog('refreshProfile:start', {
+      authUserId: authUserId ?? null,
+    });
     if (!authUserId) return;
 
     // Fetch profiles, restaurants, and invitations in parallel
-    const [profiles, restaurantsResult, invitations] = await Promise.all([
+    const [profiles, restaurantsResult, invitations, accountProfile] = await Promise.all([
       fetchUserProfiles(authUserId),
       apiFetch('/api/auth/restaurants'),
       fetchPendingInvitations(),
+      fetchAccountProfile(authUserId),
     ]);
 
     const restaurantsPayload = restaurantsResult.ok ? restaurantsResult.data : null;
     const restaurants = Array.isArray(restaurantsPayload)
       ? restaurantsPayload
       : restaurantsPayload?.restaurants ?? [];
-    const accessibleRestaurants: Array<{ id: string; name: string; restaurantCode: string; role: string }> = restaurants.map(
+    const accessibleRestaurants: AccessibleRestaurant[] = restaurants.map(
       (row: any) => ({
         id: row.id,
         name: row.name,
@@ -311,35 +489,70 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         role: row.role,
       })
     );
-
-    const primaryProfile = profiles[0] ?? null;
-    if (!primaryProfile) return;
+    devAuthLog('refreshProfile:loadedData', {
+      profileCount: profiles.length,
+      membershipCount: accessibleRestaurants.length,
+      invitationCount: invitations.length,
+      accountType: accountProfile.accountType,
+      hasOwnerName: Boolean(accountProfile.ownerName),
+    });
 
     const storedActiveId = get().activeRestaurantId;
-    let activeRestaurantId: string | null = null;
-    let activeRestaurantCode: string | null = null;
+    const { activeRestaurantId, activeRestaurantCode } = resolveActiveRestaurantSelection(
+      accessibleRestaurants,
+      storedActiveId,
+    );
 
-    // Same logic as init(): validate stored selection, don't auto-select for multiple
-    if (accessibleRestaurants.length === 1) {
-      activeRestaurantId = accessibleRestaurants[0].id;
-      activeRestaurantCode = accessibleRestaurants[0].restaurantCode;
-    } else if (accessibleRestaurants.length > 1) {
-      const storedIsValid = storedActiveId && accessibleRestaurants.some((r) => r.id === storedActiveId);
-      if (storedIsValid) {
-        activeRestaurantId = storedActiveId;
-        activeRestaurantCode = accessibleRestaurants.find((r) => r.id === storedActiveId)?.restaurantCode ?? null;
+    const primaryProfile = profiles[0] ?? null;
+    if (!primaryProfile) {
+      const { data } = await supabase.auth.getSession();
+      const sessionUser = data.session?.user ?? null;
+      if (!sessionUser) return;
+      devAuthLog('refreshProfile:fallbackProfile', {
+        reason: 'no-users-row',
+        membershipCount: accessibleRestaurants.length,
+        activeRestaurantId,
+      });
+
+      const fallbackProfile = buildSessionFallbackProfile(
+        sessionUser,
+        activeRestaurantId,
+        accountProfile,
+      );
+      const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
+      set({
+        currentUser: {
+          ...fallbackProfile,
+          role: getUserRole(activeMembership?.role ?? fallbackProfile.role),
+        },
+        userProfiles: [],
+        accessibleRestaurants,
+        pendingInvitations: invitations,
+        activeRestaurantId,
+        activeRestaurantCode,
+      });
+
+      if (activeRestaurantId && activeRestaurantCode) {
+        saveToStorage(STORAGE_KEYS.ACTIVE_RESTAURANT, {
+          id: activeRestaurantId,
+          code: activeRestaurantCode,
+        });
+        get().fetchSubscriptionStatus(activeRestaurantId);
       }
-      // else: leave null, don't auto-select
+      return;
     }
 
     const activeProfile =
       profiles.find((profile) => profile.organizationId === activeRestaurantId) ?? primaryProfile;
     const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
     const resolvedActiveProfile = activeProfile
-      ? {
-          ...activeProfile,
-          role: getUserRole(activeMembership?.role ?? activeProfile.role),
-        }
+      ? applyAccountProfileToUserProfile(
+          {
+            ...activeProfile,
+            role: getUserRole(activeMembership?.role ?? activeProfile.role),
+          },
+          accountProfile,
+        )
       : activeProfile;
     set({
       currentUser: resolvedActiveProfile,
@@ -349,6 +562,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       activeRestaurantId,
       activeRestaurantCode,
     });
+    devAuthLog('refreshProfile:stateReady', {
+      currentUserId: resolvedActiveProfile?.authUserId ?? null,
+      currentUserRole: resolvedActiveProfile?.role ?? null,
+      membershipCount: accessibleRestaurants.length,
+      activeRestaurantId,
+    });
+
+    if (activeRestaurantId && activeRestaurantCode) {
+      saveToStorage(STORAGE_KEYS.ACTIVE_RESTAURANT, {
+        id: activeRestaurantId,
+        code: activeRestaurantCode,
+      });
+    }
 
     // Refresh subscription status for the active org
     if (activeRestaurantId) {
@@ -475,6 +701,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   signOut: async () => {
+    devAuthLog('signOut:called');
     await supabase.auth.signOut();
     clearStorage();
     clearBillingCookie();

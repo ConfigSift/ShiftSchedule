@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Calendar, Loader2, Lock } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
+import { useUIStore } from '../../store/uiStore';
 
 type SubscriptionGateProps = {
   children: React.ReactNode;
@@ -16,9 +17,16 @@ export function SubscriptionGate({ children }: SubscriptionGateProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { subscriptionStatus, subscriptionDetails, currentUser } = useAuthStore();
+  const { setSubscriptionBlocked } = useUIStore();
   const overLimit = Boolean(subscriptionDetails?.overLimit);
   const [subscribedParamPresent, setSubscribedParamPresent] = useState(false);
   const [graceActive, setGraceActive] = useState(subscribedParamPresent);
+  const bypassGateRoutes = pathname.startsWith('/restaurants') || pathname.startsWith('/billing');
+  const isGateBlocking =
+    !bypassGateRoutes
+    && !graceActive
+    && subscriptionStatus !== 'loading'
+    && subscriptionStatus !== 'active';
 
   useEffect(() => {
     function readSubscribedParam() {
@@ -62,7 +70,14 @@ export function SubscriptionGate({ children }: SubscriptionGateProps) {
     router.replace(`${pathname}${query ? `?${query}` : ''}`);
   }, [subscribedParamPresent, subscriptionStatus, pathname, router]);
 
-  if (pathname.startsWith('/restaurants') || pathname.startsWith('/billing')) {
+  useEffect(() => {
+    setSubscriptionBlocked(isGateBlocking);
+    return () => {
+      setSubscriptionBlocked(false);
+    };
+  }, [isGateBlocking, setSubscriptionBlocked]);
+
+  if (bypassGateRoutes) {
     return <>{children}</>;
   }
 

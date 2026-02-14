@@ -3,6 +3,7 @@ export type Section = 'kitchen' | 'front' | 'bar' | 'management';
 
 // User role for permissions
 export type UserRole = 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
+export type UserPersona = 'manager' | 'employee';
 
 export interface EmployeeProfile {
   phone?: string;
@@ -43,11 +44,14 @@ export interface UserProfile {
   phone: string | null;
   fullName: string;
   role: UserRole;
+  accountType?: 'owner' | 'employee';
+  ownerName?: string | null;
   jobs: string[];
   hourlyPay?: number;
   jobPay?: Record<string, number>; // Per-job hourly pay rates
   employeeNumber?: number | null;
   realEmail?: string | null;
+  persona?: UserPersona;
 }
 
 export interface Shift {

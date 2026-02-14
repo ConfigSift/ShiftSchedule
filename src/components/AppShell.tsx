@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type CSSProperties } from 'react';
+import { Suspense, useEffect, useState, type CSSProperties } from 'react';
 import { usePathname } from 'next/navigation';
 import { Header } from './Header';
 import { StatsFooter } from './StatsFooter';
@@ -135,7 +135,9 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
       data-chat-shell={isChatPage ? 'true' : undefined}
       style={employeeNavStyle}
     >
-      <Header minimal={isRestaurantsPage} />
+      <Suspense fallback={null}>
+        <Header minimal={isRestaurantsPage} />
+      </Suspense>
       {/* Main content area - accounts for fixed header and footer */}
       <div
         className={`flex-1 min-h-0 pt-14 sm:pt-16 ${shouldShowFooter ? 'pb-12 sm:pb-14' : ''} bg-theme-timeline flex flex-col ${

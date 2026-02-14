@@ -7,6 +7,9 @@ import { Calendar, Lock, Mail } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase/client';
 import { getAuthCallbackUrl } from '../../lib/site-url';
+import { TransitionScreen } from '../../components/auth/TransitionScreen';
+import { normalizePersona, readStoredPersona } from '@/lib/persona';
+import { resolvePostAuthDestination } from '@/lib/authRedirect';
 
 type LoginClientProps = {
   notice?: string | null;
@@ -22,9 +25,13 @@ function isUnverifiedEmailError(message: string) {
   return /email.*not.*confirm|verify your email|confirm your email/i.test(message);
 }
 
+function resolvePersona(value: unknown) {
+  return normalizePersona(value) ?? readStoredPersona();
+}
+
 export default function LoginClient({ notice, setupDisabled }: LoginClientProps) {
   const router = useRouter();
-  const { currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, init } = useAuthStore();
+  const { currentUser, accessibleRestaurants, init } = useAuthStore();
 
   const [email, setEmail] = useState('');
   const [passcode, setPasscode] = useState('');
@@ -38,6 +45,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
   const [resendError, setResendError] = useState('');
   const [resendMessage, setResendMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
   const [hasManagers, setHasManagers] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -57,34 +65,17 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
   }, []);
 
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser && accessibleRestaurants.length === 0) return;
 
-    // Rule 1: Pending invitations AND no selection -> /restaurants
-    if (pendingInvitations.length > 0 && !activeRestaurantId) {
-      router.push('/restaurants');
+    const persona = resolvePersona(currentUser?.persona);
+    if (!persona) {
+      router.replace('/persona');
       return;
     }
 
-    // Rule 2: No memberships -> /onboarding
-    if (accessibleRestaurants.length === 0) {
-      // New users can be authenticated before they have any accessible orgs.
-      router.replace('/onboarding');
-      return;
-    }
-
-    // Rule 3: Single membership -> /dashboard (init auto-selects)
-    if (accessibleRestaurants.length === 1) {
-      router.push('/dashboard');
-      return;
-    }
-
-    // Rule 4: Multiple memberships
-    if (activeRestaurantId) {
-      router.push('/dashboard');
-    } else {
-      router.push('/restaurants');
-    }
-  }, [currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
+    const destination = resolvePostAuthDestination(accessibleRestaurants.length, currentUser?.role, persona);
+    router.replace(destination);
+  }, [currentUser, accessibleRestaurants, router]);
 
   const isPasscodeValid = passcode.trim().length >= 6;
   const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -120,51 +111,32 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
       }
 
       await useAuthStore.getState().refreshProfile();
+      setTransitioning(true);
       const {
         accessibleRestaurants: refreshedRestaurants,
-        pendingInvitations: refreshedInvitations,
+        currentUser: refreshedUser,
       } = useAuthStore.getState();
 
-      // Rule 1: Pending invitations -> /restaurants (to manage invites)
-      if (refreshedInvitations.length > 0) {
-        if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
-          console.debug('[login] has pending invitations, redirecting to /restaurants');
-        }
-        router.push('/restaurants');
+      const persona = resolvePersona(refreshedUser?.persona);
+      if (!persona) {
+        router.replace('/persona');
         return;
       }
 
-      // Rule 2: No memberships and no invitations -> onboarding bootstrap
-      if (refreshedRestaurants.length === 0) {
-        // Keep authenticated users in-session and send them to onboarding bootstrap.
-        router.replace('/onboarding');
-        return;
-      }
-
-      // Rule 3: Single membership -> auto-select and go to dashboard
       if (refreshedRestaurants.length === 1) {
         const only = refreshedRestaurants[0];
         useAuthStore.getState().setActiveOrganization(only.id, only.restaurantCode);
-        if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
-          console.debug('[login] single membership, auto-selecting:', only.id);
-        }
-        router.push('/dashboard');
-        return;
       }
-
-      // Rule 4: Multiple memberships -> /restaurants (do NOT auto-select)
-      if (refreshedRestaurants.length > 1) {
-        if (process.env.NODE_ENV !== 'production') {
-          // eslint-disable-next-line no-console
-          console.debug('[login] multiple memberships, redirecting to /restaurants');
-        }
-        router.push('/restaurants');
-        return;
-      }
+      const destination = resolvePostAuthDestination(
+        refreshedRestaurants.length,
+        refreshedUser?.role,
+        persona,
+      );
+      router.replace(destination);
+      return;
     } catch {
       setError('Login failed.');
+      setTransitioning(false);
     } finally {
       setLoading(false);
     }
@@ -234,9 +206,24 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
     }
   };
 
+  if (transitioning) {
+    return <TransitionScreen message="Signing you in..." />;
+  }
+
   return (
-    <div className="min-h-screen bg-theme-primary flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen bg-theme-primary relative flex items-center justify-center p-4">
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            'radial-gradient(ellipse at 50% 40%, rgba(245,158,11,0.06) 0%, transparent 70%)',
+        }}
+      />
+      <div className="pointer-events-none absolute top-0 right-0 w-96 h-96 rounded-full opacity-30 blur-3xl"
+        style={{ background: 'radial-gradient(circle, rgba(245,158,11,0.08) 0%, transparent 70%)' }}
+      />
+
+      <div className="relative w-full max-w-md animate-auth-enter">
         <div className="text-center mb-8">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center mx-auto mb-4 shadow-lg">
             <Calendar className="w-8 h-8 text-zinc-900" />
@@ -383,7 +370,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
 
           <p className="text-xs text-theme-muted text-center mt-3">
             New here?{' '}
-            <Link href="/signup?next=/onboarding" className="text-amber-400 hover:text-amber-300">
+            <Link href="/signup?next=/join" className="text-amber-400 hover:text-amber-300">
               Create an account
             </Link>
           </p>

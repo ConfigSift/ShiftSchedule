@@ -16,7 +16,13 @@ export type NormalizedUser = {
   jobs: string[];
   hourlyPay: number;
   jobPay: Record<string, number>;
+  persona: 'manager' | 'employee';
 };
+
+function normalizePersona(value: unknown): 'manager' | 'employee' {
+  const persona = String(value ?? '').trim().toLowerCase();
+  return persona === 'employee' ? 'employee' : 'manager';
+}
 
 function parseJobPay(raw: unknown): Record<string, number> {
   if (!raw) return {};
@@ -56,6 +62,7 @@ export function normalizeUserRow(row: RawUserRow): NormalizedUser {
     jobs: normalizeJobs(row.jobs),
     hourlyPay: Number.isFinite(hourlyPay) ? hourlyPay : 0,
     jobPay,
+    persona: normalizePersona(row.persona),
   };
 }
 

@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useAuthStore } from '../store/authStore';
 import { CheckCircle } from 'lucide-react';
+import { normalizePersona, readStoredPersona } from '@/lib/persona';
+import { resolveNoMembershipDestination } from '@/lib/authRedirect';
 
 const LandingPage = dynamic(() => import('../components/landing/LandingPage').then(m => ({ default: m.LandingPage })), {
   loading: () => (
@@ -55,15 +57,21 @@ export default function Home() {
     // No user -> show landing page (handled in render)
     if (!currentUser) return;
 
+    const persona = normalizePersona(currentUser.persona) ?? readStoredPersona();
+    if (!persona) {
+      router.replace('/persona');
+      return;
+    }
+
     // Rule 1: Pending invitations AND no valid selection -> /restaurants
     if (pendingInvitations.length > 0 && !activeRestaurantId) {
       router.push('/restaurants');
       return;
     }
 
-    // Rule 2: No memberships -> /restaurants
+    // Rule 2: No memberships -> /restaurants for owner/manager personas, /join for employee
     if (accessibleRestaurants.length === 0) {
-      router.push('/restaurants');
+      router.replace(resolveNoMembershipDestination(currentUser.role, persona));
       return;
     }
 

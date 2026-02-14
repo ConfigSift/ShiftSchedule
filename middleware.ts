@@ -37,6 +37,12 @@ export async function middleware(req: NextRequest) {
   }
 
   const response = NextResponse.next();
+  const isDev = process.env.NODE_ENV !== 'production';
+  const { pathname } = req.nextUrl;
+  const debugAuthRoute = pathname === '/dashboard'
+    || pathname.startsWith('/dashboard/')
+    || pathname === '/restaurants'
+    || pathname.startsWith('/restaurants/');
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       getAll() {
@@ -66,7 +72,26 @@ export async function middleware(req: NextRequest) {
     }
   }
 
+  if (isDev && debugAuthRoute) {
+    // eslint-disable-next-line no-console
+    console.debug('[middleware] auth-check', {
+      pathname,
+      hasUser: Boolean(user),
+      userId: user?.id ?? null,
+      billingCookie: req.cookies.get('sf_billing_ok')?.value ?? null,
+    });
+  }
+
   const redirectTo = (destination: string) => {
+    if (isDev && debugAuthRoute) {
+      // eslint-disable-next-line no-console
+      console.debug('[middleware] redirect', {
+        from: pathname,
+        to: destination,
+        hasUser: Boolean(user),
+        userId: user?.id ?? null,
+      });
+    }
     const url = new URL(destination, req.url);
     response.headers.set('location', url.toString());
     const redirect = NextResponse.redirect(url, 302);
@@ -75,9 +100,7 @@ export async function middleware(req: NextRequest) {
 response.cookies.getAll().forEach((c) => redirect.cookies.set(c));
 
 return redirect;
-};
-
-  const { pathname } = req.nextUrl;
+  };
 
   // --- Manager route protection (existing) ---
   if (pathname.startsWith('/manager')) {
@@ -126,6 +149,7 @@ return redirect;
 export const config = {
   matcher: [
     '/dashboard/:path*',
+    '/restaurants/:path*',
     '/manager/:path*',
     '/staff/:path*',
     '/time-off/:path*',

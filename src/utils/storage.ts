@@ -7,6 +7,7 @@ const STORAGE_KEYS = {
   CHAT_MESSAGES: 'crewshyft_chat',
   CURRENT_USER: 'crewshyft_current_user',
   ACTIVE_RESTAURANT: 'crewshyft_active_restaurant',
+  PERSONA: 'crewshyft_persona',
   RESTAURANTS: 'crewshyft_restaurants',
   INITIALIZED: 'crewshyft_initialized',
 };

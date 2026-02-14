@@ -147,6 +147,49 @@
     }
   }
 
+  /* Auth page entrance animation */
+  @keyframes authFadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate-auth-enter {
+    animation: authFadeIn 0.4s ease-out both;
+  }
+
+  /* Auth loading logo pulse */
+  @keyframes authPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+  }
+
+  .animate-auth-pulse {
+    animation: authPulse 2s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-auth-enter,
+    .animate-auth-pulse {
+      animation: none;
+    }
+  }
+
+  /* Onboarding step transition */
+  @keyframes stepSlideIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate-step-enter {
+    animation: stepSlideIn 0.3s ease-out both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-step-enter {
+      animation: none;
+    }
+  }
+
   /* Touch-friendly minimum tap targets */
   .min-tap {
     min-width: 44px;

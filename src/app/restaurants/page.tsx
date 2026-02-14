@@ -10,6 +10,7 @@ import {
   Check,
   ChevronRight,
   Pencil,
+  Settings2,
   Store,
   Mail,
   Trash2,
@@ -86,6 +87,14 @@ type SubscriptionSnapshot = {
 };
 
 const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
+const BLOCKING_BILLING_STATUSES = new Set([
+  'active',
+  'trialing',
+  'past_due',
+  'incomplete',
+  'incomplete_expired',
+  'unpaid',
+]);
 
 export default function RestaurantSelectPage() {
   const router = useRouter();
@@ -197,7 +206,22 @@ export default function RestaurantSelectPage() {
       }),
     [accessibleRestaurants]
   );
+  const hasManagerMembership = useMemo(
+    () =>
+      accessibleRestaurants.some((restaurant) => {
+        const value = String(restaurant.role ?? '').trim().toLowerCase();
+        return value === 'admin' || value === 'owner' || value === 'manager';
+      }),
+    [accessibleRestaurants],
+  );
+  const normalizedUserRole = String(currentUser?.role ?? '').trim().toUpperCase();
   const canCreateRestaurant = accessibleRestaurants.length === 0 || hasAdminMembership;
+  const canLaunchGuidedSetup =
+    canCreateRestaurant ||
+    hasManagerMembership ||
+    normalizedUserRole === 'ADMIN' ||
+    normalizedUserRole === 'OWNER' ||
+    normalizedUserRole === 'MANAGER';
   const ownedOrgCount = Math.max(
     0,
     Number(billingSnapshot?.owned_org_count ?? subscriptionDetails?.ownedOrgCount ?? accessibleRestaurants.length),
@@ -206,8 +230,24 @@ export default function RestaurantSelectPage() {
     0,
     Number(billingSnapshot?.subscription?.quantity ?? subscriptionDetails?.quantity ?? ownedOrgCount),
   );
-  const canShowAccountDelete = hasAdminMembership || String(currentUser?.role ?? '').trim().toUpperCase() === 'ADMIN';
-  const canDeleteAccountNow = ownedOrgCount === 0 && !accountDeleteSubmitting;
+  const membershipCount = accessibleRestaurants.length;
+  const billingStatus = String(billingSnapshot?.status ?? '').trim().toLowerCase();
+  const hasRoleDeleteRestriction =
+    membershipCount > 0 &&
+    !hasAdminMembership &&
+    normalizedUserRole !== 'ADMIN';
+  const accountDeleteDisabledReason = ownedOrgCount > 0
+    ? `Delete all restaurants first (${ownedOrgCount} remaining).`
+    : hasRoleDeleteRestriction
+      ? 'Only the primary account admin can delete this account.'
+      : membershipCount > 0
+        ? `Leave organization memberships first (${membershipCount} remaining).`
+        : null;
+  const billingLikelyBlocksAccountDelete =
+    BILLING_ENABLED &&
+    !accountDeleteDisabledReason &&
+    BLOCKING_BILLING_STATUSES.has(billingStatus);
+  const canDeleteAccountNow = !accountDeleteDisabledReason && !accountDeleteSubmitting;
 
   if (!isInitialized) {
     return (
@@ -409,6 +449,10 @@ export default function RestaurantSelectPage() {
     setCreateSubmitting(false);
   };
 
+  const handleOpenGuidedSetup = () => {
+    router.push('/setup');
+  };
+
   const handleOpenDelete = (restaurant: { id: string; name: string; restaurantCode: string }) => {
     const orgId = String(restaurant.id ?? '').trim();
     if (!orgId) {
@@ -559,9 +603,6 @@ export default function RestaurantSelectPage() {
   };
 
   const nextOwnedCountAfterDelete = deleteTarget ? Math.max(0, ownedOrgCount - 1) : ownedOrgCount;
-  const accountDeleteDisabledReason = ownedOrgCount > 0
-    ? `Delete all restaurants first (${ownedOrgCount} remaining).`
-    : null;
 
   return (
     <div className="bg-theme-primary text-theme-primary p-4 sm:p-6">
@@ -802,6 +843,18 @@ export default function RestaurantSelectPage() {
                   {createSubmitting ? 'Starting...' : 'Create'}
                 </button>
               </div>
+              {canLaunchGuidedSetup && (
+                <div className="mt-3 flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={handleOpenGuidedSetup}
+                    className="inline-flex items-center gap-2 rounded-lg border border-theme-primary px-3 py-2 text-xs font-semibold text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" />
+                    Guided setup (optional)
+                  </button>
+                </div>
+              )}
               {manageError && !editingId && <p className="text-xs text-red-400 mt-2">{manageError}</p>}
             </div>
           </div>
@@ -813,33 +866,60 @@ export default function RestaurantSelectPage() {
             </div>
             <div className="p-4">
               <p className="text-xs text-theme-muted">Only admins can create restaurants.</p>
-            </div>
-          </div>
-        )}
-
-        {canShowAccountDelete && (
-          <div className="bg-theme-secondary border border-red-500/30 rounded-xl overflow-hidden">
-            <div className="px-4 py-3 border-b border-red-500/20 bg-red-500/5">
-              <h2 className="text-sm font-semibold text-red-300">Account</h2>
-            </div>
-            <div className="p-4 space-y-3">
-              <p className="text-xs text-theme-muted">
-                Delete your full account only after all restaurants are removed.
-              </p>
-              <button
-                type="button"
-                onClick={openAccountDeleteModal}
-                disabled={!canDeleteAccountNow}
-                className="px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Delete account
-              </button>
-              {accountDeleteDisabledReason && (
-                <p className="text-xs text-amber-300">{accountDeleteDisabledReason}</p>
+              {canLaunchGuidedSetup && (
+                <button
+                  type="button"
+                  onClick={handleOpenGuidedSetup}
+                  className="mt-3 inline-flex items-center gap-2 rounded-lg border border-theme-primary px-3 py-2 text-xs font-semibold text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                >
+                  <Settings2 className="w-3.5 h-3.5" />
+                  Guided setup (optional)
+                </button>
               )}
             </div>
           </div>
         )}
+
+        <div className="bg-theme-secondary border border-red-500/30 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-red-500/20 bg-red-500/5">
+            <h2 className="text-sm font-semibold text-red-300">Account</h2>
+          </div>
+          <div className="p-4 space-y-3">
+            <p className="text-xs text-theme-muted">
+              Deleting your account is permanent and cannot be undone.
+            </p>
+            <button
+              type="button"
+              onClick={openAccountDeleteModal}
+              disabled={!canDeleteAccountNow}
+              className="px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Delete account
+            </button>
+            {accountDeleteDisabledReason ? (
+              <p className="text-xs text-amber-300">{accountDeleteDisabledReason}</p>
+            ) : billingLikelyBlocksAccountDelete ? (
+              <div className="space-y-2">
+                <p className="text-xs text-amber-300">
+                  Manage billing first. Subscription status is currently{' '}
+                  <span className="font-semibold">{billingStatus || 'active'}</span>.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => router.push('/billing')}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500 text-zinc-900 text-xs font-semibold hover:bg-amber-400 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Manage billing
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-emerald-300">
+                No restaurants remain. You can delete your account now.
+              </p>
+            )}
+          </div>
+        </div>
       </div>
 
       <Modal
@@ -1022,6 +1102,22 @@ export default function RestaurantSelectPage() {
             <p className="text-sm text-amber-300">
               Delete all restaurants first. {ownedOrgCount} remaining.
             </p>
+          ) : accountDeleteDisabledReason ? (
+            <p className="text-sm text-amber-300">{accountDeleteDisabledReason}</p>
+          ) : billingLikelyBlocksAccountDelete ? (
+            <div className="space-y-2">
+              <p className="text-sm text-amber-300">
+                Billing may block deletion while subscription status is {billingStatus || 'active'}.
+              </p>
+              <button
+                type="button"
+                onClick={() => router.push('/billing')}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500 text-zinc-900 text-xs font-semibold hover:bg-amber-400 transition-colors"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Manage billing
+              </button>
+            </div>
           ) : (
             <p className="text-sm text-theme-secondary">
               No restaurants remain. You can now delete your full account.

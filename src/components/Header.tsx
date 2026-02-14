@@ -21,6 +21,7 @@ import {
   Clock,
   ClipboardList,
   Menu,
+  Settings,
   X,
   MoreHorizontal,
   CreditCard,
@@ -32,9 +33,11 @@ import { getUserRole, isManagerRole } from '../utils/role';
 type HeaderProps = {
   /** If true, renders a minimal header without schedule-specific actions */
   minimal?: boolean;
+  /** If true, renders onboarding-only actions (theme + logout) */
+  onboardingMode?: boolean;
 };
 
-export function Header({ minimal = false }: HeaderProps) {
+export function Header({ minimal = false, onboardingMode = false }: HeaderProps) {
   const router = useRouter();
   const pathname = usePathname();
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -54,7 +57,13 @@ export function Header({ minimal = false }: HeaderProps) {
   const { currentUser, signOut, accessibleRestaurants, pendingInvitations, activeRestaurantId } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
   const currentRole = getUserRole(currentUser?.role);
-  const { openProfileModal, openTimeOffModal, toggleSidebar } = useUIStore();
+  const {
+    openProfileModal,
+    openTimeOffModal,
+    toggleSidebar,
+    isSubscriptionBlocked,
+    uiLockedForOnboarding,
+  } = useUIStore();
 
   const handleLogout = () => {
     signOut();
@@ -70,6 +79,9 @@ export function Header({ minimal = false }: HeaderProps) {
   const pendingRequests = getPendingTimeOffRequests();
   const pendingBlockedRequests = getPendingBlockedDayRequests();
   const pendingReviewCount = pendingRequests.length + pendingBlockedRequests.length;
+  const hasRestaurants = (accessibleRestaurants?.length ?? 0) > 0;
+  const hasActiveRestaurant = Boolean(activeRestaurantId);
+  const showReports = hasRestaurants && hasActiveRestaurant;
   // Always allow access to Restaurants/Site Manager for signed-in users
   const showRestaurantsLink = Boolean(currentUser);
   const activeRestaurantName =
@@ -140,8 +152,11 @@ export function Header({ minimal = false }: HeaderProps) {
     pathname === '/review-requests' ||
     pathname === '/profile' ||
     pathname === '/chat';
+  const locked = onboardingMode || uiLockedForOnboarding;
   const isEmployee = currentRole === 'EMPLOYEE';
-  const showEmployeeMobileHeader = isEmployee && isEmployeeNavPage && !minimal;
+  const isRestrictedHeader = isSubscriptionBlocked && !locked;
+  const showEmployeeMobileHeader = !locked && isEmployee && isEmployeeNavPage && !minimal;
+  const logoHref = locked || isRestrictedHeader ? '/setup' : '/dashboard';
 
   function toYMD(date: Date): string {
     const year = date.getFullYear();
@@ -156,7 +171,7 @@ export function Header({ minimal = false }: HeaderProps) {
         {/* Left: Logo + Mobile sidebar toggle + Primary nav */}
         <div className="flex items-center gap-1 sm:gap-2 min-w-0">
           {/* Mobile sidebar toggle - only on dashboard */}
-          {!minimal && isOnDashboard && !showEmployeeMobileHeader && (
+          {!locked && !minimal && !isRestrictedHeader && isOnDashboard && !showEmployeeMobileHeader && (
             <button
               onClick={toggleSidebar}
               className="md:hidden p-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
@@ -166,7 +181,7 @@ export function Header({ minimal = false }: HeaderProps) {
             </button>
           )}
 
-          <Link href="/dashboard" className="flex items-center gap-2 shrink-0">
+          <Link href={logoHref} className="flex items-center gap-2 shrink-0">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
               <Calendar className="w-4 h-4 text-zinc-900" />
             </div>
@@ -177,7 +192,7 @@ export function Header({ minimal = false }: HeaderProps) {
           </Link>
 
           {/* Primary nav - hidden in minimal mode */}
-          {!minimal && (
+          {!locked && !minimal && !isRestrictedHeader && (
             <nav className={`flex items-center gap-1 sm:gap-2 ${showEmployeeMobileHeader ? 'hidden md:flex' : ''}`}>
               <Link
                 href="/dashboard"
@@ -209,7 +224,7 @@ export function Header({ minimal = false }: HeaderProps) {
 
         {/* Center: Restaurant name */}
         <div className="flex items-center justify-center min-w-0">
-          {!minimal && activeRestaurantName && (
+          {!locked && !minimal && !isRestrictedHeader && activeRestaurantName && (
             <span className="text-sm sm:text-base md:text-lg font-semibold text-theme-primary truncate max-w-[50vw] sm:max-w-[40vw]">
               {activeRestaurantName}
             </span>
@@ -219,7 +234,7 @@ export function Header({ minimal = false }: HeaderProps) {
         {/* Right: Actions + More menu */}
         <div className="flex items-center gap-1 sm:gap-2 min-w-0 w-full justify-end">
           {/* Add Shift - hidden in minimal mode */}
-          {!minimal && isManagerRole(currentRole) && (
+          {!locked && !minimal && !isRestrictedHeader && isManagerRole(currentRole) && (
             <button
               onClick={() => openModal('addShift')}
               className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:shadow-lg text-sm font-medium"
@@ -231,7 +246,7 @@ export function Header({ minimal = false }: HeaderProps) {
           )}
 
           {/* Copy Schedule - hidden in minimal mode */}
-          {!minimal && isManagerRole(currentRole) && isOnDashboard && scheduleMode !== 'draft' && (
+          {!locked && !minimal && !isRestrictedHeader && isManagerRole(currentRole) && isOnDashboard && scheduleMode !== 'draft' && (
             <button
               onClick={() => openModal('copySchedule')}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-400 transition-colors text-sm font-medium"
@@ -243,14 +258,16 @@ export function Header({ minimal = false }: HeaderProps) {
           )}
 
           {/* Reports - placeholder action */}
-          <button
-            onClick={handleReportsClick}
-            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
-            aria-label="Reports"
-          >
-            <BarChart3 className="w-4 h-4" />
-            <span className="hidden lg:inline">Reports</span>
-          </button>
+          {!locked && !isRestrictedHeader && showReports && (
+            <button
+              onClick={handleReportsClick}
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-sm font-medium"
+              aria-label="Reports"
+            >
+              <BarChart3 className="w-4 h-4" />
+              <span className="hidden lg:inline">Reports</span>
+            </button>
+          )}
 
           {/* More menu */}
           <div className="relative">
@@ -261,7 +278,7 @@ export function Header({ minimal = false }: HeaderProps) {
               aria-expanded={moreMenuOpen}
               ref={moreMenuButtonRef}
             >
-              {moreMenuOpen ? <X className="w-5 h-5" /> : <MoreHorizontal className="w-5 h-5" />}
+              {moreMenuOpen && !locked ? <X className="w-5 h-5" /> : <MoreHorizontal className="w-5 h-5" />}
             </button>
 
             {moreMenuOpen && typeof document !== 'undefined' && createPortal(
@@ -275,145 +292,208 @@ export function Header({ minimal = false }: HeaderProps) {
                   zIndex: 1100,
                 }}
               >
-                {/* Mobile-only items - hidden in minimal mode */}
-                {!minimal && (
-                  <div className="sm:hidden border-b border-theme-primary pb-2 mb-2">
-                    <Link
-                      href="/review-requests"
-                      className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                    >
-                      <ClipboardList className="w-4 h-4" />
-                      Review Requests
-                      {isManagerRole(currentRole) && pendingReviewCount > 0 && (
-                        <span className="ml-auto w-5 h-5 bg-amber-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
-                          {pendingReviewCount}
-                        </span>
-                      )}
-                    </Link>
-                  </div>
-                )}
-
-                {currentUser && (
-                  <button
-                    onClick={() => { openProfileModal(); setMoreMenuOpen(false); }}
-                    className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                  >
-                    <User className="w-4 h-4" />
-                    My Profile
-                  </button>
-                )}
-
-                {/* Schedule actions - hidden in minimal mode */}
-                {!minimal && currentUser && (
-                  <div className="border-b border-theme-primary pb-2 mb-2">
+                {locked ? (
+                  <>
                     <button
-                      onClick={() => { openTimeOffModal({ employeeId: currentUser.id }); setMoreMenuOpen(false); }}
-                      className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-emerald-500 hover:bg-emerald-500/10 transition-colors"
+                      onClick={toggleTheme}
+                      className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
                     >
-                      <CalendarOff className="w-4 h-4" />
-                      Request Time Off
+                      {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                      {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
                     </button>
+                    <button
+                      onClick={handleLogout}
+                      className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      Logout
+                    </button>
+                  </>
+                ) : isRestrictedHeader ? (
+                  <>
                     <Link
-                      href="/shift-exchange"
+                      href="/setup"
                       onClick={() => setMoreMenuOpen(false)}
                       className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
                     >
-                      <ArrowLeftRight className="w-4 h-4" />
-                      Swap Shift
+                      <Settings className="w-4 h-4" />
+                      Setup
                     </Link>
-                  </div>
-                )}
-
-                {/* Back to Schedule - shown in minimal mode */}
-                {minimal && (
-                  <Link
-                    href="/dashboard"
-                    onClick={() => setMoreMenuOpen(false)}
-                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                  >
-                    <Calendar className="w-4 h-4" />
-                    Back to Schedule
-                  </Link>
-                )}
-
-                {!minimal && showRestaurantsLink && (
-                  <Link
-                    href="/restaurants"
-                    onClick={() => setMoreMenuOpen(false)}
-                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                  >
-                    <Users className="w-4 h-4" />
-                    Restaurants
-                    {pendingInvitations.length > 0 && (
-                      <span className="ml-auto w-5 h-5 bg-emerald-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
-                        {pendingInvitations.length}
-                      </span>
-                    )}
-                  </Link>
-                )}
-
-                {!minimal && (
-                  <Link
-                    href="/chat"
-                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    Team Chat
-                  </Link>
-                )}
-
-                {!minimal && isManagerRole(currentRole) && (
-                  <>
                     <Link
-                      href="/staff"
+                      href="/restaurants"
+                      onClick={() => setMoreMenuOpen(false)}
                       className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
                     >
                       <Users className="w-4 h-4" />
-                      Manage Staff
+                      Restaurants
                     </Link>
-                    <Link
-                      href="/blocked-days"
-                      className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                    >
-                      <CalendarOff className="w-4 h-4" />
-                      Blocked Days
-                    </Link>
-                    <Link
-                      href="/business-hours"
-                      className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                    >
-                      <Clock className="w-4 h-4" />
-                      Schedule Settings
-                    </Link>
-                    {currentRole === 'ADMIN' && (
+                    <div className="border-t border-theme-primary pt-2 mt-2">
+                      <button
+                        onClick={toggleTheme}
+                        className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                      >
+                        {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                        {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
+                      </button>
+                      <button
+                        onClick={handleLogout}
+                        className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        Logout
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Mobile-only items - hidden in minimal mode */}
+                    {!minimal && (
+                      <div className="sm:hidden border-b border-theme-primary pb-2 mb-2">
+                        <Link
+                          href="/review-requests"
+                          className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                        >
+                          <ClipboardList className="w-4 h-4" />
+                          Review Requests
+                          {isManagerRole(currentRole) && pendingReviewCount > 0 && (
+                            <span className="ml-auto w-5 h-5 bg-amber-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
+                              {pendingReviewCount}
+                            </span>
+                          )}
+                        </Link>
+                      </div>
+                    )}
+
+                    {currentUser && (
+                      <button
+                        onClick={() => { openProfileModal(); setMoreMenuOpen(false); }}
+                        className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                      >
+                        <User className="w-4 h-4" />
+                        My Profile
+                      </button>
+                    )}
+
+                    {/* Schedule actions - hidden in minimal mode */}
+                    {!minimal && currentUser && (
+                      <div className="border-b border-theme-primary pb-2 mb-2">
+                        <button
+                          onClick={() => { openTimeOffModal({ employeeId: currentUser.id }); setMoreMenuOpen(false); }}
+                          className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-emerald-500 hover:bg-emerald-500/10 transition-colors"
+                        >
+                          <CalendarOff className="w-4 h-4" />
+                          Request Time Off
+                        </button>
+                        <Link
+                          href="/shift-exchange"
+                          onClick={() => setMoreMenuOpen(false)}
+                          className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                        >
+                          <ArrowLeftRight className="w-4 h-4" />
+                          Swap Shift
+                        </Link>
+                      </div>
+                    )}
+
+                    {/* Back to Schedule - shown in minimal mode */}
+                    {minimal && (
                       <Link
-                        href="/billing"
+                        href="/dashboard"
+                        onClick={() => setMoreMenuOpen(false)}
                         className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
                       >
-                        <CreditCard className="w-4 h-4" />
-                        Billing
+                        <Calendar className="w-4 h-4" />
+                        Back to Schedule
                       </Link>
                     )}
+
+                    {!minimal && showRestaurantsLink && (
+                      <Link
+                        href="/restaurants"
+                        onClick={() => setMoreMenuOpen(false)}
+                        className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                      >
+                        <Users className="w-4 h-4" />
+                        Restaurants
+                        {pendingInvitations.length > 0 && (
+                          <span className="ml-auto w-5 h-5 bg-emerald-500 text-zinc-900 text-xs font-bold rounded-full flex items-center justify-center">
+                            {pendingInvitations.length}
+                          </span>
+                        )}
+                      </Link>
+                    )}
+
+                    {!minimal && (
+                      <Link
+                        href="/chat"
+                        className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        Team Chat
+                      </Link>
+                    )}
+
+                    {!minimal && isManagerRole(currentRole) && (
+                      <>
+                        <Link
+                          href="/staff"
+                          className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                        >
+                          <Users className="w-4 h-4" />
+                          Manage Staff
+                        </Link>
+                        <Link
+                          href="/blocked-days"
+                          className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                        >
+                          <CalendarOff className="w-4 h-4" />
+                          Blocked Days
+                        </Link>
+                        <Link
+                          href="/business-hours"
+                          className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                        >
+                          <Clock className="w-4 h-4" />
+                          Schedule Settings
+                        </Link>
+                        <Link
+                          href="/setup"
+                          className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                        >
+                          <Settings className="w-4 h-4" />
+                          Setup
+                        </Link>
+                        {currentRole === 'ADMIN' && (
+                          <Link
+                            href="/billing"
+                            className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                          >
+                            <CreditCard className="w-4 h-4" />
+                            Billing
+                          </Link>
+                        )}
+                      </>
+                    )}
+
+                    <div className="border-t border-theme-primary pt-2 mt-2">
+                      <button
+                        onClick={toggleTheme}
+                        className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
+                      >
+                        {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                        {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
+                      </button>
+
+                      <button
+                        onClick={handleLogout}
+                        className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        Logout
+                      </button>
+                    </div>
                   </>
                 )}
-
-                <div className="border-t border-theme-primary pt-2 mt-2">
-                  <button
-                    onClick={toggleTheme}
-                    className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                  >
-                    {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-                    {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
-                  </button>
-
-                  <button
-                    onClick={handleLogout}
-                    className="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
-                  >
-                    <LogOut className="w-4 h-4" />
-                    Logout
-                  </button>
-                </div>
               </div>,
               document.body
             )}

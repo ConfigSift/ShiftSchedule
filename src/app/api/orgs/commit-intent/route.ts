@@ -16,6 +16,7 @@ export const revalidate = 0;
 
 type CommitIntentPayload = {
   intentId?: string;
+  deferBillingCheck?: boolean;
 };
 
 type CreateIntentRow = {
@@ -41,6 +42,7 @@ export async function POST(request: NextRequest) {
   }
 
   const intentId = String(payload.intentId ?? '').trim();
+  const deferBillingCheck = payload.deferBillingCheck === true;
   if (!intentId) {
     return NextResponse.json({ error: 'intentId is required.' }, { status: 400 });
   }
@@ -119,7 +121,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (BILLING_ENABLED) {
+  if (BILLING_ENABLED && !deferBillingCheck) {
     const billingResult = await refreshBillingAccountFromStripe(authUserId, supabaseAdmin);
     if (billingResult.error) {
       return applySupabaseCookies(

@@ -2,12 +2,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2 } from 'lucide-react';
 import { Dashboard } from '../../components/Dashboard';
 import { EmployeeDashboard } from '../../components/employee/EmployeeDashboard';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
+import { normalizePersona, readStoredPersona } from '@/lib/persona';
+import { resolveNoMembershipDestination } from '@/lib/authRedirect';
 import { getUserRole, isManagerRole } from '../../utils/role';
+import { supabase } from '../../lib/supabase/client';
+import { TransitionScreen } from '../../components/auth/TransitionScreen';
 
 function consumeQueryFlag(param: string): boolean {
   if (typeof window === 'undefined') return false;
@@ -60,54 +63,63 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!isHydrated || !isInitialized) return;
+    let cancelled = false;
 
-    // Rule: No user -> login
-    if (!currentUser) {
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.debug('[dashboard] no user, redirecting to /login');
+    async function guardRoute() {
+      // Treat auth session as source of truth; missing profile row should not force /login.
+      if (!currentUser) {
+        const { data } = await supabase.auth.getSession();
+        if (cancelled) return;
+
+        if (!data.session?.user) {
+          router.replace('/login');
+          return;
+        }
+
+        const storedPersona = readStoredPersona();
+        if (!storedPersona) {
+          router.replace('/persona?next=/dashboard');
+          return;
+        }
+
+        if (accessibleRestaurants.length === 0) {
+          router.replace(resolveNoMembershipDestination(null, storedPersona));
+          return;
+        }
+
+        if (!activeRestaurantId) {
+          router.replace('/restaurants');
+          return;
+        }
+        return;
       }
-      router.push('/login');
-      return;
-    }
 
-    // Rule 1: Pending invitations AND no valid selection -> /restaurants
-    if (pendingInvitations.length > 0 && !activeRestaurantId) {
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.debug('[dashboard] pending invitations without selection, redirecting to /restaurants');
+      const persona = normalizePersona(currentUser.persona) ?? readStoredPersona();
+      if (!persona) {
+        router.replace('/persona?next=/dashboard');
+        return;
       }
-      router.push('/restaurants');
-      return;
-    }
 
-    // Rule 2: No memberships -> /restaurants (shows no-access message)
-    if (accessibleRestaurants.length === 0) {
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.debug('[dashboard] no memberships, redirecting to /restaurants');
+      if (pendingInvitations.length > 0 && !activeRestaurantId) {
+        router.replace('/restaurants');
+        return;
       }
-      router.push('/restaurants');
-      return;
-    }
 
-    // Rule 3: Single membership - activeRestaurantId should already be set by init()
-    // Rule 4: Multiple memberships without valid selection -> /restaurants
-    if (!activeRestaurantId) {
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.debug('[dashboard] no active restaurant, redirecting to /restaurants');
+      if (accessibleRestaurants.length === 0) {
+        router.replace(resolveNoMembershipDestination(currentUser.role, persona));
+        return;
       }
-      router.push('/restaurants');
-      return;
+
+      if (!activeRestaurantId) {
+        router.replace('/restaurants');
+      }
     }
 
-    // activeRestaurantId is set and valid -> allow dashboard access
-    if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
-      console.debug('[dashboard] valid selection, allowing access:', activeRestaurantId);
-    }
-  }, [isHydrated, isInitialized, currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
+    void guardRoute();
+    return () => {
+      cancelled = true;
+    };
+  }, [isHydrated, isInitialized, currentUser, activeRestaurantId, accessibleRestaurants.length, pendingInvitations.length, router]);
 
   // Subscription loading gate: show spinner while status is 'loading', max 5 seconds
   const [subLoadingTimedOut, setSubLoadingTimedOut] = useState(false);
@@ -128,11 +140,8 @@ export default function DashboardPage() {
   const isSubLoading = subscriptionStatus === 'loading' && !subLoadingTimedOut;
 
   if (!isHydrated || !isInitialized || !currentUser || isSubLoading) {
-    return (
-      <div className="min-h-screen bg-theme-primary flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-amber-500 animate-spin" />
-      </div>
-    );
+    const loadingMessage = isSubLoading ? 'Checking subscription...' : 'Loading...';
+    return <TransitionScreen message={loadingMessage} />;
   }
 
   // Branch here to keep manager/admin dashboard untouched while giving employees their own view.

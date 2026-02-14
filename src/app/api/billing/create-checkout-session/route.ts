@@ -23,9 +23,11 @@ type CheckoutPayload = {
   organizationId?: string;
   intentId?: string;
   priceType?: 'monthly' | 'annual';
+  flow?: 'subscribe' | 'setup';
 };
 
 export async function POST(request: NextRequest) {
+  const isDev = process.env.NODE_ENV !== 'production';
   let payload: CheckoutPayload;
   try {
     payload = (await request.json()) as CheckoutPayload;
@@ -40,6 +42,7 @@ export async function POST(request: NextRequest) {
   const organizationId = String(payload.organizationId ?? '').trim() || null;
   const intentId = String(payload.intentId ?? '').trim() || null;
   const priceType = payload.priceType;
+  const flow = payload.flow === 'setup' ? 'setup' : 'subscribe';
 
   if (!priceType || !['monthly', 'annual'].includes(priceType)) {
     return NextResponse.json({ error: 'priceType (monthly|annual) is required.' }, { status: 400 });
@@ -173,6 +176,26 @@ export async function POST(request: NextRequest) {
   const cancelIntentSegment = effectiveIntentId
     ? `&intent=${encodeURIComponent(effectiveIntentId)}`
     : '';
+  const successUrl = flow === 'setup'
+    ? `${appUrl}/setup?step=3&checkout=success&session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`
+    : `${appUrl}/subscribe/success?session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`;
+  const cancelUrl = flow === 'setup'
+    ? `${appUrl}/setup?step=3&checkout=cancel${cancelIntentSegment}`
+    : `${appUrl}/subscribe?canceled=true${cancelIntentSegment}`;
+
+  if (isDev) {
+    // eslint-disable-next-line no-console
+    console.debug('[billing:create-checkout-session] request', {
+      authUserId,
+      flow,
+      organizationId: effectiveOrganizationId,
+      intentId: effectiveIntentId,
+      desiredQuantity,
+      priceType,
+      successUrl,
+      cancelUrl,
+    });
+  }
 
   const subscriptionMetadata: Record<string, string> = {
     auth_user_id: authUserId,
@@ -196,8 +219,8 @@ export async function POST(request: NextRequest) {
     customer: stripeCustomerId,
     mode: 'subscription',
     line_items: [{ price: priceId, quantity: desiredQuantity }],
-    success_url: `${appUrl}/subscribe/success?session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`,
-    cancel_url: `${appUrl}/subscribe?canceled=true${cancelIntentSegment}`,
+    success_url: successUrl,
+    cancel_url: cancelUrl,
     subscription_data: {
       metadata: subscriptionMetadata,
     },
@@ -225,14 +248,53 @@ export async function POST(request: NextRequest) {
     });
 
     const session = await stripe.checkout.sessions.create(params);
+    const checkoutUrl = String(session.url ?? '').trim();
+    if (!checkoutUrl) {
+      if (isDev) {
+        // eslint-disable-next-line no-console
+        console.error('[billing:create-checkout-session] Stripe session missing URL', {
+          sessionId: session.id,
+          mode: session.mode,
+          status: session.status,
+        });
+      }
+      return applySupabaseCookies(
+        NextResponse.json(
+          { error: 'Stripe checkout URL was not returned.', details: { sessionId: session.id } },
+          { status: 502 },
+        ),
+        response,
+      );
+    }
+
+    if (isDev) {
+      // eslint-disable-next-line no-console
+      console.debug('[billing:create-checkout-session] created', {
+        sessionId: session.id,
+        hasUrl: Boolean(checkoutUrl),
+      });
+    }
+
     return applySupabaseCookies(
-      NextResponse.json({ url: session.url }),
+      NextResponse.json({ checkoutUrl }),
       response,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (isDev) {
+      // eslint-disable-next-line no-console
+      console.error('[billing:create-checkout-session] failed', {
+        message,
+      });
+    }
     return applySupabaseCookies(
-      NextResponse.json({ error: message || 'Unable to create checkout session.' }, { status: 500 }),
+      NextResponse.json(
+        {
+          error: message || 'Unable to create checkout session.',
+          details: isDev ? { flow, organizationId: effectiveOrganizationId, intentId: effectiveIntentId } : undefined,
+        },
+        { status: 500 },
+      ),
       response,
     );
   }
