@@ -6,6 +6,7 @@ const WWW_DOMAIN = 'www.crewshyft.com';
 const LOGIN_SUBDOMAIN = 'login.crewshyft.com';
 const APP_SUBDOMAIN = 'app.crewshyft.com';
 const NO_ORG_REDIRECT_PATH = '/restaurants';
+const APP_HOME_REDIRECT_PATH = '/dashboard';
 
 const MARKETING_ROUTES = ['/', '/pricing', '/features', '/privacy', '/terms'];
 const LOGIN_ROUTE_PREFIXES = ['/login', '/signup', '/start', '/onboarding', '/auth', '/reset-passcode'];
@@ -23,7 +24,27 @@ const APP_ROUTE_PREFIXES = [
   '/time-off',
   '/billing',
   '/manager',
-  '/setup',
+  '/shift-exchange',
+  '/subscribe',
+];
+
+const PUBLIC_EXACT_PATHS = ['/', '/join'];
+const PUBLIC_PATH_PREFIXES = ['/login', '/signup', '/join', '/start', '/onboarding', '/setup', '/auth/callback', '/auth/error'];
+const AUTH_ENTRY_PATH_PREFIXES = ['/login', '/signup'];
+const PROTECTED_APP_ROUTE_PREFIXES = [
+  '/dashboard',
+  '/restaurants',
+  '/staff',
+  '/reports',
+  '/chat',
+  '/blocked-days',
+  '/business-hours',
+  '/schedule',
+  '/profile',
+  '/review-requests',
+  '/time-off',
+  '/billing',
+  '/manager',
   '/shift-exchange',
   '/subscribe',
 ];
@@ -99,6 +120,19 @@ function isAppRoute(pathname: string) {
   return APP_ROUTE_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
 }
 
+function isAuthEntryPath(pathname: string) {
+  return AUTH_ENTRY_PATH_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
+}
+
+function isPublicPath(pathname: string) {
+  if (PUBLIC_EXACT_PATHS.includes(pathname)) return true;
+  return PUBLIC_PATH_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
+}
+
+function isProtectedAppRoute(pathname: string) {
+  return PROTECTED_APP_ROUTE_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
+}
+
 function isBillingExempt(pathname: string): boolean {
   if (BILLING_EXEMPT_EXACT.includes(pathname)) return true;
   return BILLING_EXEMPT_PREFIXES.some((prefix) => pathname.startsWith(prefix));
@@ -159,7 +193,7 @@ function cloneSupabaseCookies(source: NextResponse, target: NextResponse) {
 function buildLoginRedirectUrl(req: NextRequest, localOrPreviewHost: boolean, nextPath: string) {
   const loginUrl = localOrPreviewHost
     ? new URL('/login', req.url)
-    : buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, '/');
+    : buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, '/login');
   if (nextPath) {
     loginUrl.searchParams.set('next', nextPath);
   }
@@ -183,47 +217,61 @@ async function runMiddleware(req: NextRequest) {
   const localOrPreviewHost = isLocalOrPreviewHost(host);
   const requestUrl = req.nextUrl.clone();
   const originalPathname = requestUrl.pathname;
+  const requestPathWithQuery = `${originalPathname}${requestUrl.search}`;
 
   if (isNonPageAsset(originalPathname)) {
     return NextResponse.next();
   }
 
-  if (!localOrPreviewHost) {
+  const isAppRootRequest = host === APP_SUBDOMAIN && originalPathname === '/';
+  const isPublicRoute = isPublicPath(originalPathname) && !isAppRootRequest;
+  const isAuthEntryRoute = isAuthEntryPath(originalPathname);
+
+  const createRedirect = (destination: string | URL, reason: string, status = 302) => {
+    const redirectUrl =
+      destination instanceof URL
+        ? destination
+        : destination.startsWith('http')
+          ? new URL(destination)
+          : new URL(destination, req.url);
+    console.info(`[middleware] redirect ${host}${requestPathWithQuery} -> ${redirectUrl.host}${redirectUrl.pathname}${redirectUrl.search} (${reason})`);
+    return NextResponse.redirect(redirectUrl, status);
+  };
+
+  if (!localOrPreviewHost && !isPublicRoute) {
     if (shouldRedirectToLoginSubdomain(host, originalPathname)) {
       const targetPath = mapToLoginSubdomainPath(originalPathname);
-      return NextResponse.redirect(buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, targetPath), 302);
+      return createRedirect(buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, targetPath), 'host:marketing-to-login');
     }
 
     if (shouldRedirectToAppSubdomain(host, originalPathname)) {
       const targetPath = mapToAppSubdomainPath(originalPathname);
-      return NextResponse.redirect(buildHostRedirectUrl(req, APP_SUBDOMAIN, targetPath), 302);
+      return createRedirect(buildHostRedirectUrl(req, APP_SUBDOMAIN, targetPath), 'host:to-app');
     }
 
     if (shouldRedirectToLoginFromApp(host, originalPathname)) {
       const targetPath = mapToLoginSubdomainPath(originalPathname);
-      return NextResponse.redirect(buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, targetPath), 302);
+      return createRedirect(buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, targetPath), 'host:app-to-login');
+    }
+
+    if (host === LOGIN_SUBDOMAIN && isMarketingRoute(originalPathname)) {
+      return createRedirect(buildHostRedirectUrl(req, ROOT_DOMAIN, originalPathname), 'host:login-to-marketing');
     }
   }
 
-  let response = NextResponse.next();
-  let routeForGuards = originalPathname;
-
-  if (!localOrPreviewHost && host === LOGIN_SUBDOMAIN && originalPathname === '/') {
-    const rewriteUrl = req.nextUrl.clone();
-    rewriteUrl.pathname = '/login';
-    response = NextResponse.rewrite(rewriteUrl);
-    routeForGuards = '/login';
+  if (isPublicRoute && !isAuthEntryRoute) {
+    return NextResponse.next();
   }
 
+  const response = NextResponse.next();
+  let routeForGuards = originalPathname;
   if (!localOrPreviewHost && host === APP_SUBDOMAIN && (originalPathname === '/' || originalPathname === '/schedule')) {
     routeForGuards = '/dashboard';
   }
 
-  if (!isAppRoute(routeForGuards)) {
-    if (!localOrPreviewHost && host === LOGIN_SUBDOMAIN && isMarketingRoute(originalPathname)) {
-      const marketingUrl = buildHostRedirectUrl(req, ROOT_DOMAIN, originalPathname);
-      return NextResponse.redirect(marketingUrl, 302);
-    }
+  const protectedRoute = isProtectedAppRoute(routeForGuards);
+  const authEntryForGuards = isAuthEntryPath(routeForGuards);
+  if (!protectedRoute && !authEntryForGuards) {
     return response;
   }
 
@@ -262,21 +310,29 @@ async function runMiddleware(req: NextRequest) {
     }
   }
 
-  const redirectTo = (destination: string | URL, status = 302) => {
+  const redirectTo = (destination: string | URL, reason: string, status = 302) => {
     const redirectUrl =
       destination instanceof URL
         ? destination
         : destination.startsWith('http')
           ? new URL(destination)
           : new URL(destination, req.url);
+    console.info(`[middleware] redirect ${host}${requestPathWithQuery} -> ${redirectUrl.host}${redirectUrl.pathname}${redirectUrl.search} (${reason})`);
     const redirect = NextResponse.redirect(redirectUrl, status);
     cloneSupabaseCookies(response, redirect);
     return redirect;
   };
 
   if (!user) {
+    if (!protectedRoute) {
+      return response;
+    }
     const nextPath = `${originalPathname}${requestUrl.search}`;
-    return redirectTo(buildLoginRedirectUrl(req, localOrPreviewHost, nextPath));
+    return redirectTo(buildLoginRedirectUrl(req, localOrPreviewHost, nextPath), 'auth:missing-session');
+  }
+
+  if (authEntryForGuards) {
+    return redirectTo(APP_HOME_REDIRECT_PATH, 'auth:already-signed-in');
   }
 
   const onRestaurantsRoute = pathMatchesPrefix(routeForGuards, '/restaurants');
@@ -288,7 +344,7 @@ async function runMiddleware(req: NextRequest) {
       .eq('auth_user_id', user.id);
 
     if (!membershipCountError && (count ?? 0) === 0) {
-      return redirectTo(NO_ORG_REDIRECT_PATH);
+      return redirectTo(NO_ORG_REDIRECT_PATH, 'org:no-memberships');
     }
   }
 
@@ -302,10 +358,10 @@ async function runMiddleware(req: NextRequest) {
 
       const roleValue = profile?.role ?? user.user_metadata?.role ?? undefined;
       if (!isManagerRole(roleValue)) {
-        return redirectTo('/dashboard?notice=forbidden');
+        return redirectTo('/dashboard?notice=forbidden', 'role:manager-required');
       }
     } catch {
-      return redirectTo('/dashboard?notice=forbidden');
+      return redirectTo('/dashboard?notice=forbidden', 'role:manager-check-failed');
     }
   }
 
@@ -314,7 +370,7 @@ async function runMiddleware(req: NextRequest) {
     const billingCookie = req.cookies.get('sf_billing_ok')?.value;
 
     if (!billingCookie) {
-      return redirectTo('/subscribe');
+      return redirectTo('/subscribe', 'billing:missing-cookie');
     }
 
     if (billingCookie === 'past_due') {
