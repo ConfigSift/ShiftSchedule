@@ -154,6 +154,12 @@ function detectCurrency(): SupportedCurrency {
   return 'USD';
 }
 
+function suffix(value: string, length = 6): string | null {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return null;
+  return normalized.slice(-length);
+}
+
 const COMMON_TIMEZONES = [
   'America/New_York',
   'America/Chicago',
@@ -1178,10 +1184,18 @@ export function OnboardingStepper() {
 
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10_000);
+    const apiUrl = new URL('/api/billing/create-checkout-session', window.location.origin).toString();
+    const publishableKeySuffix = suffix(STRIPE_PUBLISHABLE_KEY);
+
+    console.info('[setup:embedded-checkout] create session request', {
+      host: window.location.host,
+      publishableKeySuffix,
+      apiUrl,
+    });
 
     try {
       const result = await apiFetch<CreateCheckoutSessionResponse>(
-        '/api/billing/create-checkout-session',
+        apiUrl,
         {
           method: 'POST',
           signal: controller.signal,
@@ -1193,6 +1207,14 @@ export function OnboardingStepper() {
           },
         },
       );
+
+      const clientSecret = String(result.data?.clientSecret ?? '').trim();
+      const serverErrorCode = result.code || String(result.data?.error_code ?? '').trim() || null;
+      console.info('[setup:embedded-checkout] create session response', {
+        ok: result.ok,
+        error_code: serverErrorCode,
+        clientSecretSuffix: suffix(clientSecret),
+      });
 
       if (!result.ok) {
         const redirect = String(result.data?.redirect ?? '').trim() || null;
@@ -1208,7 +1230,6 @@ export function OnboardingStepper() {
         return;
       }
 
-      const clientSecret = String(result.data?.clientSecret ?? '').trim();
       if (!clientSecret) {
         setCheckoutNotice('');
         setCheckoutError('Unable to initialize embedded checkout. You can use Stripe Checkout instead.');

@@ -16,6 +16,12 @@ function prefix(value: string, length = 6) {
   return normalized.slice(0, length);
 }
 
+function suffix(value: string, length = 6) {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return null;
+  return normalized.slice(-length);
+}
+
 type PublishablePrefix = 'pk_test' | 'pk_live' | 'missing';
 type SecretPrefix = 'sk_test' | 'sk_live' | 'missing';
 type StripeMode = 'test' | 'live' | 'unknown';
@@ -61,6 +67,17 @@ export async function GET(request: NextRequest) {
   const publishableKeyPrefix = getPublishableKeyPrefix(stripePublishableKey);
   const secretKeyPrefix = getSecretKeyPrefix(stripeSecretKey);
   const mode = deriveStripeMode(secretKeyPrefix, publishableKeyPrefix);
+  const publishableKeySuffix = suffix(stripePublishableKey);
+  const secretKeySuffix = suffix(stripeSecretKey);
+  const monthlyPriceIdSuffix = suffix(monthlyPriceId);
+  const annualPriceIdSuffix = suffix(annualPriceId);
+  const priceIdSuffixes =
+    monthlyPriceIdSuffix || annualPriceIdSuffix
+      ? {
+        monthly: monthlyPriceIdSuffix,
+        annual: annualPriceIdSuffix,
+      }
+      : null;
   let stripeAccountId: string | null = null;
   let stripeLivemode: boolean | null = null;
 
@@ -88,7 +105,9 @@ export async function GET(request: NextRequest) {
     hasSecretKey: Boolean(stripeSecretKey),
     hasPublishableKey: Boolean(stripePublishableKey),
     publishableKeyPrefix,
+    publishableKeySuffix,
     secretKeyPrefix,
+    secretKeySuffix,
     mode,
     hasWebhookSecret: Boolean(String(STRIPE_WEBHOOK_SECRET ?? '').trim()),
     hasPriceId: Boolean(monthlyPriceId || annualPriceId),
@@ -96,6 +115,7 @@ export async function GET(request: NextRequest) {
     hasAnnualPriceId: Boolean(annualPriceId),
     monthlyPriceIdPrefix: prefix(monthlyPriceId),
     annualPriceIdPrefix: prefix(annualPriceId),
+    priceIdSuffixes,
     stripeAccountId,
     stripeLivemode,
   });
