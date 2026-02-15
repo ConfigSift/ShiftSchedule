@@ -51,12 +51,10 @@ type CommitIntentResponse = {
   restaurantCode?: string | null;
 };
 
-type CreatePaymentIntentResponse = {
-  clientSecret?: string | null;
-  subscriptionId?: string | null;
-  customerId?: string | null;
-  currency?: string | null;
-  priceType?: PlanId | null;
+type CreateCheckoutSessionResponse = {
+  checkoutUrl?: string | null;
+  url?: string | null;
+  sessionId?: string | null;
   redirect?: string | null;
   error_code?: string | null;
 };
@@ -71,6 +69,15 @@ type FinalizePaymentElementResponse = {
   active?: boolean;
   status?: string;
   error?: string;
+};
+
+type FinalizeCheckoutResponse = {
+  ok?: boolean;
+  active?: boolean;
+  status?: string;
+  organizationId?: string | null;
+  error?: string;
+  error_code?: string;
 };
 
 type DayHoursRow = {
@@ -330,6 +337,8 @@ export function OnboardingStepper() {
   }, [requestedStepParam]);
   const paymentReturnParams = useMemo(
     () => ({
+      checkout: String(searchParams.get('checkout') ?? '').trim().toLowerCase(),
+      sessionId: String(searchParams.get('session_id') ?? '').trim(),
       pe: String(searchParams.get('pe') ?? '').trim().toLowerCase(),
       subscriptionId: String(searchParams.get('subscription_id') ?? '').trim(),
       organizationId: String(searchParams.get('organization_id') ?? '').trim(),
@@ -439,6 +448,12 @@ export function OnboardingStepper() {
     if (paymentReturnParams.pe) {
       params.set('pe', paymentReturnParams.pe);
     }
+    if (paymentReturnParams.checkout) {
+      params.set('checkout', paymentReturnParams.checkout);
+    }
+    if (paymentReturnParams.sessionId) {
+      params.set('session_id', paymentReturnParams.sessionId);
+    }
     if (paymentReturnParams.subscriptionId) {
       params.set('subscription_id', paymentReturnParams.subscriptionId);
     }
@@ -455,8 +470,10 @@ export function OnboardingStepper() {
     isSetupWizard,
     managerStep,
     pathname,
+    paymentReturnParams.checkout,
     paymentReturnParams.organizationId,
     paymentReturnParams.pe,
+    paymentReturnParams.sessionId,
     paymentReturnParams.subscriptionId,
     role,
   ]);
@@ -984,13 +1001,142 @@ export function OnboardingStepper() {
     [finishSetup, organizationId, refreshProfile, refreshSubscriptionState],
   );
 
+  const finalizeCheckoutSession = useCallback(
+    async (sessionIdInput: string, organizationIdInput?: string | null) => {
+      const sessionId = String(sessionIdInput ?? '').trim();
+      const organizationIdToFinalize = String(organizationIdInput ?? organizationId ?? '').trim();
+      if (!sessionId) {
+        setCheckoutFinalizing(false);
+        setPaymentReceived(false);
+        setCheckoutNotice('');
+        setCheckoutError('Missing checkout session details. Please try again.');
+        return;
+      }
+
+      setCheckoutFinalizing(true);
+      setCheckoutError('');
+      setPaymentReceived(true);
+      setCheckoutManageUrl(null);
+      setCheckoutNotice('Payment received. Finalizing your CrewShyft subscription...');
+
+      const controller = new AbortController();
+      let timedOut = false;
+      const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, FINALIZE_TIMEOUT_MS);
+
+      try {
+        const finalizeResult = await apiFetch<FinalizeCheckoutResponse>(
+          '/api/billing/finalize-checkout',
+          {
+            method: 'POST',
+            signal: controller.signal,
+            json: {
+              session_id: sessionId,
+            },
+          },
+        );
+
+        if (!finalizeResult.ok || !finalizeResult.data?.ok) {
+          const serverCode =
+            finalizeResult.code || String(finalizeResult.data?.error_code ?? '').trim();
+          const codeSuffix = serverCode ? ` (${serverCode})` : '';
+          setPaymentReceived(false);
+          setCheckoutNotice('');
+          setCheckoutError(
+            timedOut
+              ? 'We\u2019re still confirming your subscription. Please try again.'
+              : ((finalizeResult.error || finalizeResult.data?.error || 'Unable to finalize subscription.') + codeSuffix),
+          );
+          setCheckoutManageUrl('/billing');
+          return;
+        }
+
+        const finalizedOrganizationId = String(
+          finalizeResult.data.organizationId ?? organizationIdToFinalize ?? '',
+        ).trim();
+        if (finalizedOrganizationId) {
+          await refreshProfile();
+          await useAuthStore.getState().fetchSubscriptionStatus(finalizedOrganizationId);
+          await refreshSubscriptionState();
+          setSubscriptionActive(true);
+          setCheckoutManageUrl(null);
+          setCheckoutNotice('Payment received. Subscription active. Redirecting to your dashboard...');
+          setCheckoutError('');
+          setCheckoutSubmitting(false);
+          if (autoAdvanceTimeoutRef.current !== null) {
+            window.clearTimeout(autoAdvanceTimeoutRef.current);
+          }
+          autoAdvanceTimeoutRef.current = window.setTimeout(() => {
+            void finishSetup();
+          }, 900);
+          return;
+        }
+
+        setPaymentReceived(false);
+        setCheckoutNotice('');
+        setCheckoutError('Subscription is active, but setup could not resolve your restaurant. Please open Billing.');
+        setCheckoutManageUrl('/billing');
+      } catch {
+        setPaymentReceived(false);
+        setCheckoutNotice('');
+        setCheckoutError(
+          timedOut
+            ? 'We\u2019re still confirming your subscription. Please try again.'
+            : 'Unable to finalize subscription. Please try again.',
+        );
+        setCheckoutManageUrl('/billing');
+      } finally {
+        window.clearTimeout(timeoutId);
+        setCheckoutLoading(null);
+        setCheckoutFinalizing(false);
+      }
+    },
+    [finishSetup, organizationId, refreshProfile, refreshSubscriptionState],
+  );
+
+  useEffect(() => {
+    if (role !== 'manager' || managerStep !== 3) return;
+    if (paymentReturnParams.checkout === 'cancel') {
+      setPaymentReceived(false);
+      setCheckoutNotice('Checkout was canceled. You can try again when you\'re ready.');
+      return;
+    }
+    if (paymentReturnParams.checkout !== 'success') return;
+
+    const sessionId = paymentReturnParams.sessionId;
+    const orgId = paymentReturnParams.organizationId || organizationId || '';
+    const token = `checkout:${sessionId || 'none'}:${orgId || 'none'}`;
+    if (handledPaymentReturnRef.current === token) return;
+    handledPaymentReturnRef.current = token;
+
+    if (!sessionId) {
+      setPaymentReceived(false);
+      setCheckoutNotice('');
+      setCheckoutError('Missing checkout session details. Please try payment again.');
+      return;
+    }
+
+    setPaymentPanelOpen(true);
+    void finalizeCheckoutSession(sessionId, orgId);
+  }, [
+    finalizeCheckoutSession,
+    managerStep,
+    organizationId,
+    paymentReturnParams.checkout,
+    paymentReturnParams.organizationId,
+    paymentReturnParams.sessionId,
+    role,
+  ]);
+
   useEffect(() => {
     if (role !== 'manager' || managerStep !== 3) return;
     if (paymentReturnParams.pe !== 'return') return;
 
     const subscriptionId = paymentReturnParams.subscriptionId;
     const orgId = paymentReturnParams.organizationId || organizationId || '';
-    const token = `${subscriptionId || 'none'}:${orgId || 'none'}`;
+    const token = `pe:${subscriptionId || 'none'}:${orgId || 'none'}`;
     if (handledPaymentReturnRef.current === token) return;
     handledPaymentReturnRef.current = token;
 
@@ -1014,10 +1160,6 @@ export function OnboardingStepper() {
   ]);
 
   const handleStartCheckout = useCallback(async (priceType: PlanId) => {
-    if (!STRIPE_PUBLISHABLE_KEY || !stripePromise) {
-      setCheckoutError('Stripe is not configured. Please contact support.');
-      return;
-    }
     if (!organizationId) {
       setCheckoutError('Create your restaurant first.');
       return;
@@ -1030,23 +1172,22 @@ export function OnboardingStepper() {
     setPaymentReceived(false);
     setCheckoutLoading(priceType);
     setPaymentPanelOpen(true);
-    setPaymentClientSecret(null);
-    setPaymentSubscriptionId(null);
+    clearPaymentPanelState();
 
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10_000);
 
     try {
-      const result = await apiFetch<CreatePaymentIntentResponse>(
-        '/api/billing/create-payment-intent',
+      const result = await apiFetch<CreateCheckoutSessionResponse>(
+        '/api/billing/create-checkout-session',
         {
           method: 'POST',
           signal: controller.signal,
           json: {
             organizationId,
             priceType,
-            currency: selectedCurrency,
             flow: 'setup',
+            uiMode: 'redirect',
           },
         },
       );
@@ -1065,17 +1206,41 @@ export function OnboardingStepper() {
         return;
       }
 
-      const clientSecret = String(result.data?.clientSecret ?? '').trim();
-      const subscriptionId = String(result.data?.subscriptionId ?? '').trim();
-      if (!clientSecret || !subscriptionId) {
-        setCheckoutError('Unable to initialize secure payment. Missing Stripe payment details.');
+      const checkoutUrl = String(result.data?.checkoutUrl ?? result.data?.url ?? '').trim();
+      if (checkoutUrl) {
+        window.location.assign(checkoutUrl);
         return;
       }
 
-      setPaymentClientSecret(clientSecret);
-      setPaymentSubscriptionId(subscriptionId);
+      const sessionId = String(result.data?.sessionId ?? '').trim();
+      if (sessionId) {
+        if (!stripePromise) {
+          setCheckoutError('Stripe is not configured in this environment.');
+          return;
+        }
+        const stripeClient = await stripePromise;
+        if (!stripeClient) {
+          setCheckoutError('Unable to initialize Stripe checkout.');
+          return;
+        }
+        const checkoutClient = stripeClient as unknown as {
+          redirectToCheckout?: (options: { sessionId: string }) => Promise<{ error?: { message?: string } }>;
+        };
+        if (typeof checkoutClient.redirectToCheckout !== 'function') {
+          setCheckoutError('Stripe checkout redirect is not available in this environment.');
+          return;
+        }
+        const redirectResult = await checkoutClient.redirectToCheckout({ sessionId });
+        if (redirectResult.error?.message) {
+          setCheckoutError(redirectResult.error.message);
+        } else {
+          setCheckoutError('Unable to redirect to Stripe Checkout.');
+        }
+        return;
+      }
+
       setCheckoutNotice('');
-      setCheckoutError('');
+      setCheckoutError('Unable to initialize secure payment. Missing Stripe checkout URL.');
     } catch {
       setCheckoutNotice('');
       setCheckoutError('Unable to initialize secure payment. Please try again.');
@@ -1083,7 +1248,7 @@ export function OnboardingStepper() {
       window.clearTimeout(timeout);
       setCheckoutLoading(null);
     }
-  }, [organizationId, selectedCurrency]);
+  }, [clearPaymentPanelState, organizationId]);
 
   const handlePaymentIntentModalClose = useCallback(() => {
     if (checkoutSubmitting || checkoutFinalizing) return;
@@ -1105,6 +1270,17 @@ export function OnboardingStepper() {
     setCheckoutNotice('');
     setCheckoutLoading(null);
     setCheckoutSubmitting(false);
+    if (
+      paymentReturnParams.checkout === 'success'
+      && paymentReturnParams.sessionId
+      && !subscriptionActive
+    ) {
+      void finalizeCheckoutSession(
+        paymentReturnParams.sessionId,
+        paymentReturnParams.organizationId || organizationId || '',
+      );
+      return;
+    }
     if (paymentSubscriptionId && paymentReceived && !subscriptionActive) {
       void finalizePaymentElement(paymentSubscriptionId);
       return;
@@ -1114,8 +1290,13 @@ export function OnboardingStepper() {
     }
   }, [
     clearPaymentPanelState,
+    finalizeCheckoutSession,
     finalizePaymentElement,
+    organizationId,
     paymentPanelOpen,
+    paymentReturnParams.checkout,
+    paymentReturnParams.organizationId,
+    paymentReturnParams.sessionId,
     paymentReceived,
     paymentSubscriptionId,
     subscriptionActive,

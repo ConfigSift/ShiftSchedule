@@ -25,10 +25,37 @@ type CheckoutPayload = {
   intentId?: string;
   priceType?: 'monthly' | 'annual';
   flow?: 'subscribe' | 'setup';
+  uiMode?: 'redirect' | 'embedded';
 };
 
 function logCheckoutEvent(event: string, payload: Record<string, unknown>) {
   console.error(`[billing:create-checkout-session] ${event}`, payload);
+}
+
+type PublishablePrefix = 'pk_test' | 'pk_live' | 'missing';
+type SecretPrefix = 'sk_test' | 'sk_live' | 'missing';
+type StripeMode = 'test' | 'live' | 'unknown';
+
+function getPublishableKeyPrefix(value: string): PublishablePrefix {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return 'missing';
+  if (normalized.startsWith('pk_test_')) return 'pk_test';
+  if (normalized.startsWith('pk_live_')) return 'pk_live';
+  return 'missing';
+}
+
+function getSecretKeyPrefix(value: string): SecretPrefix {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return 'missing';
+  if (normalized.startsWith('sk_test_')) return 'sk_test';
+  if (normalized.startsWith('sk_live_')) return 'sk_live';
+  return 'missing';
+}
+
+function deriveStripeMode(secretKeyPrefix: SecretPrefix, publishableKeyPrefix: PublishablePrefix): StripeMode {
+  if (secretKeyPrefix === 'sk_test' && publishableKeyPrefix === 'pk_test') return 'test';
+  if (secretKeyPrefix === 'sk_live' && publishableKeyPrefix === 'pk_live') return 'live';
+  return 'unknown';
 }
 
 export async function POST(request: NextRequest) {
@@ -43,6 +70,10 @@ export async function POST(request: NextRequest) {
   const requestOrigin = requestHost === 'unknown' ? request.nextUrl.origin : `${requestProto}://${requestHost}`;
   const { appBaseUrl } = getBaseUrls(requestOrigin);
   const stripeSecretKey = String(process.env.STRIPE_SECRET_KEY ?? '').trim();
+  const stripePublishableKey = String(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '').trim();
+  const publishableKeyPrefix = getPublishableKeyPrefix(stripePublishableKey);
+  const secretKeyPrefix = getSecretKeyPrefix(stripeSecretKey);
+  const keyMode = deriveStripeMode(secretKeyPrefix, publishableKeyPrefix);
   const hasStripeSecretKey = Boolean(stripeSecretKey);
   const hasMonthlyPriceId = Boolean(String(STRIPE_MONTHLY_PRICE_ID ?? '').trim());
   const hasAnnualPriceId = Boolean(String(STRIPE_ANNUAL_PRICE_ID ?? '').trim());
@@ -56,6 +87,7 @@ export async function POST(request: NextRequest) {
   }
 
   const flow = payload.flow === 'setup' ? 'setup' : 'subscribe';
+  const uiMode = payload.uiMode === 'embedded' ? 'embedded' : 'redirect';
   const priceType = payload.priceType;
   const organizationId = String(payload.organizationId ?? '').trim() || null;
   const intentId = String(payload.intentId ?? '').trim() || null;
@@ -64,13 +96,18 @@ export async function POST(request: NextRequest) {
     host: requestHost,
     pathname: request.nextUrl.pathname,
     flow,
+    uiMode,
     priceType: priceType ?? null,
     hasOrganizationId: Boolean(organizationId),
     hasIntentId: Boolean(intentId),
     hasStripeSecretKey,
+    publishableKeyPrefix,
+    secretKeyPrefix,
+    keyMode,
     hasMonthlyPriceId,
     hasAnnualPriceId,
     hasIntroCoupon,
+    origin: requestOrigin,
     appBaseUrl,
   });
 
@@ -81,6 +118,24 @@ export async function POST(request: NextRequest) {
   if (!hasStripeSecretKey) {
     return NextResponse.json(
       { error: 'Missing Stripe secret key configuration.', error_code: 'missing_stripe_secret_key' },
+      { status: 500 },
+    );
+  }
+
+  if (keyMode === 'unknown') {
+    logCheckoutEvent('stripe_key_mode_mismatch', {
+      host: requestHost,
+      origin: requestOrigin,
+      publishableKeyPrefix,
+      secretKeyPrefix,
+    });
+    return NextResponse.json(
+      {
+        error: 'Stripe key mode mismatch.',
+        error_code: 'stripe_key_mode_mismatch',
+        publishableKeyPrefix,
+        secretKeyPrefix,
+      },
       { status: 500 },
     );
   }
@@ -238,12 +293,17 @@ export async function POST(request: NextRequest) {
   const cancelUrl = flow === 'setup'
     ? `${appBaseUrl}/setup?step=3&checkout=cancel${cancelIntentSegment}`
     : `${appBaseUrl}/subscribe?canceled=true${cancelIntentSegment}`;
+  const returnUrl = flow === 'setup'
+    ? `${appBaseUrl}/setup?step=3&checkout=success&session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`
+    : `${appBaseUrl}/subscribe/success?session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`;
 
   let normalizedSuccessUrl = '';
   let normalizedCancelUrl = '';
+  let normalizedReturnUrl = '';
   try {
     normalizedSuccessUrl = new URL(successUrl).toString();
     normalizedCancelUrl = new URL(cancelUrl).toString();
+    normalizedReturnUrl = new URL(returnUrl).toString();
   } catch {
     return applySupabaseCookies(
       NextResponse.json(
@@ -272,17 +332,29 @@ export async function POST(request: NextRequest) {
     checkoutMetadata.organization_id = effectiveOrganizationId;
   }
 
-  const params: Stripe.Checkout.SessionCreateParams = {
-    customer: stripeCustomerId,
-    mode: 'subscription',
-    line_items: [{ price: priceId, quantity: desiredQuantity }],
-    success_url: normalizedSuccessUrl,
-    cancel_url: normalizedCancelUrl,
-    subscription_data: {
-      metadata: subscriptionMetadata,
-    },
-    metadata: checkoutMetadata,
-  };
+  const params: Stripe.Checkout.SessionCreateParams = uiMode === 'embedded'
+    ? {
+      customer: stripeCustomerId,
+      mode: 'subscription',
+      ui_mode: 'embedded',
+      return_url: normalizedReturnUrl,
+      line_items: [{ price: priceId, quantity: desiredQuantity }],
+      subscription_data: {
+        metadata: subscriptionMetadata,
+      },
+      metadata: checkoutMetadata,
+    }
+    : {
+      customer: stripeCustomerId,
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: desiredQuantity }],
+      success_url: normalizedSuccessUrl,
+      cancel_url: normalizedCancelUrl,
+      subscription_data: {
+        metadata: subscriptionMetadata,
+      },
+      metadata: checkoutMetadata,
+    };
 
   if (STRIPE_INTRO_COUPON_ID) {
     params.discounts = [{ coupon: STRIPE_INTRO_COUPON_ID }];
@@ -295,6 +367,12 @@ export async function POST(request: NextRequest) {
     pathname: request.nextUrl.pathname,
     authUserId,
     flow,
+    uiMode,
+    origin: requestOrigin,
+    appBaseUrl,
+    publishableKeyPrefix,
+    secretKeyPrefix,
+    keyMode,
     priceType,
     desiredQuantity,
     mode: params.mode,
@@ -304,6 +382,7 @@ export async function POST(request: NextRequest) {
     priceIdPrefix: priceId.slice(0, 8),
     successUrl: normalizedSuccessUrl,
     cancelUrl: normalizedCancelUrl,
+    returnUrl: normalizedReturnUrl,
   });
 
   try {
@@ -323,6 +402,41 @@ export async function POST(request: NextRequest) {
     const session = await stripeClient.checkout.sessions.create(params);
     const stripeRequestId = session.lastResponse?.requestId ?? null;
     const checkoutUrl = String(session.url ?? '').trim();
+    const clientSecret = String(session.client_secret ?? '').trim();
+    if (uiMode === 'embedded') {
+      if (!clientSecret) {
+        logCheckoutEvent('missing_checkout_client_secret', {
+          sessionId: session.id,
+          stripeRequestId,
+          mode: session.mode,
+          status: session.status,
+        });
+        return applySupabaseCookies(
+          NextResponse.json(
+            {
+              error: 'Stripe checkout client secret was not returned.',
+              error_code: 'missing_checkout_client_secret',
+              details: { sessionId: session.id },
+            },
+            { status: 502 },
+          ),
+          response,
+        );
+      }
+
+      logCheckoutEvent('created', {
+        sessionId: session.id,
+        stripeRequestId,
+        uiMode,
+        hasClientSecret: Boolean(clientSecret),
+      });
+
+      return applySupabaseCookies(
+        NextResponse.json({ clientSecret, sessionId: session.id, uiMode: 'embedded' }),
+        response,
+      );
+    }
+
     if (!checkoutUrl) {
       logCheckoutEvent('missing_checkout_url', {
         sessionId: session.id,
@@ -346,6 +460,7 @@ export async function POST(request: NextRequest) {
     logCheckoutEvent('created', {
       sessionId: session.id,
       stripeRequestId,
+      uiMode,
       hasUrl: Boolean(checkoutUrl),
     });
 
@@ -364,6 +479,8 @@ export async function POST(request: NextRequest) {
     };
     const stripeRequestId = stripeLike.requestId ?? stripeLike.raw?.requestId ?? null;
     logCheckoutEvent('failed', {
+      host: requestHost,
+      origin: requestOrigin,
       message,
       stripeType: stripeLike.type ?? stripeLike.raw?.type ?? null,
       stripeCode: stripeLike.code ?? null,
