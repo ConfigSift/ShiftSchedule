@@ -2170,6 +2170,7 @@ function SubscriptionStepView({
   onBack: () => void;
   onSkip: () => void;
 }) {
+  const pathname = usePathname();
   const canManageBilling = Boolean(manageBillingUrl);
   const [pendingCheckoutPlan, setPendingCheckoutPlan] = useState<PlanId | null>(null);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
@@ -2266,6 +2267,23 @@ function SubscriptionStepView({
       window.open = originalOpen as typeof window.open;
     };
   }, [showModal]);
+
+  useEffect(() => {
+    if (!pathname.startsWith('/setup')) return;
+
+    const handleSecurityPolicyViolation = (event: SecurityPolicyViolationEvent) => {
+      console.warn('[setup:csp-violation]', {
+        violatedDirective: event.violatedDirective,
+        effectiveDirective: event.effectiveDirective,
+        blockedURI: event.blockedURI,
+      });
+    };
+
+    window.addEventListener('securitypolicyviolation', handleSecurityPolicyViolation);
+    return () => {
+      window.removeEventListener('securitypolicyviolation', handleSecurityPolicyViolation);
+    };
+  }, [pathname]);
 
   return (
     <div>

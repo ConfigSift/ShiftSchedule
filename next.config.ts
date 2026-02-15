@@ -24,6 +24,37 @@ const noIndexPrefixes = [
 
 const stripeEmbeddedRoutePrefixes = ["setup", "subscribe", "onboarding"];
 
+function buildStripeEmbeddedCsp(): string {
+  const supabaseUrl = String(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim();
+  let supabaseOrigin = "";
+  try {
+    supabaseOrigin = supabaseUrl ? new URL(supabaseUrl).origin : "";
+  } catch {
+    supabaseOrigin = "";
+  }
+
+  const connectSources = [
+    "'self'",
+    "https://api.stripe.com",
+    "https://*.stripe.com",
+    "wss://*.stripe.com",
+    "https://*.supabase.co",
+    "wss://*.supabase.co",
+    ...(supabaseOrigin ? [supabaseOrigin] : []),
+  ];
+
+  return [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com",
+    "frame-src 'self' https://js.stripe.com https://checkout.stripe.com https://*.stripe.com",
+    `connect-src ${connectSources.join(" ")}`,
+    "img-src 'self' data: https://*.stripe.com",
+    "style-src 'self' 'unsafe-inline'",
+  ].join("; ");
+}
+
 const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
@@ -85,7 +116,8 @@ const nextConfig: NextConfig = {
     ]);
 
     // Stripe embedded checkout payment methods (e.g. Cash App Pay) rely on popup flows.
-    // Scope popup-friendly COOP/COEP only to payment-capable onboarding routes.
+    // Scope popup-friendly COOP/COEP and Stripe CSP allowlist only to payment-capable onboarding routes.
+    const stripeEmbeddedCsp = buildStripeEmbeddedCsp();
     const stripePopupHeaders = stripeEmbeddedRoutePrefixes.flatMap((prefix) => [
       {
         source: `/${prefix}`,
@@ -97,6 +129,10 @@ const nextConfig: NextConfig = {
           {
             key: "Cross-Origin-Embedder-Policy",
             value: "unsafe-none",
+          },
+          {
+            key: "Content-Security-Policy",
+            value: stripeEmbeddedCsp,
           },
         ],
       },
@@ -110,6 +146,10 @@ const nextConfig: NextConfig = {
           {
             key: "Cross-Origin-Embedder-Policy",
             value: "unsafe-none",
+          },
+          {
+            key: "Content-Security-Policy",
+            value: stripeEmbeddedCsp,
           },
         ],
       },
