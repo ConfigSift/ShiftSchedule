@@ -18,7 +18,14 @@ import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
 
 const STRIPE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '';
-const stripePromise = STRIPE_PUBLISHABLE_KEY ? loadStripe(STRIPE_PUBLISHABLE_KEY) : null;
+const STRIPE_CONNECT_ACCOUNT_ID = String(process.env.NEXT_PUBLIC_STRIPE_ACCOUNT_ID ?? '').trim();
+const STRIPE_CONNECT_OPTIONS =
+  STRIPE_CONNECT_ACCOUNT_ID && STRIPE_CONNECT_ACCOUNT_ID.startsWith('acct_')
+    ? { stripeAccount: STRIPE_CONNECT_ACCOUNT_ID }
+    : undefined;
+const stripePromise = STRIPE_PUBLISHABLE_KEY
+  ? loadStripe(STRIPE_PUBLISHABLE_KEY, STRIPE_CONNECT_OPTIONS)
+  : null;
 
 type SubscriptionInfo = {
   active: boolean;

@@ -36,6 +36,25 @@ type PublishablePrefix = 'pk_test' | 'pk_live' | 'missing';
 type SecretPrefix = 'sk_test' | 'sk_live' | 'missing';
 type StripeMode = 'test' | 'live' | 'unknown';
 
+function stripeObjectIdPrefix(value: string): 'cs_' | 'pi_' | 'unknown' {
+  const normalized = String(value ?? '').trim();
+  if (
+    normalized.startsWith('cs_')
+    || normalized.startsWith('cs_test_')
+    || normalized.startsWith('cs_live_')
+  ) {
+    return 'cs_';
+  }
+  if (
+    normalized.startsWith('pi_')
+    || normalized.startsWith('pi_test_')
+    || normalized.startsWith('pi_live_')
+  ) {
+    return 'pi_';
+  }
+  return 'unknown';
+}
+
 function getPublishableKeyPrefix(value: string): PublishablePrefix {
   const normalized = String(value ?? '').trim();
   if (!normalized) return 'missing';
@@ -71,6 +90,10 @@ export async function POST(request: NextRequest) {
   const { appBaseUrl, loginBaseUrl } = getBaseUrls(requestOrigin);
   const stripeSecretKey = String(process.env.STRIPE_SECRET_KEY ?? '').trim();
   const stripePublishableKey = String(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '').trim();
+  const configuredStripeAccountId = String(process.env.STRIPE_ACCOUNT_ID ?? '').trim();
+  const stripeAccountForRequest = configuredStripeAccountId.startsWith('acct_')
+    ? configuredStripeAccountId
+    : null;
   const publishableKeyPrefix = getPublishableKeyPrefix(stripePublishableKey);
   const secretKeyPrefix = getSecretKeyPrefix(stripeSecretKey);
   const keyMode = deriveStripeMode(secretKeyPrefix, publishableKeyPrefix);
@@ -112,6 +135,7 @@ export async function POST(request: NextRequest) {
     origin: requestOrigin,
     appBaseUrl,
     loginBaseUrl,
+    stripeAccountUsed: stripeAccountForRequest,
   });
 
   if (!BILLING_ENABLED) {
@@ -400,7 +424,9 @@ export async function POST(request: NextRequest) {
   let stripeAccountId: string | null = null;
   let stripeAccountLivemode: boolean | null = null;
   try {
-    const account = await stripeClient.accounts.retrieve();
+    const account = stripeAccountForRequest
+      ? await stripeClient.accounts.retrieve(stripeAccountForRequest)
+      : await stripeClient.accounts.retrieve();
     stripeAccountId = account.id;
     const rawLivemode = (account as unknown as Record<string, unknown>).livemode;
     stripeAccountLivemode = typeof rawLivemode === 'boolean' ? rawLivemode : null;
@@ -423,10 +449,14 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const session = await stripeClient.checkout.sessions.create(params);
+    const stripeRequestOptions = stripeAccountForRequest
+      ? { stripeAccount: stripeAccountForRequest }
+      : undefined;
+    const session = await stripeClient.checkout.sessions.create(params, stripeRequestOptions);
     const stripeRequestId = session.lastResponse?.requestId ?? null;
     const checkoutUrl = String(session.url ?? '').trim();
     const clientSecret = String(session.client_secret ?? '').trim();
+    const createdObjectIdPrefix = stripeObjectIdPrefix(session.id);
     const sessionMode: StripeMode = session.livemode ? 'live' : 'test';
     const modeMismatch =
       (sessionMode === 'live' && keyMode === 'test')
@@ -440,6 +470,8 @@ export async function POST(request: NextRequest) {
         keyMode,
         stripeAccountId,
         stripeAccountLivemode,
+        stripeAccountUsed: stripeAccountForRequest,
+        createdObjectIdPrefix,
       });
       return applySupabaseCookies(
         NextResponse.json(
@@ -463,6 +495,9 @@ export async function POST(request: NextRequest) {
           stripeRequestId,
           mode: session.mode,
           status: session.status,
+          stripeAccountUsed: stripeAccountForRequest,
+          livemode: session.livemode,
+          createdObjectIdPrefix,
         });
         return applySupabaseCookies(
           NextResponse.json(
@@ -488,6 +523,9 @@ export async function POST(request: NextRequest) {
           detectedSecretType,
           mode: sessionMode,
           stripeAccountId,
+          stripeAccountUsed: stripeAccountForRequest,
+          livemode: session.livemode,
+          createdObjectIdPrefix,
         });
         return applySupabaseCookies(
           NextResponse.json(
@@ -512,11 +550,14 @@ export async function POST(request: NextRequest) {
         mode: sessionMode,
         stripeAccountId,
         stripeAccountLivemode,
+        stripeAccountUsed: stripeAccountForRequest,
         hasStripeSecretKey,
         hasStripePublishableKey,
         appBaseUrl,
         loginBaseUrl,
         secretType: 'checkout_session',
+        livemode: session.livemode,
+        createdObjectIdPrefix,
       });
 
       return applySupabaseCookies(
@@ -538,6 +579,9 @@ export async function POST(request: NextRequest) {
         stripeRequestId,
         mode: session.mode,
         status: session.status,
+        stripeAccountUsed: stripeAccountForRequest,
+        livemode: session.livemode,
+        createdObjectIdPrefix,
       });
       return applySupabaseCookies(
         NextResponse.json(
@@ -563,11 +607,14 @@ export async function POST(request: NextRequest) {
       mode: sessionMode,
       stripeAccountId,
       stripeAccountLivemode,
+      stripeAccountUsed: stripeAccountForRequest,
       hasStripeSecretKey,
       hasStripePublishableKey,
       appBaseUrl,
       loginBaseUrl,
       secretType: 'checkout_session',
+      livemode: session.livemode,
+      createdObjectIdPrefix,
     });
 
     return applySupabaseCookies(
@@ -600,6 +647,7 @@ export async function POST(request: NextRequest) {
       keyMode,
       stripeAccountId,
       stripeAccountLivemode,
+      stripeAccountUsed: stripeAccountForRequest,
       message,
       stripeType: stripeLike.type ?? stripeLike.raw?.type ?? null,
       stripeCode: stripeLike.code ?? null,

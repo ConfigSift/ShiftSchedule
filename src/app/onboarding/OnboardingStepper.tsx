@@ -163,6 +163,14 @@ function suffix(value: string, length = 6): string | null {
   return normalized.slice(-length);
 }
 
+function keyFingerprint(value: string): string | null {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return null;
+  const prefix = normalized.slice(0, 12);
+  const tail = normalized.slice(-6);
+  return `${prefix}...${tail}`;
+}
+
 const COMMON_TIMEZONES = [
   'America/New_York',
   'America/Chicago',
@@ -226,7 +234,15 @@ const SESSION_KEY = 'crewshyft_onboarding';
 const STAFF_DRAFTS_KEY_PREFIX = 'crewshyft_setup_staff_drafts:';
 const FINALIZE_TIMEOUT_MS = 12_000;
 const STRIPE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '';
-const stripePromise = STRIPE_PUBLISHABLE_KEY ? loadStripe(STRIPE_PUBLISHABLE_KEY) : null;
+const HAS_VALID_STRIPE_PUBLISHABLE_KEY = STRIPE_PUBLISHABLE_KEY.startsWith('pk_');
+const STRIPE_CONNECT_ACCOUNT_ID = String(process.env.NEXT_PUBLIC_STRIPE_ACCOUNT_ID ?? '').trim();
+const STRIPE_CONNECT_OPTIONS =
+  STRIPE_CONNECT_ACCOUNT_ID && STRIPE_CONNECT_ACCOUNT_ID.startsWith('acct_')
+    ? { stripeAccount: STRIPE_CONNECT_ACCOUNT_ID }
+    : undefined;
+const stripePromise = HAS_VALID_STRIPE_PUBLISHABLE_KEY
+  ? loadStripe(STRIPE_PUBLISHABLE_KEY, STRIPE_CONNECT_OPTIONS)
+  : null;
 const SUPPORTED_CURRENCIES: Array<{ value: SupportedCurrency; label: string }> = [
   { value: 'USD', label: 'USD - US Dollar' },
   { value: 'CAD', label: 'CAD - Canadian Dollar' },
@@ -421,6 +437,7 @@ export function OnboardingStepper() {
   const [subscriptionStatus, setSubscriptionStatus] = useState('none');
   const handledPaymentReturnRef = useRef<string | null>(null);
   const autoAdvanceTimeoutRef = useRef<number | null>(null);
+  const setupStripeContextLoggedRef = useRef(false);
 
   // General
   const [loading, setLoading] = useState(false);
@@ -920,6 +937,21 @@ export function OnboardingStepper() {
   }, [role, managerStep, organizationId, refreshSubscriptionState]);
 
   useEffect(() => {
+    if (!isSetupWizard || role !== 'manager' || managerStep !== 3) return;
+    if (setupStripeContextLoggedRef.current) return;
+    setupStripeContextLoggedRef.current = true;
+
+    console.log('[setup:stripe-context]', {
+      host: window.location.host,
+      publishableKeyFingerprint: keyFingerprint(STRIPE_PUBLISHABLE_KEY),
+      stripeAccountInUse: Boolean(STRIPE_CONNECT_OPTIONS?.stripeAccount),
+      stripeAccountPrefix: STRIPE_CONNECT_OPTIONS?.stripeAccount
+        ? STRIPE_CONNECT_OPTIONS.stripeAccount.slice(0, 8)
+        : null,
+    });
+  }, [isSetupWizard, managerStep, role]);
+
+  useEffect(() => {
     saveSession({ currency: selectedCurrency });
   }, [selectedCurrency]);
 
@@ -1171,6 +1203,12 @@ export function OnboardingStepper() {
   ]);
 
   const handleStartCheckout = useCallback(async (priceType: PlanId) => {
+    if (!HAS_VALID_STRIPE_PUBLISHABLE_KEY) {
+      setCheckoutError('Stripe publishable key is invalid. Configure NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY.');
+      setCheckoutNotice('');
+      return;
+    }
+
     if (!organizationId) {
       setCheckoutError('Create your restaurant first.');
       return;
@@ -2177,7 +2215,7 @@ function SubscriptionStepView({
   const showModal = showCheckoutModal || paymentPanelOpen || checkoutFinalizing;
   const paymentProcessing = checkoutFinalizing || (paymentReceived && !subscriptionActive);
   const canUsePortal = typeof document !== 'undefined';
-  const stripeUnavailable = !STRIPE_PUBLISHABLE_KEY || !stripePromise;
+  const stripeUnavailable = !HAS_VALID_STRIPE_PUBLISHABLE_KEY || !stripePromise;
   const canRenderEmbeddedCheckout = Boolean(!stripeUnavailable && paymentClientSecret);
   const canUseRedirectFallback = Boolean(
     pendingCheckoutPlan
@@ -2462,7 +2500,9 @@ function SubscriptionStepView({
                 )}
                 {stripeUnavailable && (
                   <p className="mt-3 text-sm text-red-400">
-                    Stripe publishable key is missing. Add `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`.
+                    {!STRIPE_PUBLISHABLE_KEY
+                      ? 'Stripe publishable key is missing. Add `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`.'
+                      : 'Stripe publishable key is invalid. `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` must start with `pk_`.'}
                   </p>
                 )}
                 <p className="mt-4 text-xs font-medium uppercase tracking-wide text-theme-muted">
