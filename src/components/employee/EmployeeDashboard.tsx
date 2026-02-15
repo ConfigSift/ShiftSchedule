@@ -72,14 +72,8 @@ export function EmployeeDashboard() {
     [accessibleRestaurants, activeRestaurantId]
   );
 
-  const restaurantEmployees = useMemo(
-    () => (activeRestaurantId ? getEmployeesForRestaurant(activeRestaurantId) : []),
-    [activeRestaurantId, getEmployeesForRestaurant],
-  );
-  const restaurantShifts = useMemo(
-    () => (activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : []),
-    [activeRestaurantId, getShiftsForRestaurant],
-  );
+  const restaurantEmployees = activeRestaurantId ? getEmployeesForRestaurant(activeRestaurantId) : [];
+  const restaurantShifts = activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : [];
   const employeeId = currentUser?.id ?? '';
   const weekStartsOn = normalizeWeekStartsOn(scheduleViewSettings?.weekStartDay ?? 'monday');
   const weekWindow = useMemo(
@@ -153,12 +147,16 @@ export function EmployeeDashboard() {
   const isReady = Boolean(isInitialized && currentUser && activeRestaurantId && !isLoading);
   const currentUserId = employeeId;
 
-  const myShifts = restaurantShifts
-    .filter((shift) => shift.employeeId === currentUserId && !shift.isBlocked)
-    .sort((a, b) => {
-      if (a.date !== b.date) return a.date.localeCompare(b.date);
-      return a.startHour - b.startHour;
-    });
+  const myShifts = useMemo(
+    () =>
+      restaurantShifts
+        .filter((shift) => shift.employeeId === currentUserId && !shift.isBlocked)
+        .sort((a, b) => {
+          if (a.date !== b.date) return a.date.localeCompare(b.date);
+          return a.startHour - b.startHour;
+        }),
+    [restaurantShifts, currentUserId]
+  );
 
   const employeeMap = useMemo(
     () => new Map(restaurantEmployees.map((employee) => [employee.id, employee.name])),
