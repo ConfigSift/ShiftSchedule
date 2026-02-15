@@ -63,11 +63,9 @@ export function EmployeeDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [activeShiftIndex, setActiveShiftIndex] = useState(0);
-  const [loadRetryNonce, setLoadRetryNonce] = useState(0);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastSelectedDateRef = useRef<string | null>(null);
-  const initialLoadKeyRef = useRef<string | null>(null);
-  const loadAttemptsRef = useRef<Record<string, number>>({});
+  const lastLoadedEmployeeWeekKeyRef = useRef<string | null>(null);
 
   const activeRestaurant = useMemo(
     () => accessibleRestaurants.find((r) => r.id === activeRestaurantId) ?? null,
@@ -83,69 +81,69 @@ export function EmployeeDashboard() {
     [activeRestaurantId, getShiftsForRestaurant],
   );
   const employeeId = currentUser?.id ?? '';
-  const loadReady = Boolean(isInitialized && activeRestaurantId && employeeId);
+  const weekStartsOn = normalizeWeekStartsOn(scheduleViewSettings?.weekStartDay ?? 'monday');
+  const weekWindow = useMemo(
+    () => getWeekWindow(selectedDate, weekStartsOn),
+    [selectedDate, weekStartsOn]
+  );
+  const weekDates = weekWindow.days;
+  const weekKey = `${toLocalDateString(weekWindow.weekStart)}:${toLocalDateString(weekWindow.weekEndExclusive)}`;
+  const loadReady = Boolean(isInitialized && activeRestaurantId && employeeId && weekKey);
+  const employeeWeekLoadKey =
+    loadReady && activeRestaurantId ? `${activeRestaurantId}:${employeeId}:${weekKey}` : null;
 
   useEffect(() => {
-    let isMounted = true;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-
-    if (!loadReady || !activeRestaurantId || !employeeId) {
-      const timer = setTimeout(() => setIsLoading(false), 0);
-      return () => {
-        clearTimeout(timer);
-        if (retryTimer) clearTimeout(retryTimer);
-        isMounted = false;
-      };
-    }
-
-    const loadKey = `${activeRestaurantId}:${employeeId}`;
-    if (initialLoadKeyRef.current === loadKey) {
-      const timer = setTimeout(() => setIsLoading(false), 0);
-      return () => {
-        clearTimeout(timer);
-        if (retryTimer) clearTimeout(retryTimer);
-        isMounted = false;
-      };
-    }
-
-    const attemptCount = loadAttemptsRef.current[loadKey] ?? 0;
-    if (attemptCount >= 3) {
-      const timer = setTimeout(() => setIsLoading(false), 0);
-      return () => {
-        clearTimeout(timer);
-        if (retryTimer) clearTimeout(retryTimer);
-        isMounted = false;
-      };
-    }
-
-    const startTimer = setTimeout(() => setIsLoading(true), 0);
-    loadAttemptsRef.current[loadKey] = attemptCount + 1;
-
-    void loadRestaurantData(activeRestaurantId).then(() => {
-      if (!isMounted) return;
-
-      const state = useScheduleStore.getState();
-      const loadedEmployees = state.getEmployeesForRestaurant(activeRestaurantId);
-      if (loadedEmployees.length > 0) {
-        initialLoadKeyRef.current = loadKey;
-        loadAttemptsRef.current[loadKey] = 0;
-        setIsLoading(false);
-        return;
+    if (!loadReady || !activeRestaurantId || !employeeId || !employeeWeekLoadKey) {
+      if (isInitialized) {
+        const timer = setTimeout(() => setIsLoading(false), 0);
+        return () => clearTimeout(timer);
       }
+      return;
+    }
 
-      setIsLoading(false);
-      retryTimer = setTimeout(() => {
-        if (!isMounted) return;
-        setLoadRetryNonce((value) => value + 1);
-      }, 250);
+    if (lastLoadedEmployeeWeekKeyRef.current === employeeWeekLoadKey) {
+      const timer = setTimeout(() => setIsLoading(false), 0);
+      return () => clearTimeout(timer);
+    }
+
+    let cancelled = false;
+    let finishedTimer: ReturnType<typeof setTimeout> | null = null;
+    const loadingTimer = setTimeout(() => setIsLoading(true), 0);
+
+    const debugEnabled =
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('debugSchedule') === '1';
+    if (debugEnabled) {
+      console.debug('[employee-schedule] load', {
+        userId: employeeId,
+        restaurantId: activeRestaurantId,
+        weekKey,
+        triggered: true,
+      });
+    }
+
+    void loadRestaurantData(activeRestaurantId).finally(() => {
+      if (cancelled) return;
+      lastLoadedEmployeeWeekKeyRef.current = employeeWeekLoadKey;
+      finishedTimer = setTimeout(() => setIsLoading(false), 0);
     });
 
     return () => {
-      clearTimeout(startTimer);
-      if (retryTimer) clearTimeout(retryTimer);
-      isMounted = false;
+      cancelled = true;
+      clearTimeout(loadingTimer);
+      if (finishedTimer) {
+        clearTimeout(finishedTimer);
+      }
     };
-  }, [activeRestaurantId, employeeId, loadReady, loadRestaurantData, loadRetryNonce]);
+  }, [
+    activeRestaurantId,
+    employeeId,
+    employeeWeekLoadKey,
+    isInitialized,
+    loadReady,
+    loadRestaurantData,
+    weekKey,
+  ]);
 
   useEffect(() => {
     const timer = setTimeout(() => setMounted(true), 0);
@@ -170,12 +168,6 @@ export function EmployeeDashboard() {
   const today = new Date();
   const todayString = toLocalDateString(today);
   const selectedDateString = toLocalDateString(selectedDate);
-  const weekStartsOn = normalizeWeekStartsOn(scheduleViewSettings?.weekStartDay ?? 'monday');
-  const weekWindow = useMemo(
-    () => getWeekWindow(selectedDate, weekStartsOn),
-    [selectedDate, weekStartsOn]
-  );
-  const weekDates = weekWindow.days;
 
   const selectedDayShifts = useMemo(
     () => myShifts.filter((shift) => shift.date === selectedDateString),
