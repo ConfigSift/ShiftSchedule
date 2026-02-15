@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
+import { EmbeddedCheckout, EmbeddedCheckoutProvider } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import {
   ArrowLeft,
@@ -52,6 +52,7 @@ type CommitIntentResponse = {
 };
 
 type CreateCheckoutSessionResponse = {
+  clientSecret?: string | null;
   checkoutUrl?: string | null;
   url?: string | null;
   sessionId?: string | null;
@@ -1187,7 +1188,7 @@ export function OnboardingStepper() {
             organizationId,
             priceType,
             flow: 'setup',
-            uiMode: 'redirect',
+            uiMode: 'embedded',
           },
         },
       );
@@ -1206,41 +1207,15 @@ export function OnboardingStepper() {
         return;
       }
 
-      const checkoutUrl = String(result.data?.checkoutUrl ?? result.data?.url ?? '').trim();
-      if (checkoutUrl) {
-        window.location.assign(checkoutUrl);
+      const clientSecret = String(result.data?.clientSecret ?? '').trim();
+      if (!clientSecret) {
+        setCheckoutNotice('');
+        setCheckoutError('Unable to initialize embedded checkout. You can use Stripe Checkout instead.');
         return;
       }
 
-      const sessionId = String(result.data?.sessionId ?? '').trim();
-      if (sessionId) {
-        if (!stripePromise) {
-          setCheckoutError('Stripe is not configured in this environment.');
-          return;
-        }
-        const stripeClient = await stripePromise;
-        if (!stripeClient) {
-          setCheckoutError('Unable to initialize Stripe checkout.');
-          return;
-        }
-        const checkoutClient = stripeClient as unknown as {
-          redirectToCheckout?: (options: { sessionId: string }) => Promise<{ error?: { message?: string } }>;
-        };
-        if (typeof checkoutClient.redirectToCheckout !== 'function') {
-          setCheckoutError('Stripe checkout redirect is not available in this environment.');
-          return;
-        }
-        const redirectResult = await checkoutClient.redirectToCheckout({ sessionId });
-        if (redirectResult.error?.message) {
-          setCheckoutError(redirectResult.error.message);
-        } else {
-          setCheckoutError('Unable to redirect to Stripe Checkout.');
-        }
-        return;
-      }
-
-      setCheckoutNotice('');
-      setCheckoutError('Unable to initialize secure payment. Missing Stripe checkout URL.');
+      setPaymentClientSecret(clientSecret);
+      setPaymentSubscriptionId(String(result.data?.sessionId ?? '').trim() || null);
     } catch {
       setCheckoutNotice('');
       setCheckoutError('Unable to initialize secure payment. Please try again.');
@@ -1250,20 +1225,69 @@ export function OnboardingStepper() {
     }
   }, [clearPaymentPanelState, organizationId]);
 
+  const handleStartRedirectCheckout = useCallback(async (priceType: PlanId) => {
+    if (!organizationId) {
+      setCheckoutError('Create your restaurant first.');
+      return;
+    }
+
+    setSelectedPlan(priceType);
+    setCheckoutError('');
+    setCheckoutNotice('');
+    setCheckoutManageUrl(null);
+    setPaymentReceived(false);
+    setCheckoutLoading(priceType);
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10_000);
+
+    try {
+      const result = await apiFetch<CreateCheckoutSessionResponse>(
+        '/api/billing/create-checkout-session',
+        {
+          method: 'POST',
+          signal: controller.signal,
+          json: {
+            organizationId,
+            priceType,
+            flow: 'setup',
+            uiMode: 'redirect',
+          },
+        },
+      );
+
+      if (!result.ok) {
+        const redirect = String(result.data?.redirect ?? '').trim() || null;
+        if (redirect) {
+          setCheckoutManageUrl(redirect);
+          setCheckoutNotice('Manage billing in CrewShyft, then retry payment.');
+        }
+        const serverErrorCode = result.code || String(result.data?.error_code ?? '').trim();
+        const codeSuffix = serverErrorCode ? ` (${serverErrorCode})` : '';
+        setCheckoutError((result.error || 'Unable to open Stripe Checkout. Please try again.') + codeSuffix);
+        return;
+      }
+
+      const checkoutUrl = String(result.data?.checkoutUrl ?? result.data?.url ?? '').trim();
+      if (!checkoutUrl) {
+        setCheckoutError('Unable to open Stripe Checkout. Missing checkout URL.');
+        return;
+      }
+
+      window.location.assign(checkoutUrl);
+    } catch {
+      setCheckoutError('Unable to open Stripe Checkout. Please try again.');
+    } finally {
+      window.clearTimeout(timeout);
+      setCheckoutLoading(null);
+    }
+  }, [organizationId]);
+
   const handlePaymentIntentModalClose = useCallback(() => {
     if (checkoutSubmitting || checkoutFinalizing) return;
     setPaymentPanelOpen(false);
     clearPaymentPanelState();
   }, [checkoutFinalizing, checkoutSubmitting, clearPaymentPanelState]);
-
-  const handlePaymentConfirmed = useCallback(async () => {
-    if (!paymentSubscriptionId) {
-      setCheckoutSubmitting(false);
-      setCheckoutError('Missing subscription details. Please try again.');
-      return;
-    }
-    await finalizePaymentElement(paymentSubscriptionId);
-  }, [finalizePaymentElement, paymentSubscriptionId]);
 
   const handleRetryCheckout = useCallback(() => {
     setCheckoutError('');
@@ -1301,11 +1325,6 @@ export function OnboardingStepper() {
     paymentSubscriptionId,
     subscriptionActive,
   ]);
-
-  const handlePaymentError = useCallback((message: string) => {
-    setCheckoutNotice('');
-    setCheckoutError(message);
-  }, []);
 
   const handleSelectPlan = useCallback((planId: PlanId) => {
     setSelectedPlan(planId);
@@ -1433,7 +1452,6 @@ export function OnboardingStepper() {
                 <SubscriptionStepView
                   checkoutLoading={checkoutLoading}
                   checkoutFinalizing={checkoutFinalizing}
-                  checkoutSubmitting={checkoutSubmitting}
                   error={checkoutError}
                   notice={checkoutNotice}
                   paymentReceived={paymentReceived}
@@ -1442,18 +1460,14 @@ export function OnboardingStepper() {
                   selectedPlan={selectedPlan}
                   paymentPanelOpen={paymentPanelOpen}
                   paymentClientSecret={paymentClientSecret}
-                  paymentSubscriptionId={paymentSubscriptionId}
-                  organizationId={organizationId}
                   subscriptionActive={subscriptionActive}
                   subscriptionStatus={subscriptionStatus}
                   onSelectPlan={handleSelectPlan}
                   onSelectCurrency={setSelectedCurrency}
                   onStartCheckout={handleStartCheckout}
+                  onStartRedirectCheckout={handleStartRedirectCheckout}
                   onRetry={handleRetryCheckout}
                   onClosePaymentPanel={handlePaymentIntentModalClose}
-                  onPaymentConfirmed={handlePaymentConfirmed}
-                  onPaymentSubmittingChange={setCheckoutSubmitting}
-                  onPaymentError={handlePaymentError}
                   onGoToDashboard={finishSetup}
                   onManageBilling={() => router.push('/billing')}
                   onBack={() => {
@@ -2073,7 +2087,6 @@ function ScheduleStepView({
 function SubscriptionStepView({
   checkoutLoading,
   checkoutFinalizing,
-  checkoutSubmitting,
   error,
   notice,
   paymentReceived,
@@ -2082,18 +2095,14 @@ function SubscriptionStepView({
   selectedPlan,
   paymentPanelOpen,
   paymentClientSecret,
-  paymentSubscriptionId,
-  organizationId,
   subscriptionActive,
   subscriptionStatus,
   onSelectPlan,
   onSelectCurrency,
   onStartCheckout,
+  onStartRedirectCheckout,
   onRetry,
   onClosePaymentPanel,
-  onPaymentConfirmed,
-  onPaymentSubmittingChange,
-  onPaymentError,
   onGoToDashboard,
   onManageBilling,
   onBack,
@@ -2101,7 +2110,6 @@ function SubscriptionStepView({
 }: {
   checkoutLoading: PlanId | null;
   checkoutFinalizing: boolean;
-  checkoutSubmitting: boolean;
   error: string;
   notice: string;
   paymentReceived: boolean;
@@ -2110,18 +2118,14 @@ function SubscriptionStepView({
   selectedPlan: PlanId | null;
   paymentPanelOpen: boolean;
   paymentClientSecret: string | null;
-  paymentSubscriptionId: string | null;
-  organizationId: string | null;
   subscriptionActive: boolean;
   subscriptionStatus: string;
   onSelectPlan: (planId: PlanId) => void;
   onSelectCurrency: (currency: SupportedCurrency) => void;
   onStartCheckout: (priceType: PlanId) => void;
+  onStartRedirectCheckout: (priceType: PlanId) => void;
   onRetry: () => void;
   onClosePaymentPanel: () => void;
-  onPaymentConfirmed: () => Promise<void>;
-  onPaymentSubmittingChange: (submitting: boolean) => void;
-  onPaymentError: (message: string) => void;
   onGoToDashboard: () => void;
   onManageBilling: () => void;
   onBack: () => void;
@@ -2131,13 +2135,15 @@ function SubscriptionStepView({
   const [pendingCheckoutPlan, setPendingCheckoutPlan] = useState<PlanId | null>(null);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
   const showModal = showCheckoutModal || paymentPanelOpen || checkoutFinalizing;
-  const paymentProcessing = checkoutSubmitting || checkoutFinalizing || (paymentReceived && !subscriptionActive);
+  const paymentProcessing = checkoutFinalizing || (paymentReceived && !subscriptionActive);
   const stripeUnavailable = !STRIPE_PUBLISHABLE_KEY || !stripePromise;
-  const canRenderPaymentElement = Boolean(
-    !stripeUnavailable
-    && paymentClientSecret
-    && paymentSubscriptionId
-    && organizationId,
+  const canRenderEmbeddedCheckout = Boolean(!stripeUnavailable && paymentClientSecret);
+  const canUseRedirectFallback = Boolean(
+    pendingCheckoutPlan
+    && (paymentPanelOpen || stripeUnavailable)
+    && !canRenderEmbeddedCheckout
+    && checkoutLoading === null
+    && !paymentProcessing,
   );
 
   const openCheckoutModal = useCallback((planId: PlanId) => {
@@ -2153,10 +2159,15 @@ function SubscriptionStepView({
     onClosePaymentPanel();
   }, [onClosePaymentPanel, paymentProcessing]);
 
-  const handleContinueToStripe = useCallback(() => {
+  const handleContinueToCheckout = useCallback(() => {
     if (!pendingCheckoutPlan) return;
     onStartCheckout(pendingCheckoutPlan);
   }, [onStartCheckout, pendingCheckoutPlan]);
+
+  const handleContinueToRedirectCheckout = useCallback(() => {
+    if (!pendingCheckoutPlan) return;
+    onStartRedirectCheckout(pendingCheckoutPlan);
+  }, [onStartRedirectCheckout, pendingCheckoutPlan]);
 
   useEffect(() => {
     if (!showModal || !paymentProcessing) return;
@@ -2194,7 +2205,7 @@ function SubscriptionStepView({
         <select
           value={selectedCurrency}
           onChange={(event) => onSelectCurrency(event.target.value as SupportedCurrency)}
-          disabled={checkoutLoading !== null || checkoutSubmitting || checkoutFinalizing}
+          disabled={checkoutLoading !== null || paymentProcessing}
           className="w-full px-3 py-2.5 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50 disabled:opacity-60"
         >
           {SUPPORTED_CURRENCIES.map((currency) => (
@@ -2268,7 +2279,7 @@ function SubscriptionStepView({
                 plan={plan}
                 selected={selectedPlan === plan.id}
                 loading={checkoutLoading === plan.id}
-                disabled={checkoutLoading !== null || checkoutFinalizing || checkoutSubmitting}
+                disabled={checkoutLoading !== null || paymentProcessing}
                 onSelect={onSelectPlan}
                 onContinue={openCheckoutModal}
               />
@@ -2289,7 +2300,7 @@ function SubscriptionStepView({
             <button
               type="button"
               onClick={onSkip}
-              disabled={checkoutSubmitting || checkoutFinalizing}
+              disabled={paymentProcessing}
               className="w-full py-2.5 text-sm text-theme-tertiary hover:text-theme-primary transition-colors inline-flex items-center justify-center gap-1"
             >
               Skip for now
@@ -2336,7 +2347,7 @@ function SubscriptionStepView({
                   Powered by Stripe
                 </p>
               </div>
-            ) : !canRenderPaymentElement ? (
+            ) : !canRenderEmbeddedCheckout ? (
               <>
                 <p className="mt-2 text-sm text-theme-tertiary">
                   Checkout is securely processed by Stripe. You&rsquo;ll enter payment details here to activate CrewShyft.
@@ -2366,13 +2377,12 @@ function SubscriptionStepView({
                   </button>
                     <button
                       type="button"
-                      onClick={handleContinueToStripe}
+                      onClick={handleContinueToCheckout}
                       disabled={
                         stripeUnavailable
                       || !pendingCheckoutPlan
                       || checkoutLoading !== null
-                      || checkoutFinalizing
-                      || checkoutSubmitting
+                      || paymentProcessing
                     }
                     className="w-full rounded-lg bg-amber-500 px-3 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-amber-400 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2"
                     >
@@ -2389,31 +2399,31 @@ function SubscriptionStepView({
                       )}
                     </button>
                   </div>
+                {canUseRedirectFallback && (
+                  <button
+                    type="button"
+                    onClick={handleContinueToRedirectCheckout}
+                    disabled={checkoutLoading !== null || paymentProcessing}
+                    className="mt-2 w-full rounded-lg border border-amber-500/50 px-3 py-2.5 text-sm font-medium text-amber-300 hover:bg-amber-500/10 transition-colors disabled:opacity-60"
+                  >
+                    Open Stripe Checkout instead
+                  </button>
+                )}
               </>
             ) : (
               <>
                 <div className="mt-3 rounded-lg border border-theme-primary bg-theme-tertiary/30 px-3 py-2 text-xs text-theme-secondary">
                   {selectedPlan ? `${selectedPlan === 'annual' ? 'Annual' : 'Monthly'} plan` : 'Selected plan'} · {selectedCurrency}
                 </div>
-                <div className="mt-4">
-                  <Elements
+                <div className="mt-4 max-h-[65vh] overflow-y-auto rounded-xl border border-theme-primary bg-theme-tertiary/20 p-2">
+                  <EmbeddedCheckoutProvider
                     stripe={stripePromise}
                     options={{
                       clientSecret: paymentClientSecret as string,
-                      appearance: { theme: 'stripe' },
-                      loader: 'auto',
                     }}
                   >
-                    <PaymentElementCheckoutForm
-                      organizationId={organizationId as string}
-                      subscriptionId={paymentSubscriptionId as string}
-                      submitting={checkoutSubmitting}
-                      finalizing={checkoutFinalizing}
-                      onSubmittingChange={onPaymentSubmittingChange}
-                      onPaymentConfirmed={onPaymentConfirmed}
-                      onError={onPaymentError}
-                    />
-                  </Elements>
+                    <EmbeddedCheckout />
+                  </EmbeddedCheckoutProvider>
                 </div>
                 <div className="mt-4 flex items-center justify-between gap-2">
                   <p className="text-xs font-medium uppercase tracking-wide text-theme-muted">
@@ -2434,108 +2444,6 @@ function SubscriptionStepView({
         </div>
       )}
     </div>
-  );
-}
-
-function PaymentElementCheckoutForm({
-  organizationId,
-  subscriptionId,
-  submitting,
-  finalizing,
-  onSubmittingChange,
-  onPaymentConfirmed,
-  onError,
-}: {
-  organizationId: string;
-  subscriptionId: string;
-  submitting: boolean;
-  finalizing: boolean;
-  onSubmittingChange: (submitting: boolean) => void;
-  onPaymentConfirmed: () => Promise<void>;
-  onError: (message: string) => void;
-}) {
-  const stripe = useStripe();
-  const elements = useElements();
-
-  const handleSubmit = useCallback(async (event: FormEvent) => {
-    event.preventDefault();
-    if (!stripe || !elements || submitting || finalizing) return;
-
-    onError('');
-    onSubmittingChange(true);
-
-    try {
-      const origin = window.location.origin;
-      const returnUrl = `${origin}/setup?step=3&pe=return&subscription_id=${encodeURIComponent(subscriptionId)}&organization_id=${encodeURIComponent(organizationId)}`;
-      const result = await stripe.confirmPayment({
-        elements,
-        confirmParams: { return_url: returnUrl },
-        redirect: 'if_required',
-      });
-
-      if (result.error) {
-        onError(result.error.message || 'Unable to complete payment. Please try again.');
-        return;
-      }
-
-      const status = String(result.paymentIntent?.status ?? '').trim().toLowerCase();
-      if (status === 'succeeded' || status === 'processing' || status === 'requires_capture') {
-        await onPaymentConfirmed();
-        return;
-      }
-
-      if (!status) {
-        onError('We could not verify payment yet. Please try again.');
-        return;
-      }
-
-      onError('Payment requires another step. Please try again.');
-    } catch {
-      onError('Unable to complete payment. Please try again.');
-    } finally {
-      onSubmittingChange(false);
-    }
-  }, [
-    elements,
-    finalizing,
-    onError,
-    onPaymentConfirmed,
-    onSubmittingChange,
-    organizationId,
-    stripe,
-    submitting,
-    subscriptionId,
-  ]);
-
-  const disabled = !stripe || !elements || submitting || finalizing;
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <p className="text-xs uppercase tracking-wide text-theme-muted">
-        Checkout powered by Stripe
-      </p>
-      <PaymentElement />
-      <button
-        type="submit"
-        disabled={disabled}
-        className="w-full rounded-lg bg-amber-500 px-3 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-amber-400 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2"
-      >
-        {submitting || finalizing ? (
-          <>
-            <Loader2 className="w-4 h-4 animate-spin" />
-            {finalizing ? 'Finalizing...' : 'Processing...'}
-          </>
-        ) : (
-          <>
-            <CreditCard className="w-4 h-4" />
-            Pay &amp; Activate
-          </>
-        )}
-      </button>
-      <p className="text-[11px] text-theme-muted text-center">
-        Secure payments by Stripe
-      </p>
-    </form>
   );
 }
 
