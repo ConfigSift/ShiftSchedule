@@ -87,7 +87,7 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
     !hasActiveRestaurant
     && (pathname.startsWith('/setup') || pathname.startsWith('/onboarding') || pathname.startsWith('/persona'));
   const hideNavLinks = noRestaurants || onboardingWithoutOrg;
-  const showReports = hasRestaurants && hasActiveRestaurant;
+  const showReports = hasRestaurants && hasActiveRestaurant && isManagerRole(currentRole);
   // Always allow access to Restaurants/Site Manager for signed-in users
   const showRestaurantsLink = Boolean(currentUser);
   const activeRestaurantName =
