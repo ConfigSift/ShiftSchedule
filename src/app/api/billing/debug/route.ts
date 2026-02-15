@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import Stripe from 'stripe';
 import {
   STRIPE_ANNUAL_PRICE_ID,
   STRIPE_MONTHLY_PRICE_ID,
@@ -60,6 +61,23 @@ export async function GET(request: NextRequest) {
   const publishableKeyPrefix = getPublishableKeyPrefix(stripePublishableKey);
   const secretKeyPrefix = getSecretKeyPrefix(stripeSecretKey);
   const mode = deriveStripeMode(secretKeyPrefix, publishableKeyPrefix);
+  let stripeAccountId: string | null = null;
+  let stripeLivemode: boolean | null = null;
+
+  if (stripeSecretKey) {
+    try {
+      const stripe = new Stripe(stripeSecretKey, { typescript: true });
+      const account = await stripe.accounts.retrieve();
+      stripeAccountId = account.id;
+      const rawLivemode = (account as unknown as Record<string, unknown>).livemode;
+      stripeLivemode = typeof rawLivemode === 'boolean' ? rawLivemode : null;
+    } catch {
+      stripeAccountId = null;
+      stripeLivemode = null;
+    }
+  }
+
+  console.info('[billing:debug]', { host, origin: requestOrigin, stripeAccountId, stripeLivemode });
 
   return NextResponse.json({
     host,
@@ -78,5 +96,7 @@ export async function GET(request: NextRequest) {
     hasAnnualPriceId: Boolean(annualPriceId),
     monthlyPriceIdPrefix: prefix(monthlyPriceId),
     annualPriceIdPrefix: prefix(annualPriceId),
+    stripeAccountId,
+    stripeLivemode,
   });
 }
