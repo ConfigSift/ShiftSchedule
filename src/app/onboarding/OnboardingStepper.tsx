@@ -58,6 +58,7 @@ type CreatePaymentIntentResponse = {
   currency?: string | null;
   priceType?: PlanId | null;
   redirect?: string | null;
+  error_code?: string | null;
 };
 
 type SubscriptionStatusResponse = {
@@ -1058,7 +1059,9 @@ export function OnboardingStepper() {
         } else {
           setCheckoutNotice('');
         }
-        setCheckoutError(result.error || 'Unable to initialize secure payment. Please try again.');
+        const serverErrorCode = result.code || String(result.data?.error_code ?? '').trim();
+        const codeSuffix = serverErrorCode ? ` (${serverErrorCode})` : '';
+        setCheckoutError((result.error || 'Unable to initialize secure payment. Please try again.') + codeSuffix);
         return;
       }
 

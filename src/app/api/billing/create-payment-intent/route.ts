@@ -27,6 +27,32 @@ type CreatePaymentIntentPayload = {
   flow?: 'setup';
 };
 
+type PublishablePrefix = 'pk_test' | 'pk_live' | 'missing';
+type SecretPrefix = 'sk_test' | 'sk_live' | 'missing';
+type StripeMode = 'test' | 'live' | 'unknown';
+
+function getPublishableKeyPrefix(value: string): PublishablePrefix {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return 'missing';
+  if (normalized.startsWith('pk_test_')) return 'pk_test';
+  if (normalized.startsWith('pk_live_')) return 'pk_live';
+  return 'missing';
+}
+
+function getSecretKeyPrefix(value: string): SecretPrefix {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return 'missing';
+  if (normalized.startsWith('sk_test_')) return 'sk_test';
+  if (normalized.startsWith('sk_live_')) return 'sk_live';
+  return 'missing';
+}
+
+function deriveStripeMode(secretKeyPrefix: SecretPrefix, publishableKeyPrefix: PublishablePrefix): StripeMode {
+  if (secretKeyPrefix === 'sk_test' && publishableKeyPrefix === 'pk_test') return 'test';
+  if (secretKeyPrefix === 'sk_live' && publishableKeyPrefix === 'pk_live') return 'live';
+  return 'unknown';
+}
+
 function parsePaymentIntentClientSecret(
   subscription: Stripe.Subscription,
 ) {
@@ -43,6 +69,39 @@ function parsePaymentIntentClientSecret(
 }
 
 export async function POST(request: NextRequest) {
+  const host =
+    String(request.headers.get('x-forwarded-host') ?? '').trim()
+    || String(request.headers.get('host') ?? '').trim()
+    || 'unknown';
+  const secretKeyPrefix = getSecretKeyPrefix(process.env.STRIPE_SECRET_KEY ?? '');
+  const publishableKeyPrefix = getPublishableKeyPrefix(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '');
+  const stripeMode = deriveStripeMode(secretKeyPrefix, publishableKeyPrefix);
+  console.info('[billing:create-payment-intent] stripe key mode check', {
+    host,
+    pathname: request.nextUrl.pathname,
+    secretKeyPrefix,
+    publishableKeyPrefix,
+    mode: stripeMode,
+  });
+
+  if (stripeMode === 'unknown') {
+    console.error('[billing:create-payment-intent] stripe key mode mismatch', {
+      host,
+      pathname: request.nextUrl.pathname,
+      secretKeyPrefix,
+      publishableKeyPrefix,
+    });
+    return NextResponse.json(
+      {
+        error: 'Stripe key mode mismatch.',
+        error_code: 'stripe_key_mode_mismatch',
+        secretKeyPrefix,
+        publishableKeyPrefix,
+      },
+      { status: 500 },
+    );
+  }
+
   let payload: CreatePaymentIntentPayload;
   try {
     payload = (await request.json()) as CreatePaymentIntentPayload;
