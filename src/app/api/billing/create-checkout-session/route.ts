@@ -68,13 +68,14 @@ export async function POST(request: NextRequest) {
     || request.nextUrl.protocol.replace(':', '')
     || 'https';
   const requestOrigin = requestHost === 'unknown' ? request.nextUrl.origin : `${requestProto}://${requestHost}`;
-  const { appBaseUrl } = getBaseUrls(requestOrigin);
+  const { appBaseUrl, loginBaseUrl } = getBaseUrls(requestOrigin);
   const stripeSecretKey = String(process.env.STRIPE_SECRET_KEY ?? '').trim();
   const stripePublishableKey = String(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '').trim();
   const publishableKeyPrefix = getPublishableKeyPrefix(stripePublishableKey);
   const secretKeyPrefix = getSecretKeyPrefix(stripeSecretKey);
   const keyMode = deriveStripeMode(secretKeyPrefix, publishableKeyPrefix);
   const hasStripeSecretKey = Boolean(stripeSecretKey);
+  const hasStripePublishableKey = Boolean(stripePublishableKey);
   const hasMonthlyPriceId = Boolean(String(STRIPE_MONTHLY_PRICE_ID ?? '').trim());
   const hasAnnualPriceId = Boolean(String(STRIPE_ANNUAL_PRICE_ID ?? '').trim());
   const hasIntroCoupon = Boolean(String(STRIPE_INTRO_COUPON_ID ?? '').trim());
@@ -101,6 +102,7 @@ export async function POST(request: NextRequest) {
     hasOrganizationId: Boolean(organizationId),
     hasIntentId: Boolean(intentId),
     hasStripeSecretKey,
+    hasStripePublishableKey,
     publishableKeyPrefix,
     secretKeyPrefix,
     keyMode,
@@ -109,6 +111,7 @@ export async function POST(request: NextRequest) {
     hasIntroCoupon,
     origin: requestOrigin,
     appBaseUrl,
+    loginBaseUrl,
   });
 
   if (!BILLING_ENABLED) {
@@ -117,7 +120,13 @@ export async function POST(request: NextRequest) {
 
   if (!hasStripeSecretKey) {
     return NextResponse.json(
-      { error: 'Missing Stripe secret key configuration.', error_code: 'missing_stripe_secret_key' },
+      {
+        error: 'Missing Stripe secret key configuration.',
+        error_code: 'missing_stripe_secret_key',
+        mode: keyMode,
+        secretType: 'checkout_session',
+        stripeAccountId: null,
+      },
       { status: 500 },
     );
   }
@@ -135,6 +144,9 @@ export async function POST(request: NextRequest) {
         error_code: 'stripe_key_mode_mismatch',
         publishableKeyPrefix,
         secretKeyPrefix,
+        mode: keyMode,
+        secretType: 'checkout_session',
+        stripeAccountId: null,
       },
       { status: 500 },
     );
@@ -385,6 +397,18 @@ export async function POST(request: NextRequest) {
     returnUrl: normalizedReturnUrl,
   });
 
+  let stripeAccountId: string | null = null;
+  let stripeAccountLivemode: boolean | null = null;
+  try {
+    const account = await stripeClient.accounts.retrieve();
+    stripeAccountId = account.id;
+    const rawLivemode = (account as unknown as Record<string, unknown>).livemode;
+    stripeAccountLivemode = typeof rawLivemode === 'boolean' ? rawLivemode : null;
+  } catch {
+    stripeAccountId = null;
+    stripeAccountLivemode = null;
+  }
+
   try {
     const stripeCustomer = await stripeClient.customers.retrieve(stripeCustomerId);
     if ('deleted' in stripeCustomer && stripeCustomer.deleted) {
@@ -403,6 +427,35 @@ export async function POST(request: NextRequest) {
     const stripeRequestId = session.lastResponse?.requestId ?? null;
     const checkoutUrl = String(session.url ?? '').trim();
     const clientSecret = String(session.client_secret ?? '').trim();
+    const sessionMode: StripeMode = session.livemode ? 'live' : 'test';
+    const modeMismatch =
+      (sessionMode === 'live' && keyMode === 'test')
+      || (sessionMode === 'test' && keyMode === 'live');
+
+    if (modeMismatch) {
+      logCheckoutEvent('stripe_session_mode_mismatch', {
+        sessionId: session.id,
+        stripeRequestId,
+        sessionMode,
+        keyMode,
+        stripeAccountId,
+        stripeAccountLivemode,
+      });
+      return applySupabaseCookies(
+        NextResponse.json(
+          {
+            error: 'Stripe checkout session mode mismatch.',
+            error_code: 'stripe_session_mode_mismatch',
+            mode: sessionMode,
+            secretType: 'checkout_session',
+            stripeAccountId,
+          },
+          { status: 500 },
+        ),
+        response,
+      );
+    }
+
     if (uiMode === 'embedded') {
       if (!clientSecret) {
         logCheckoutEvent('missing_checkout_client_secret', {
@@ -417,6 +470,33 @@ export async function POST(request: NextRequest) {
               error: 'Stripe checkout client secret was not returned.',
               error_code: 'missing_checkout_client_secret',
               details: { sessionId: session.id },
+              mode: sessionMode,
+              secretType: 'checkout_session',
+              stripeAccountId,
+            },
+            { status: 502 },
+          ),
+          response,
+        );
+      }
+
+      if (!clientSecret.startsWith('cs_')) {
+        const detectedSecretType = clientSecret.startsWith('pi_') ? 'payment_intent' : 'unknown';
+        logCheckoutEvent('invalid_embedded_secret_type', {
+          sessionId: session.id,
+          stripeRequestId,
+          detectedSecretType,
+          mode: sessionMode,
+          stripeAccountId,
+        });
+        return applySupabaseCookies(
+          NextResponse.json(
+            {
+              error: 'Stripe returned an invalid secret type for embedded checkout.',
+              error_code: 'invalid_embedded_secret_type',
+              mode: sessionMode,
+              secretType: detectedSecretType,
+              stripeAccountId,
             },
             { status: 502 },
           ),
@@ -429,10 +509,25 @@ export async function POST(request: NextRequest) {
         stripeRequestId,
         uiMode,
         hasClientSecret: Boolean(clientSecret),
+        mode: sessionMode,
+        stripeAccountId,
+        stripeAccountLivemode,
+        hasStripeSecretKey,
+        hasStripePublishableKey,
+        appBaseUrl,
+        loginBaseUrl,
+        secretType: 'checkout_session',
       });
 
       return applySupabaseCookies(
-        NextResponse.json({ clientSecret, sessionId: session.id, uiMode: 'embedded' }),
+        NextResponse.json({
+          clientSecret,
+          sessionId: session.id,
+          uiMode: 'embedded',
+          mode: sessionMode,
+          stripeAccountId,
+          secretType: 'checkout_session',
+        }),
         response,
       );
     }
@@ -450,6 +545,9 @@ export async function POST(request: NextRequest) {
             error: 'Stripe checkout URL was not returned.',
             error_code: 'missing_checkout_url',
             details: { sessionId: session.id },
+            mode: sessionMode,
+            secretType: 'checkout_session',
+            stripeAccountId,
           },
           { status: 502 },
         ),
@@ -462,10 +560,24 @@ export async function POST(request: NextRequest) {
       stripeRequestId,
       uiMode,
       hasUrl: Boolean(checkoutUrl),
+      mode: sessionMode,
+      stripeAccountId,
+      stripeAccountLivemode,
+      hasStripeSecretKey,
+      hasStripePublishableKey,
+      appBaseUrl,
+      loginBaseUrl,
+      secretType: 'checkout_session',
     });
 
     return applySupabaseCookies(
-      NextResponse.json({ checkoutUrl, sessionId: session.id }),
+      NextResponse.json({
+        checkoutUrl,
+        sessionId: session.id,
+        mode: sessionMode,
+        stripeAccountId,
+        secretType: 'checkout_session',
+      }),
       response,
     );
   } catch (error) {
@@ -481,6 +593,13 @@ export async function POST(request: NextRequest) {
     logCheckoutEvent('failed', {
       host: requestHost,
       origin: requestOrigin,
+      appBaseUrl,
+      loginBaseUrl,
+      hasStripeSecretKey,
+      hasStripePublishableKey,
+      keyMode,
+      stripeAccountId,
+      stripeAccountLivemode,
       message,
       stripeType: stripeLike.type ?? stripeLike.raw?.type ?? null,
       stripeCode: stripeLike.code ?? null,
@@ -493,6 +612,9 @@ export async function POST(request: NextRequest) {
         {
           error: message || 'Unable to create checkout session.',
           error_code: 'checkout_session_create_failed',
+          mode: keyMode,
+          secretType: 'checkout_session',
+          stripeAccountId,
         },
         { status: 500 },
       ),

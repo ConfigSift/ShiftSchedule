@@ -59,6 +59,9 @@ type CreateCheckoutSessionResponse = {
   sessionId?: string | null;
   redirect?: string | null;
   error_code?: string | null;
+  mode?: 'test' | 'live' | 'unknown';
+  secretType?: 'checkout_session' | 'payment_intent' | 'unknown';
+  stripeAccountId?: string | null;
 };
 
 type SubscriptionStatusResponse = {
@@ -1210,9 +1213,13 @@ export function OnboardingStepper() {
 
       const clientSecret = String(result.data?.clientSecret ?? '').trim();
       const serverErrorCode = result.code || String(result.data?.error_code ?? '').trim() || null;
+      const responseMode = String(result.data?.mode ?? '').trim();
+      const responseSecretType = String(result.data?.secretType ?? '').trim();
       console.info('[setup:embedded-checkout] create session response', {
         ok: result.ok,
         error_code: serverErrorCode,
+        mode: responseMode || null,
+        secretType: responseSecretType || null,
         clientSecretSuffix: suffix(clientSecret),
       });
 
@@ -1226,13 +1233,23 @@ export function OnboardingStepper() {
         }
         const serverErrorCode = result.code || String(result.data?.error_code ?? '').trim();
         const codeSuffix = serverErrorCode ? ` (${serverErrorCode})` : '';
-        setCheckoutError((result.error || 'Unable to initialize secure payment. Please try again.') + codeSuffix);
+        const diagParts = [
+          responseMode ? `mode:${responseMode}` : null,
+          responseSecretType ? `secretType:${responseSecretType}` : null,
+        ].filter(Boolean) as string[];
+        const diagSuffix = diagParts.length ? ` [${diagParts.join(', ')}]` : '';
+        setCheckoutError((result.error || 'Unable to initialize secure payment. Please try again.') + codeSuffix + diagSuffix);
         return;
       }
 
       if (!clientSecret) {
         setCheckoutNotice('');
-        setCheckoutError('Unable to initialize embedded checkout. You can use Stripe Checkout instead.');
+        const diagParts = [
+          responseMode ? `mode:${responseMode}` : null,
+          responseSecretType ? `secretType:${responseSecretType}` : null,
+        ].filter(Boolean) as string[];
+        const diagSuffix = diagParts.length ? ` [${diagParts.join(', ')}]` : '';
+        setCheckoutError(`Unable to initialize embedded checkout. You can use Stripe Checkout instead.${diagSuffix}`);
         return;
       }
 
