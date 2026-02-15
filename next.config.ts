@@ -22,6 +22,8 @@ const noIndexPrefixes = [
   "onboarding",
 ];
 
+const stripeEmbeddedRoutePrefixes = ["setup", "subscribe", "onboarding"];
+
 const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
@@ -61,7 +63,7 @@ const nextConfig: NextConfig = {
     ];
   },
   async headers() {
-    return noIndexPrefixes.flatMap((prefix) => [
+    const noIndexHeaders = noIndexPrefixes.flatMap((prefix) => [
       {
         source: `/${prefix}`,
         headers: [
@@ -81,6 +83,39 @@ const nextConfig: NextConfig = {
         ],
       },
     ]);
+
+    // Stripe embedded checkout payment methods (e.g. Cash App Pay) rely on popup flows.
+    // Scope popup-friendly COOP/COEP only to payment-capable onboarding routes.
+    const stripePopupHeaders = stripeEmbeddedRoutePrefixes.flatMap((prefix) => [
+      {
+        source: `/${prefix}`,
+        headers: [
+          {
+            key: "Cross-Origin-Opener-Policy",
+            value: "same-origin-allow-popups",
+          },
+          {
+            key: "Cross-Origin-Embedder-Policy",
+            value: "unsafe-none",
+          },
+        ],
+      },
+      {
+        source: `/${prefix}/:path*`,
+        headers: [
+          {
+            key: "Cross-Origin-Opener-Policy",
+            value: "same-origin-allow-popups",
+          },
+          {
+            key: "Cross-Origin-Embedder-Policy",
+            value: "unsafe-none",
+          },
+        ],
+      },
+    ]);
+
+    return [...noIndexHeaders, ...stripePopupHeaders];
   },
 };
 
