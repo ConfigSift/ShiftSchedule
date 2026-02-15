@@ -24,6 +24,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useDemoContext } from '../../demo/DemoProvider';
 import { DemoSettingsModal } from './DemoSettingsModal';
+import { getAppBase, getIsLocalhost } from '@/lib/routing/getBaseUrls';
 
 function toYMD(date: Date): string {
   const year = date.getFullYear();
@@ -102,6 +103,12 @@ export function DemoHeader() {
     const view = viewMode === 'week' || viewMode === 'month' ? 'weekly' : 'roster';
     router.push(`/demo/reports?view=${view}&date=${toYMD(selectedDate)}`);
   }, [router, selectedDate, viewMode]);
+
+  const handleGetStartedClick = useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (getIsLocalhost(window.location.host)) return;
+    event.preventDefault();
+    window.location.assign(`${getAppBase(window.location.origin)}/start`);
+  }, []);
 
   return (
     <header className="sticky top-0 z-50 h-14 sm:h-16 bg-theme-secondary border-b border-theme-primary transition-theme shrink-0">
@@ -299,7 +306,10 @@ export function DemoHeader() {
                   <div className="border-t border-theme-primary pt-2 mt-2">
                     <Link
                       href="/start"
-                      onClick={() => setMoreMenuOpen(false)}
+                      onClick={(event) => {
+                        setMoreMenuOpen(false);
+                        handleGetStartedClick(event);
+                      }}
                       className="flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-amber-500 hover:bg-amber-500/10 transition-colors"
                     >
                       <Plus className="w-4 h-4" />
@@ -313,6 +323,7 @@ export function DemoHeader() {
 
           <Link
             href="/start"
+            onClick={handleGetStartedClick}
             className="hidden sm:inline-flex items-center px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-sm font-semibold"
             data-analytics="demo_header_cta"
           >

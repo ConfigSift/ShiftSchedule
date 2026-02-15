@@ -10,6 +10,7 @@ import { resolvePostAuthDestination } from '@/lib/authRedirect';
 import { supabase } from '@/lib/supabase/client';
 import { useAuthStore } from '@/store/authStore';
 import { useUIStore } from '@/store/uiStore';
+import { getAppBase } from '@/lib/routing/getBaseUrls';
 
 function getPersonaCardClasses(isSelected: boolean) {
   return [
@@ -90,9 +91,10 @@ function PersonaContent() {
     void result;
 
     await refreshProfile();
-    const destination = selectedPersona === 'manager' ? '/setup' : '/join';
+    const appBase = getAppBase(window.location.origin);
+    const destination = selectedPersona === 'manager' ? `${appBase}/setup` : `${appBase}/join`;
     setUiLockedForOnboarding(false);
-    router.replace(destination);
+    window.location.assign(destination);
   };
 
   if (!isInitialized || !isAuthResolved || !hasSession || existingPersona) {

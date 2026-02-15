@@ -1,13 +1,21 @@
 'use client';
 
+import { useCallback } from 'react';
 import Link from 'next/link';
 import { DemoProvider } from '../../demo/DemoProvider';
 import { DemoHeader } from './DemoHeader';
 import { Dashboard } from '../../components/Dashboard';
 import { StatsFooter } from '../../components/StatsFooter';
 import { ArrowRight } from 'lucide-react';
+import { getAppBase, getIsLocalhost } from '@/lib/routing/getBaseUrls';
 
 export function DemoPageContent() {
+  const handleGetStartedClick = useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (getIsLocalhost(window.location.host)) return;
+    event.preventDefault();
+    window.location.assign(`${getAppBase(window.location.origin)}/start`);
+  }, []);
+
   return (
     <DemoProvider>
       <div className="h-[100dvh] flex flex-col bg-theme-primary text-theme-primary overflow-hidden transition-theme">
@@ -18,6 +26,7 @@ export function DemoPageContent() {
             </p>
             <Link
               href="/start"
+              onClick={handleGetStartedClick}
               className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 sm:py-1.5 rounded-lg bg-zinc-900 text-amber-400 hover:bg-zinc-800 transition-colors text-xs sm:text-sm font-semibold"
               data-analytics="demo_banner_cta"
             >

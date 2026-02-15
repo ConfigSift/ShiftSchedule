@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, type ReactNode } from 'react';
+import { useCallback, useState, useRef, type ReactNode } from 'react';
 import { motion, useInView } from 'framer-motion';
 import { useThemeStore } from '../../store/themeStore';
 import {
@@ -25,6 +25,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import Link from 'next/link';
+import { getAppBase, getIsLocalhost, getLoginBase } from '@/lib/routing/getBaseUrls';
 
 /* ─── Scroll-animated section wrapper ─── */
 function Section({ children, className = '', id }: { children: ReactNode; className?: string; id?: string }) {
@@ -489,6 +490,18 @@ export function LandingPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
 
+  const handleSignInClick = useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (getIsLocalhost(window.location.host)) return;
+    event.preventDefault();
+    window.location.assign(`${getLoginBase(window.location.origin)}/login`);
+  }, []);
+
+  const handleGetStartedClick = useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (getIsLocalhost(window.location.host)) return;
+    event.preventDefault();
+    window.location.assign(`${getAppBase(window.location.origin)}/start`);
+  }, []);
+
   const scrollTo = (id: string) => {
     setMobileMenuOpen(false);
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
@@ -539,12 +552,14 @@ export function LandingPage() {
             </button>
             <Link
               href="/login"
+              onClick={handleSignInClick}
               className="hidden sm:inline-flex px-4 py-2 rounded-lg text-sm font-medium text-gray-700 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
             >
               Sign In
             </Link>
             <Link
               href="/start"
+              onClick={handleGetStartedClick}
               className="hidden sm:inline-flex px-4 py-2 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors shadow-sm"
             >
               Get Started
@@ -582,12 +597,14 @@ export function LandingPage() {
               <div className="pt-2 flex flex-col gap-2">
                 <Link
                   href="/login"
+                  onClick={handleSignInClick}
                   className="px-3 py-2.5 rounded-lg text-sm font-medium text-gray-700 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors text-center"
                 >
                   Sign In
                 </Link>
                 <Link
                   href="/start"
+                  onClick={handleGetStartedClick}
                   className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
                 >
                   Get Started
@@ -1009,6 +1026,7 @@ export function LandingPage() {
 
               <Link
                 href="/start"
+                onClick={handleGetStartedClick}
                 className="block w-full py-3 rounded-xl text-sm font-semibold bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-colors text-center"
               >
                 Get Started

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
+import { getAppBase, getIsLocalhost } from '@/lib/routing/getBaseUrls';
 
 interface DemoInterceptModalProps {
   isOpen: boolean;
@@ -26,6 +27,12 @@ export function DemoInterceptModal({ isOpen, action, onClose }: DemoInterceptMod
     },
     [onClose],
   );
+
+  const handleGetStartedClick = useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (getIsLocalhost(window.location.host)) return;
+    event.preventDefault();
+    window.location.assign(`${getAppBase(window.location.origin)}/start`);
+  }, []);
 
   if (!isOpen) return null;
 
@@ -83,6 +90,7 @@ export function DemoInterceptModal({ isOpen, action, onClose }: DemoInterceptMod
 
         <a
           href="/start"
+          onClick={handleGetStartedClick}
           className="block w-full rounded-xl bg-amber-500 py-3 text-center text-sm font-semibold text-zinc-900 hover:bg-amber-400 transition-colors"
           data-analytics="demo_intercept_cta"
         >

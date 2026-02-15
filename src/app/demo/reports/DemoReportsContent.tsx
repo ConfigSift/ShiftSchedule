@@ -19,6 +19,7 @@ import { useAuthStore } from '../../../store/authStore';
 import { dateToString, getWeekDates } from '../../../utils/timeUtils';
 import { DailyRosterReport } from '../../../components/reports/DailyRosterReport';
 import { compareJobs, getPublishedShiftsForDate, getPublishedShiftsForWeek } from '../../../components/reports/report-utils';
+import { getAppBase, getIsLocalhost } from '@/lib/routing/getBaseUrls';
 
 type DemoReportView = 'roster' | 'weekly-summary';
 
@@ -237,6 +238,12 @@ function DemoReportsInner({ initialView, initialDate }: DemoReportsContentProps)
     [isWeekly],
   );
 
+  const handleGetStartedClick = useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (getIsLocalhost(window.location.host)) return;
+    event.preventDefault();
+    window.location.assign(`${getAppBase(window.location.origin)}/start`);
+  }, []);
+
   return (
     <div className="h-[100dvh] flex flex-col bg-theme-primary text-theme-primary overflow-hidden transition-theme">
       <div className="shrink-0 bg-amber-500 text-zinc-900" data-analytics="demo_reports_viewed">
@@ -246,6 +253,7 @@ function DemoReportsInner({ initialView, initialDate }: DemoReportsContentProps)
           </p>
           <Link
             href="/start"
+            onClick={handleGetStartedClick}
             className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 sm:py-1.5 rounded-lg bg-zinc-900 text-amber-400 hover:bg-zinc-800 transition-colors text-xs sm:text-sm font-semibold"
             data-analytics="demo_reports_banner_cta"
           >

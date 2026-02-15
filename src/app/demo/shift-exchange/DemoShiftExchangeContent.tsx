@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ArrowRight, RefreshCw } from 'lucide-react';
 import { DemoProvider } from '../../../demo/DemoProvider';
@@ -9,6 +9,7 @@ import { useScheduleStore } from '../../../store/scheduleStore';
 import { useAuthStore } from '../../../store/authStore';
 import { formatDateLong, formatHour } from '../../../utils/timeUtils';
 import { Toast } from '../../../components/Toast';
+import { getAppBase, getIsLocalhost } from '@/lib/routing/getBaseUrls';
 
 function DemoShiftExchangeInner() {
   const { activeRestaurantId } = useAuthStore();
@@ -22,6 +23,12 @@ function DemoShiftExchangeInner() {
     showToast,
   } = useScheduleStore();
   const [claimByRequest, setClaimByRequest] = useState<Record<string, string>>({});
+
+  const handleGetStartedClick = useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (getIsLocalhost(window.location.host)) return;
+    event.preventDefault();
+    window.location.assign(`${getAppBase(window.location.origin)}/start`);
+  }, []);
 
   const employees = useMemo(
     () => getEmployeesForRestaurant(activeRestaurantId).filter((employee) => employee.isActive),
@@ -86,6 +93,7 @@ function DemoShiftExchangeInner() {
           </p>
           <Link
             href="/start"
+            onClick={handleGetStartedClick}
             className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 sm:py-1.5 rounded-lg bg-zinc-900 text-amber-400 hover:bg-zinc-800 transition-colors text-xs sm:text-sm font-semibold"
             data-analytics="demo_exchange_banner_cta"
           >
