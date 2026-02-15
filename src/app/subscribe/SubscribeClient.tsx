@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { loadStripe } from '@stripe/stripe-js';
 import {
   Calendar,
   Check,
@@ -16,6 +17,9 @@ import {
 import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
 
+const STRIPE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '';
+const stripePromise = STRIPE_PUBLISHABLE_KEY ? loadStripe(STRIPE_PUBLISHABLE_KEY) : null;
+
 type SubscriptionInfo = {
   active: boolean;
   status: string;
@@ -25,6 +29,22 @@ type SubscriptionInfo = {
     current_period_end: string | null;
     cancel_at_period_end: boolean;
   } | null;
+};
+
+type CheckoutSessionResponse = {
+  checkoutUrl?: string;
+  url?: string;
+  sessionId?: string;
+  error_code?: string;
+  redirect?: string;
+};
+
+type RedirectToCheckoutResult = {
+  error?: { message?: string };
+};
+
+type StripeWithRedirectToCheckout = {
+  redirectToCheckout?: (options: { sessionId: string }) => Promise<RedirectToCheckoutResult>;
 };
 
 export default function SubscribeClient() {
@@ -85,7 +105,7 @@ export default function SubscribeClient() {
     setError('');
     setLoading(priceType);
 
-    const result = await apiFetch<{ checkoutUrl?: string; redirect?: string }>('/api/billing/create-checkout-session', {
+    const result = await apiFetch<CheckoutSessionResponse>('/api/billing/create-checkout-session', {
       method: 'POST',
       json: {
         organizationId: activeRestaurantId ?? undefined,
@@ -94,19 +114,57 @@ export default function SubscribeClient() {
       },
     });
 
-    const checkoutUrl = String(result.data?.checkoutUrl ?? '').trim();
-    if (result.ok && checkoutUrl) {
-      window.location.assign(checkoutUrl);
-    } else {
+    if (!result.ok) {
       const redirect = (result.data as { redirect?: string } | null)?.redirect;
       if (result.status === 409 && redirect) {
         router.push(redirect);
         setLoading(null);
         return;
       }
-      setError(result.error || 'Unable to start checkout. Please try again.');
+      const serverErrorCode = result.code || result.data?.error_code;
+      const errorCode = serverErrorCode ? ` (${serverErrorCode})` : '';
+      setError((result.error || 'Unable to start checkout. Please try again.') + errorCode);
       setLoading(null);
+      return;
     }
+
+    const checkoutUrl = String(result.data?.checkoutUrl ?? result.data?.url ?? '').trim();
+    if (checkoutUrl) {
+      window.location.assign(checkoutUrl);
+      return;
+    }
+
+    const sessionId = String(result.data?.sessionId ?? '').trim();
+    if (sessionId) {
+      if (!stripePromise) {
+        setError('Stripe is not configured in this environment.');
+        setLoading(null);
+        return;
+      }
+      const stripeClient = await stripePromise;
+      if (!stripeClient) {
+        setError('Unable to initialize Stripe checkout.');
+        setLoading(null);
+        return;
+      }
+      const checkoutClient = stripeClient as unknown as StripeWithRedirectToCheckout;
+      if (typeof checkoutClient.redirectToCheckout !== 'function') {
+        setError('Stripe checkout redirect is not available in this environment.');
+        setLoading(null);
+        return;
+      }
+      const redirectResult = await checkoutClient.redirectToCheckout({ sessionId });
+      if (redirectResult.error?.message) {
+        setError(redirectResult.error.message);
+      } else {
+        setError('Unable to redirect to Stripe Checkout.');
+      }
+      setLoading(null);
+      return;
+    }
+
+    setError('Unable to start checkout. Missing checkout URL.');
+    setLoading(null);
   };
 
   const handlePortal = async () => {

@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type Stripe from 'stripe';
+import Stripe from 'stripe';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
-import { stripe } from '@/lib/stripe/server';
 import {
   STRIPE_MONTHLY_PRICE_ID,
   STRIPE_ANNUAL_PRICE_ID,
@@ -16,6 +15,7 @@ import {
   getOwnedOrganizationCount,
   isActiveBillingStatus,
 } from '@/lib/billing/customer';
+import { getBaseUrls } from '@/lib/routing/getBaseUrls';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -27,38 +27,94 @@ type CheckoutPayload = {
   flow?: 'subscribe' | 'setup';
 };
 
+function logCheckoutEvent(event: string, payload: Record<string, unknown>) {
+  console.error(`[billing:create-checkout-session] ${event}`, payload);
+}
+
 export async function POST(request: NextRequest) {
-  const isDev = process.env.NODE_ENV !== 'production';
+  const requestHost =
+    String(request.headers.get('x-forwarded-host') ?? '').trim()
+    || String(request.headers.get('host') ?? '').trim()
+    || 'unknown';
+  const requestProto =
+    String(request.headers.get('x-forwarded-proto') ?? '').trim()
+    || request.nextUrl.protocol.replace(':', '')
+    || 'https';
+  const requestOrigin = requestHost === 'unknown' ? request.nextUrl.origin : `${requestProto}://${requestHost}`;
+  const { appBaseUrl } = getBaseUrls(requestOrigin);
+  const stripeSecretKey = String(process.env.STRIPE_SECRET_KEY ?? '').trim();
+  const hasStripeSecretKey = Boolean(stripeSecretKey);
+  const hasMonthlyPriceId = Boolean(String(STRIPE_MONTHLY_PRICE_ID ?? '').trim());
+  const hasAnnualPriceId = Boolean(String(STRIPE_ANNUAL_PRICE_ID ?? '').trim());
+  const hasIntroCoupon = Boolean(String(STRIPE_INTRO_COUPON_ID ?? '').trim());
+
   let payload: CheckoutPayload;
   try {
     payload = (await request.json()) as CheckoutPayload;
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
+    return NextResponse.json({ error: 'Invalid JSON body.', error_code: 'invalid_json_body' }, { status: 400 });
   }
 
-  if (!BILLING_ENABLED) {
-    return NextResponse.json({ error: 'Billing is disabled.' }, { status: 400 });
-  }
-
+  const flow = payload.flow === 'setup' ? 'setup' : 'subscribe';
+  const priceType = payload.priceType;
   const organizationId = String(payload.organizationId ?? '').trim() || null;
   const intentId = String(payload.intentId ?? '').trim() || null;
-  const priceType = payload.priceType;
-  const flow = payload.flow === 'setup' ? 'setup' : 'subscribe';
 
-  if (!priceType || !['monthly', 'annual'].includes(priceType)) {
-    return NextResponse.json({ error: 'priceType (monthly|annual) is required.' }, { status: 400 });
+  logCheckoutEvent('request', {
+    host: requestHost,
+    pathname: request.nextUrl.pathname,
+    flow,
+    priceType: priceType ?? null,
+    hasOrganizationId: Boolean(organizationId),
+    hasIntentId: Boolean(intentId),
+    hasStripeSecretKey,
+    hasMonthlyPriceId,
+    hasAnnualPriceId,
+    hasIntroCoupon,
+    appBaseUrl,
+  });
+
+  if (!BILLING_ENABLED) {
+    return NextResponse.json({ error: 'Billing is disabled.', error_code: 'billing_disabled' }, { status: 400 });
   }
 
-  if (!organizationId && !intentId) {
+  if (!hasStripeSecretKey) {
     return NextResponse.json(
-      { error: 'organizationId or intentId is required.' },
+      { error: 'Missing Stripe secret key configuration.', error_code: 'missing_stripe_secret_key' },
+      { status: 500 },
+    );
+  }
+
+  if (!priceType || !['monthly', 'annual'].includes(priceType)) {
+    return NextResponse.json(
+      { error: 'priceType (monthly|annual) is required.', error_code: 'missing_price_type' },
       { status: 400 },
     );
   }
 
-  const priceId = priceType === 'monthly' ? STRIPE_MONTHLY_PRICE_ID : STRIPE_ANNUAL_PRICE_ID;
+  if (!organizationId && !intentId) {
+    return NextResponse.json(
+      { error: 'organizationId or intentId is required.', error_code: 'missing_target' },
+      { status: 400 },
+    );
+  }
+
+  const priceId = String(priceType === 'monthly' ? STRIPE_MONTHLY_PRICE_ID : STRIPE_ANNUAL_PRICE_ID).trim();
   if (!priceId) {
-    return NextResponse.json({ error: 'Billing not configured.' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Billing not configured.', error_code: 'missing_price_id' },
+      { status: 500 },
+    );
+  }
+
+  let stripeClient: Stripe;
+  try {
+    stripeClient = new Stripe(stripeSecretKey, { typescript: true });
+  } catch {
+    return NextResponse.json(
+      { error: 'Unable to initialize Stripe client.', error_code: 'stripe_init_failed' },
+      { status: 500 },
+    );
   }
 
   const { supabase, response } = createSupabaseRouteClient(request);
@@ -170,7 +226,6 @@ export async function POST(request: NextRequest) {
   const email = authData.user.email ?? '';
   const stripeCustomerId = await getOrCreateStripeCustomer(authUserId, email);
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
   const successIntentSegment = effectiveIntentId
     ? `&intent_id=${encodeURIComponent(effectiveIntentId)}`
     : '';
@@ -178,24 +233,25 @@ export async function POST(request: NextRequest) {
     ? `&intent=${encodeURIComponent(effectiveIntentId)}`
     : '';
   const successUrl = flow === 'setup'
-    ? `${appUrl}/setup?step=3&checkout=success&session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`
-    : `${appUrl}/subscribe/success?session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`;
+    ? `${appBaseUrl}/setup?step=3&checkout=success&session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`
+    : `${appBaseUrl}/subscribe/success?session_id={CHECKOUT_SESSION_ID}${successIntentSegment}`;
   const cancelUrl = flow === 'setup'
-    ? `${appUrl}/setup?step=3&checkout=cancel${cancelIntentSegment}`
-    : `${appUrl}/subscribe?canceled=true${cancelIntentSegment}`;
+    ? `${appBaseUrl}/setup?step=3&checkout=cancel${cancelIntentSegment}`
+    : `${appBaseUrl}/subscribe?canceled=true${cancelIntentSegment}`;
 
-  if (isDev) {
-     
-    console.debug('[billing:create-checkout-session] request', {
-      authUserId,
-      flow,
-      organizationId: effectiveOrganizationId,
-      intentId: effectiveIntentId,
-      desiredQuantity,
-      priceType,
-      successUrl,
-      cancelUrl,
-    });
+  let normalizedSuccessUrl = '';
+  let normalizedCancelUrl = '';
+  try {
+    normalizedSuccessUrl = new URL(successUrl).toString();
+    normalizedCancelUrl = new URL(cancelUrl).toString();
+  } catch {
+    return applySupabaseCookies(
+      NextResponse.json(
+        { error: 'Invalid checkout return URLs.', error_code: 'invalid_return_url' },
+        { status: 500 },
+      ),
+      response,
+    );
   }
 
   const subscriptionMetadata: Record<string, string> = {
@@ -220,8 +276,8 @@ export async function POST(request: NextRequest) {
     customer: stripeCustomerId,
     mode: 'subscription',
     line_items: [{ price: priceId, quantity: desiredQuantity }],
-    success_url: successUrl,
-    cancel_url: cancelUrl,
+    success_url: normalizedSuccessUrl,
+    cancel_url: normalizedCancelUrl,
     subscription_data: {
       metadata: subscriptionMetadata,
     },
@@ -234,13 +290,29 @@ export async function POST(request: NextRequest) {
     params.allow_promotion_codes = true;
   }
 
+  logCheckoutEvent('stripe_params', {
+    host: requestHost,
+    pathname: request.nextUrl.pathname,
+    authUserId,
+    flow,
+    priceType,
+    desiredQuantity,
+    mode: params.mode,
+    lineItemsCount: params.line_items?.length ?? 0,
+    hasDiscounts: Boolean(params.discounts && params.discounts.length > 0),
+    allowPromotionCodes: Boolean(params.allow_promotion_codes),
+    priceIdPrefix: priceId.slice(0, 8),
+    successUrl: normalizedSuccessUrl,
+    cancelUrl: normalizedCancelUrl,
+  });
+
   try {
-    const stripeCustomer = await stripe.customers.retrieve(stripeCustomerId);
+    const stripeCustomer = await stripeClient.customers.retrieve(stripeCustomerId);
     if ('deleted' in stripeCustomer && stripeCustomer.deleted) {
       throw new Error(`Stripe customer ${stripeCustomerId} is deleted.`);
     }
 
-    await stripe.customers.update(stripeCustomerId, {
+    await stripeClient.customers.update(stripeCustomerId, {
       metadata: {
         ...(stripeCustomer.metadata ?? {}),
         auth_user_id: authUserId,
@@ -248,51 +320,62 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const session = await stripe.checkout.sessions.create(params);
+    const session = await stripeClient.checkout.sessions.create(params);
+    const stripeRequestId = session.lastResponse?.requestId ?? null;
     const checkoutUrl = String(session.url ?? '').trim();
     if (!checkoutUrl) {
-      if (isDev) {
-         
-        console.error('[billing:create-checkout-session] Stripe session missing URL', {
-          sessionId: session.id,
-          mode: session.mode,
-          status: session.status,
-        });
-      }
+      logCheckoutEvent('missing_checkout_url', {
+        sessionId: session.id,
+        stripeRequestId,
+        mode: session.mode,
+        status: session.status,
+      });
       return applySupabaseCookies(
         NextResponse.json(
-          { error: 'Stripe checkout URL was not returned.', details: { sessionId: session.id } },
+          {
+            error: 'Stripe checkout URL was not returned.',
+            error_code: 'missing_checkout_url',
+            details: { sessionId: session.id },
+          },
           { status: 502 },
         ),
         response,
       );
     }
 
-    if (isDev) {
-       
-      console.debug('[billing:create-checkout-session] created', {
-        sessionId: session.id,
-        hasUrl: Boolean(checkoutUrl),
-      });
-    }
+    logCheckoutEvent('created', {
+      sessionId: session.id,
+      stripeRequestId,
+      hasUrl: Boolean(checkoutUrl),
+    });
 
     return applySupabaseCookies(
-      NextResponse.json({ checkoutUrl }),
+      NextResponse.json({ checkoutUrl, sessionId: session.id }),
       response,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (isDev) {
-       
-      console.error('[billing:create-checkout-session] failed', {
-        message,
-      });
-    }
+    const stripeLike = error as {
+      type?: string;
+      code?: string;
+      requestId?: string;
+      raw?: { requestId?: string; type?: string };
+      statusCode?: number;
+    };
+    const stripeRequestId = stripeLike.requestId ?? stripeLike.raw?.requestId ?? null;
+    logCheckoutEvent('failed', {
+      message,
+      stripeType: stripeLike.type ?? stripeLike.raw?.type ?? null,
+      stripeCode: stripeLike.code ?? null,
+      stripeStatusCode: stripeLike.statusCode ?? null,
+      stripeRequestId,
+    });
+
     return applySupabaseCookies(
       NextResponse.json(
         {
           error: message || 'Unable to create checkout session.',
-          details: isDev ? { flow, organizationId: effectiveOrganizationId, intentId: effectiveIntentId } : undefined,
+          error_code: 'checkout_session_create_failed',
         },
         { status: 500 },
       ),
