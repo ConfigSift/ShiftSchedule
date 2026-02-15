@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { EmbeddedCheckout, EmbeddedCheckoutProvider } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
+import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
   ArrowRight,
@@ -2136,6 +2137,7 @@ function SubscriptionStepView({
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
   const showModal = showCheckoutModal || paymentPanelOpen || checkoutFinalizing;
   const paymentProcessing = checkoutFinalizing || (paymentReceived && !subscriptionActive);
+  const canUsePortal = typeof document !== 'undefined';
   const stripeUnavailable = !STRIPE_PUBLISHABLE_KEY || !stripePromise;
   const canRenderEmbeddedCheckout = Boolean(!stripeUnavailable && paymentClientSecret);
   const canUseRedirectFallback = Boolean(
@@ -2145,6 +2147,9 @@ function SubscriptionStepView({
     && checkoutLoading === null
     && !paymentProcessing,
   );
+  const modalBodyClassName = canRenderEmbeddedCheckout
+    ? 'mt-3 overflow-visible pr-1'
+    : 'mt-3 max-h-[72vh] overflow-y-auto pr-1';
 
   const openCheckoutModal = useCallback((planId: PlanId) => {
     onSelectPlan(planId);
@@ -2310,8 +2315,8 @@ function SubscriptionStepView({
         </>
       )}
 
-      {showModal && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center px-4">
+      {showModal && canUsePortal && createPortal(
+        <div className="fixed inset-0 z-[220] flex items-center justify-center px-4">
           <button
             type="button"
             aria-label="Close secure checkout dialog"
@@ -2324,7 +2329,7 @@ function SubscriptionStepView({
             aria-modal="true"
             aria-labelledby="secure-checkout-title"
             aria-busy={paymentProcessing}
-            className="relative z-10 w-full max-w-md rounded-2xl border border-theme-primary bg-theme-secondary p-5 shadow-2xl"
+            className="relative z-10 w-full max-w-[860px] rounded-2xl border border-theme-primary bg-theme-secondary p-5 shadow-2xl max-h-[92vh]"
           >
             <h3 id="secure-checkout-title" className="text-lg font-semibold text-theme-primary">
               {paymentProcessing ? 'Processing payment...' : 'Secure checkout'}
@@ -2334,6 +2339,7 @@ function SubscriptionStepView({
                 <p className="text-xs text-red-400">{error}</p>
               </div>
             )}
+            <div className={modalBodyClassName}>
             {paymentProcessing ? (
               <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
                 <div className="inline-flex items-center gap-2 text-sm font-medium text-amber-300">
@@ -2413,16 +2419,18 @@ function SubscriptionStepView({
             ) : (
               <>
                 <div className="mt-3 rounded-lg border border-theme-primary bg-theme-tertiary/30 px-3 py-2 text-xs text-theme-secondary">
-                  {selectedPlan ? `${selectedPlan === 'annual' ? 'Annual' : 'Monthly'} plan` : 'Selected plan'} · {selectedCurrency}
+                  {selectedPlan ? `${selectedPlan === 'annual' ? 'Annual' : 'Monthly'} plan` : 'Selected plan'} &middot; {selectedCurrency}
                 </div>
-                <div className="mt-4 max-h-[65vh] overflow-y-auto rounded-xl border border-theme-primary bg-theme-tertiary/20 p-2">
+                <div className="mt-4 w-full rounded-xl border border-theme-primary bg-theme-tertiary/20 p-2">
+                  {/* Stripe embedded checkout requires popups/overlays for some payment methods; avoid overflow clipping. */}
                   <EmbeddedCheckoutProvider
                     stripe={stripePromise}
                     options={{
                       clientSecret: paymentClientSecret as string,
                     }}
                   >
-                    <EmbeddedCheckout />
+                    <EmbeddedCheckoutMountLogger />
+                    <EmbeddedCheckout className="w-full" />
                   </EmbeddedCheckoutProvider>
                 </div>
                 <div className="mt-4 flex items-center justify-between gap-2">
@@ -2440,11 +2448,26 @@ function SubscriptionStepView({
                 </div>
               </>
             )}
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
+}
+
+function EmbeddedCheckoutMountLogger() {
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    console.info('[setup:embedded-checkout] mounted');
+    console.info('[setup:embedded-checkout] if a payment popup or overlay is blocked, check browser popup settings.');
+    return () => {
+      console.info('[setup:embedded-checkout] unmounted');
+    };
+  }, []);
+
+  return null;
 }
 
 type PlanCardProps = {
@@ -2535,6 +2558,8 @@ function PlanCard({
     </div>
   );
 }
+
+
 
 
 
