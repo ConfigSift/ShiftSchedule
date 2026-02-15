@@ -6,7 +6,14 @@ import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { AddShiftModal } from '../AddShiftModal';
-import { formatDateLong, formatHour, formatShiftDuration, getWeekDates, shiftsOverlap } from '../../utils/timeUtils';
+import {
+  formatDateLong,
+  formatHour,
+  formatShiftDuration,
+  getWeekWindow,
+  normalizeWeekStartsOn,
+  shiftsOverlap,
+} from '../../utils/timeUtils';
 
 const toLocalDateString = (date: Date): string => {
   const year = date.getFullYear();
@@ -45,7 +52,6 @@ export function EmployeeDashboard() {
     getShiftsForRestaurant,
     getEmployeesForRestaurant,
     openModal,
-    lastAppliedWorkingTodayKey,
     scheduleViewSettings,
   } = useScheduleStore();
 
@@ -59,6 +65,7 @@ export function EmployeeDashboard() {
   const [activeShiftIndex, setActiveShiftIndex] = useState(0);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastSelectedDateRef = useRef<string | null>(null);
+  const initialLoadKeyRef = useRef<string | null>(null);
 
   const activeRestaurant = useMemo(
     () => accessibleRestaurants.find((r) => r.id === activeRestaurantId) ?? null,
@@ -73,37 +80,29 @@ export function EmployeeDashboard() {
     () => (activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : []),
     [activeRestaurantId, getShiftsForRestaurant],
   );
-  const loadKeyRestaurantId = useMemo(
-    () => (lastAppliedWorkingTodayKey ? lastAppliedWorkingTodayKey.split(':')[0] : null),
-    [lastAppliedWorkingTodayKey]
-  );
-  const hasRestaurantData = useMemo(() => {
-    if (!activeRestaurantId) return false;
-    if (loadKeyRestaurantId === activeRestaurantId) return true;
-    return restaurantShifts.some((shift) => shift.restaurantId === activeRestaurantId);
-  }, [
-    activeRestaurantId,
-    loadKeyRestaurantId,
-    restaurantShifts,
-  ]);
-  const shouldLoad = Boolean(activeRestaurantId && !hasRestaurantData);
+  const employeeId = currentUser?.id ?? '';
+  const loadReady = Boolean(isInitialized && activeRestaurantId && employeeId);
 
   useEffect(() => {
     let isMounted = true;
-    if (!activeRestaurantId) {
+    if (!loadReady || !activeRestaurantId || !employeeId) {
       const timer = setTimeout(() => setIsLoading(false), 0);
       return () => {
         clearTimeout(timer);
         isMounted = false;
       };
     }
-    if (!shouldLoad) {
+
+    const loadKey = `${activeRestaurantId}:${employeeId}`;
+    if (initialLoadKeyRef.current === loadKey) {
       const timer = setTimeout(() => setIsLoading(false), 0);
       return () => {
         clearTimeout(timer);
         isMounted = false;
       };
     }
+
+    initialLoadKeyRef.current = loadKey;
     const startTimer = setTimeout(() => setIsLoading(true), 0);
     loadRestaurantData(activeRestaurantId).finally(() => {
       if (isMounted) setIsLoading(false);
@@ -112,7 +111,7 @@ export function EmployeeDashboard() {
       clearTimeout(startTimer);
       isMounted = false;
     };
-  }, [activeRestaurantId, loadRestaurantData, shouldLoad]);
+  }, [activeRestaurantId, employeeId, loadReady, loadRestaurantData]);
 
   useEffect(() => {
     const timer = setTimeout(() => setMounted(true), 0);
@@ -120,7 +119,7 @@ export function EmployeeDashboard() {
   }, []);
 
   const isReady = Boolean(isInitialized && currentUser && activeRestaurantId && !isLoading);
-  const currentUserId = currentUser?.id ?? '';
+  const currentUserId = employeeId;
 
   const myShifts = restaurantShifts
     .filter((shift) => shift.employeeId === currentUserId && !shift.isBlocked)
@@ -137,10 +136,12 @@ export function EmployeeDashboard() {
   const today = new Date();
   const todayString = toLocalDateString(today);
   const selectedDateString = toLocalDateString(selectedDate);
-  const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
-  const weekDates = getWeekDates(selectedDate, weekStartDay);
-  const weekStart = toLocalDateString(weekDates[0]);
-  const weekEnd = toLocalDateString(weekDates[6]);
+  const weekStartsOn = normalizeWeekStartsOn(scheduleViewSettings?.weekStartDay ?? 'monday');
+  const weekWindow = useMemo(
+    () => getWeekWindow(selectedDate, weekStartsOn),
+    [selectedDate, weekStartsOn]
+  );
+  const weekDates = weekWindow.days;
 
   const selectedDayShifts = useMemo(
     () => myShifts.filter((shift) => shift.date === selectedDateString),
@@ -183,7 +184,15 @@ export function EmployeeDashboard() {
     return () => clearTimeout(timer);
   }, [dayShiftsSorted, selectedDateString, isSelectedToday]);
 
-  const weekShifts = myShifts.filter((shift) => shift.date >= weekStart && shift.date <= weekEnd);
+  const weekShifts = useMemo(
+    () =>
+      myShifts.filter((shift) => {
+        const shiftDate = new Date(`${shift.date}T00:00:00`);
+        if (Number.isNaN(shiftDate.getTime())) return false;
+        return shiftDate >= weekWindow.weekStart && shiftDate < weekWindow.weekEndExclusive;
+      }),
+    [myShifts, weekWindow]
+  );
   const weekShiftCount = weekShifts.length;
   const weeklyTotalMinutes = useMemo(() => {
     const total = weekShifts.reduce((sum, shift) => {

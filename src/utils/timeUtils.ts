@@ -92,6 +92,41 @@ export function getWeekRange(baseDate: Date, weekStartDay: WeekStartDay = 'sunda
   return { start, end };
 }
 
+export function normalizeWeekStartsOn(value: unknown): 0 | 1 {
+  if (typeof value === 'number') {
+    return value === 0 ? 0 : 1;
+  }
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === '0' || normalized === 'sunday') return 0;
+  if (normalized === '1' || normalized === 'monday') return 1;
+  return 1;
+}
+
+export function getWeekWindow(anchorDate: Date, weekStartsOn: 0 | 1) {
+  const baseDate = new Date(anchorDate);
+  baseDate.setHours(0, 0, 0, 0);
+
+  const day = baseDate.getDay();
+  const diff = (day - weekStartsOn + 7) % 7;
+
+  const weekStart = new Date(baseDate);
+  weekStart.setDate(baseDate.getDate() - diff);
+  weekStart.setHours(0, 0, 0, 0);
+
+  const weekEndExclusive = new Date(weekStart);
+  weekEndExclusive.setDate(weekStart.getDate() + 7);
+  weekEndExclusive.setHours(0, 0, 0, 0);
+
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(weekStart);
+    date.setDate(weekStart.getDate() + index);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  });
+
+  return { weekStart, weekEndExclusive, days };
+}
+
 export function getWeekdayHeaders(weekStartDay: WeekStartDay = 'sunday') {
   const full = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const short = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
