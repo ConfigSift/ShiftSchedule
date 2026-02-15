@@ -63,9 +63,11 @@ export function EmployeeDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [activeShiftIndex, setActiveShiftIndex] = useState(0);
+  const [loadRetryNonce, setLoadRetryNonce] = useState(0);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastSelectedDateRef = useRef<string | null>(null);
   const initialLoadKeyRef = useRef<string | null>(null);
+  const loadAttemptsRef = useRef<Record<string, number>>({});
 
   const activeRestaurant = useMemo(
     () => accessibleRestaurants.find((r) => r.id === activeRestaurantId) ?? null,
@@ -85,10 +87,13 @@ export function EmployeeDashboard() {
 
   useEffect(() => {
     let isMounted = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
     if (!loadReady || !activeRestaurantId || !employeeId) {
       const timer = setTimeout(() => setIsLoading(false), 0);
       return () => {
         clearTimeout(timer);
+        if (retryTimer) clearTimeout(retryTimer);
         isMounted = false;
       };
     }
@@ -98,20 +103,49 @@ export function EmployeeDashboard() {
       const timer = setTimeout(() => setIsLoading(false), 0);
       return () => {
         clearTimeout(timer);
+        if (retryTimer) clearTimeout(retryTimer);
         isMounted = false;
       };
     }
 
-    initialLoadKeyRef.current = loadKey;
+    const attemptCount = loadAttemptsRef.current[loadKey] ?? 0;
+    if (attemptCount >= 3) {
+      const timer = setTimeout(() => setIsLoading(false), 0);
+      return () => {
+        clearTimeout(timer);
+        if (retryTimer) clearTimeout(retryTimer);
+        isMounted = false;
+      };
+    }
+
     const startTimer = setTimeout(() => setIsLoading(true), 0);
-    loadRestaurantData(activeRestaurantId).finally(() => {
-      if (isMounted) setIsLoading(false);
+    loadAttemptsRef.current[loadKey] = attemptCount + 1;
+
+    void loadRestaurantData(activeRestaurantId).then(() => {
+      if (!isMounted) return;
+
+      const state = useScheduleStore.getState();
+      const loadedEmployees = state.getEmployeesForRestaurant(activeRestaurantId);
+      if (loadedEmployees.length > 0) {
+        initialLoadKeyRef.current = loadKey;
+        loadAttemptsRef.current[loadKey] = 0;
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(false);
+      retryTimer = setTimeout(() => {
+        if (!isMounted) return;
+        setLoadRetryNonce((value) => value + 1);
+      }, 250);
     });
+
     return () => {
       clearTimeout(startTimer);
+      if (retryTimer) clearTimeout(retryTimer);
       isMounted = false;
     };
-  }, [activeRestaurantId, employeeId, loadReady, loadRestaurantData]);
+  }, [activeRestaurantId, employeeId, loadReady, loadRestaurantData, loadRetryNonce]);
 
   useEffect(() => {
     const timer = setTimeout(() => setMounted(true), 0);
