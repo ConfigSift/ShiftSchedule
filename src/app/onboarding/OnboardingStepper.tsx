@@ -2147,9 +2147,7 @@ function SubscriptionStepView({
     && checkoutLoading === null
     && !paymentProcessing,
   );
-  const modalBodyClassName = canRenderEmbeddedCheckout
-    ? 'mt-3 overflow-visible pr-1'
-    : 'mt-3 max-h-[72vh] overflow-y-auto pr-1';
+  const modalBodyClassName = 'mt-3 min-h-0 flex-1 overflow-y-auto pr-1';
 
   const openCheckoutModal = useCallback((planId: PlanId) => {
     onSelectPlan(planId);
@@ -2188,6 +2186,48 @@ function SubscriptionStepView({
       window.removeEventListener('keydown', preventEscapeClose, true);
     };
   }, [paymentProcessing, showModal]);
+
+  useEffect(() => {
+    if (!showModal) return;
+
+    const handleStripeMessage = (event: MessageEvent) => {
+      const origin = String(event.origin ?? '').toLowerCase();
+      const data = event.data;
+      const dataString = typeof data === 'string' ? data.toLowerCase() : '';
+      const dataHasStripeKey =
+        typeof data === 'object'
+        && data !== null
+        && Object.keys(data as Record<string, unknown>).some((key) => key.toLowerCase().includes('stripe'));
+
+      if (!origin.includes('stripe.com') && !dataString.includes('stripe') && !dataHasStripeKey) {
+        return;
+      }
+
+      console.info('[setup:embedded-checkout] stripe message', {
+        origin: event.origin,
+        dataType: typeof data,
+      });
+    };
+
+    type OpenArgs = [url?: string | URL, target?: string, features?: string];
+    const originalOpen = window.open.bind(window) as (...args: OpenArgs) => Window | null;
+
+    window.open = ((...args: OpenArgs) => {
+      const popup = originalOpen(...args);
+      if (popup === null) {
+        console.warn('[setup:embedded-checkout] window.open blocked', {
+          target: args[1] ?? null,
+        });
+      }
+      return popup;
+    }) as typeof window.open;
+
+    window.addEventListener('message', handleStripeMessage);
+    return () => {
+      window.removeEventListener('message', handleStripeMessage);
+      window.open = originalOpen as typeof window.open;
+    };
+  }, [showModal]);
 
   return (
     <div>
@@ -2329,7 +2369,7 @@ function SubscriptionStepView({
             aria-modal="true"
             aria-labelledby="secure-checkout-title"
             aria-busy={paymentProcessing}
-            className="relative z-10 w-full max-w-[860px] rounded-2xl border border-theme-primary bg-theme-secondary p-5 shadow-2xl max-h-[92vh]"
+            className="relative z-10 flex w-full max-w-md flex-col rounded-2xl border border-theme-primary bg-theme-secondary p-5 shadow-2xl max-h-[90vh]"
           >
             <h3 id="secure-checkout-title" className="text-lg font-semibold text-theme-primary">
               {paymentProcessing ? 'Processing payment...' : 'Secure checkout'}
