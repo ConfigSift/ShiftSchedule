@@ -17,14 +17,12 @@ export default function ReviewRequestsPage() {
     currentUser,
     isInitialized,
     activeRestaurantId,
-    activeRestaurantCode,
     accessibleRestaurants,
     init,
   } = useAuthStore();
   const [tab, setTab] = useState<ReviewTab>('time-off');
   const currentRole = getUserRole(currentUser?.role);
   const isManager = isManagerRole(currentRole);
-  const activeRestaurant = accessibleRestaurants.find((restaurant) => restaurant.id === activeRestaurantId);
   const [pendingCounts, setPendingCounts] = useState<
     Record<string, { timeOff: number; blockedDays: number; total: number }>
   >({});
@@ -34,6 +32,7 @@ export default function ReviewRequestsPage() {
   }, [init]);
 
   useEffect(() => {
+    const activeRestaurant = accessibleRestaurants.find((restaurant) => restaurant.id === activeRestaurantId);
     const effectiveRole = getUserRole(activeRestaurant?.role ?? currentUser?.role);
     const canFetch = isInitialized && Boolean(currentUser) && isManagerRole(effectiveRole);
     if (!canFetch) return;
@@ -50,7 +49,7 @@ export default function ReviewRequestsPage() {
     return () => {
       isActive = false;
     };
-  }, [isInitialized, currentUser, activeRestaurant, activeRestaurantId]);
+  }, [isInitialized, currentUser, accessibleRestaurants, activeRestaurantId]);
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -76,6 +75,7 @@ export default function ReviewRequestsPage() {
   }
 
   const activeTotalPending = activeRestaurantId ? pendingCounts[activeRestaurantId]?.total ?? 0 : 0;
+  const activeTab: ReviewTab = isManager ? tab : 'time-off';
   const otherPendingRestaurants = accessibleRestaurants.filter(
     (restaurant) => restaurant.id !== activeRestaurantId && (pendingCounts[restaurant.id]?.total ?? 0) > 0
   );
@@ -84,34 +84,12 @@ export default function ReviewRequestsPage() {
     <div className="min-h-screen bg-theme-primary p-6">
       <div className="max-w-6xl mx-auto space-y-6">
         <header className="space-y-2">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="text-2xl font-bold text-theme-primary">Review Requests</h1>
-              <p className="text-theme-tertiary mt-1">
-                {isManager
-                  ? 'Approve or deny time off and blocked day requests.'
-                  : 'Track your submitted time off and blocked day requests.'}
-              </p>
-            </div>
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-theme-tertiary text-[11px] text-theme-secondary border border-theme-primary">
-              <span className="text-theme-muted">For:</span>
-              {activeRestaurant ? (
-                <span className="text-theme-primary">
-                  {activeRestaurant.name} ({activeRestaurant.restaurantCode || activeRestaurantCode})
-                </span>
-              ) : (
-                <>
-                  <span className="text-theme-primary">(none selected)</span>
-                  <Link
-                    href="/restaurants"
-                    className="text-amber-400 hover:text-amber-300 transition-colors"
-                  >
-                    Choose
-                  </Link>
-                </>
-              )}
-            </div>
-          </div>
+          <h1 className="text-2xl font-bold text-theme-primary">Review Requests</h1>
+          <p className="text-theme-tertiary mt-1">
+            {isManager
+              ? 'Approve or deny time off and blocked day requests.'
+              : 'Track your submitted time off requests.'}
+          </p>
         </header>
 
         <div className="flex flex-wrap gap-2">
@@ -119,24 +97,26 @@ export default function ReviewRequestsPage() {
             type="button"
             onClick={() => setTab('time-off')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-              tab === 'time-off'
+              activeTab === 'time-off'
                 ? 'bg-amber-500 text-zinc-900'
                 : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
             }`}
           >
             Time Off Requests
           </button>
-          <button
-            type="button"
-            onClick={() => setTab('blocked-days')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-              tab === 'blocked-days'
-                ? 'bg-amber-500 text-zinc-900'
-                : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-            }`}
-          >
-            Blocked Day Requests
-          </button>
+          {isManager && (
+            <button
+              type="button"
+              onClick={() => setTab('blocked-days')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                activeTab === 'blocked-days'
+                  ? 'bg-amber-500 text-zinc-900'
+                  : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
+              }`}
+            >
+              Blocked Day Requests
+            </button>
+          )}
         </div>
 
         {activeTotalPending === 0 && otherPendingRestaurants.length > 0 && (
@@ -145,13 +125,7 @@ export default function ReviewRequestsPage() {
               <div className="space-y-1">
                 <p className="text-theme-primary font-semibold">No pending requests for this restaurant.</p>
                 <p className="text-theme-tertiary">
-                  Pending in other restaurants:{' '}
-                  {otherPendingRestaurants
-                    .map((restaurant) => {
-                      const total = pendingCounts[restaurant.id]?.total ?? 0;
-                      return `${restaurant.name} (${total})`;
-                    })
-                    .join(', ')}
+                  Pending requests exist in other restaurants.
                 </p>
               </div>
               <Link
@@ -164,7 +138,7 @@ export default function ReviewRequestsPage() {
           </div>
         )}
 
-        {tab === 'time-off' ? (
+        {activeTab === 'time-off' ? (
           <TimeOffRequestsPanel allowEmployee showHeader={false} />
         ) : (
           <BlockedDayRequestsPanel allowEmployee showHeader={false} />

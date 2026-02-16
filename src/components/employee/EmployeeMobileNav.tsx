@@ -25,7 +25,7 @@ export function EmployeeMobileNav() {
   return (
     <nav
       id="employee-mobile-nav"
-      className="md:hidden fixed bottom-0 left-0 right-0 bg-theme-secondary border-t border-theme-primary px-4 pt-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] flex items-center justify-between"
+      className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-theme-secondary border-t border-theme-primary px-4 pt-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] flex items-center justify-between"
     >
       {navItems.map((item) => {
         const isScheduleRoute = item.href === '/' && (pathname === '/' || pathname === '/dashboard');

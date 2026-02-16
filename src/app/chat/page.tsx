@@ -84,6 +84,7 @@ export default function ChatPage() {
   const [error, setError] = useState('');
   const role = getUserRole(currentUser?.role);
   const isManager = isManagerRole(role);
+  const isEmployee = role === 'EMPLOYEE';
   const canManageRooms = role === 'ADMIN' || isManager;
   const isDev = process.env.NODE_ENV !== 'production';
   const DEBUG_CHAT_LAYOUT = false;
@@ -877,7 +878,10 @@ export default function ChatPage() {
             ref={messageListRef}
             onScroll={handleMessageScroll}
             className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 space-y-4"
-            style={{ WebkitOverflowScrolling: 'touch' }}
+            style={{
+              WebkitOverflowScrolling: 'touch',
+              paddingBottom: isEmployee ? 'calc(var(--employee-nav-h, 0px) + 1rem)' : undefined,
+            }}
             data-chat-debug="messages-list"
           >
             {error && (
@@ -950,7 +954,10 @@ export default function ChatPage() {
           <form
             onSubmit={handleSend}
             className="flex-none sticky bottom-0 z-20 bg-theme-secondary/95 backdrop-blur border-t border-white/5 px-4 pt-4 pb-4"
-            style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+            style={{
+              bottom: isEmployee ? 'var(--employee-nav-h, 0px)' : '0px',
+              paddingBottom: 'env(safe-area-inset-bottom)',
+            }}
             ref={composerRowRef}
             data-chat-debug="composer-row"
           >

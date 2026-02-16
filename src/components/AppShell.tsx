@@ -32,7 +32,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
     pathname.startsWith('/auth') ||
     pathname.startsWith('/subscribe') ||
     pathname.startsWith('/demo');
-  const isChatPage = pathname === '/chat';
+  const isChatPage = pathname === '/chat' || pathname.startsWith('/chat/');
   const isDashboardPage = pathname === '/dashboard';
   const isRestaurantsPage = pathname === '/restaurants';
   const isEmployeeNavPage =
@@ -40,7 +40,8 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
     pathname === '/shift-exchange' ||
     pathname === '/review-requests' ||
     pathname === '/profile' ||
-    pathname === '/chat';
+    pathname === '/chat' ||
+    pathname.startsWith('/chat/');
 
   const { currentUser, activeRestaurantId, refreshProfile } = useAuthStore();
   const { showToast } = useScheduleStore();

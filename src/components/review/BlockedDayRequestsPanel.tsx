@@ -14,6 +14,13 @@ type BlockedDayRequestsPanelProps = {
   onDelete?: (requestId: string) => void;
 };
 
+const STATUS_PRIORITY: Record<string, number> = {
+  PENDING: 0,
+  APPROVED: 1,
+  DENIED: 2,
+  CANCELLED: 2,
+};
+
 export function BlockedDayRequestsPanel({
   allowEmployee = false,
   showHeader = true,
@@ -27,9 +34,14 @@ export function BlockedDayRequestsPanel({
     getEmployeesForRestaurant,
     showToast,
   } = useScheduleStore();
-  const { currentUser, isInitialized, activeRestaurantId, activeRestaurantCode, accessibleRestaurants, init } = useAuthStore();
+  const { currentUser, isInitialized, activeRestaurantId, accessibleRestaurants, init } = useAuthStore();
 
-  const [statusFilter, setStatusFilter] = useState<'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED'>('PENDING');
+  const [requestTab, setRequestTab] = useState<'PENDING' | 'REQUESTS'>('PENDING');
+  const [requestStatusFilter, setRequestStatusFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'DENIED'>('ALL');
+  const [sortKey, setSortKey] = useState<
+    'employee' | 'dateRange' | 'status' | 'submitted' | 'reason' | 'managerNote' | null
+  >(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [reviewingIds, setReviewingIds] = useState<Set<string>>(new Set());
 
@@ -39,9 +51,6 @@ export function BlockedDayRequestsPanel({
   const currentRole = getUserRole(matchedRestaurant?.role ?? currentUser?.role);
   const isManager = isManagerRole(currentRole);
   const canView = isManager || allowEmployee;
-  const restaurantLabel = matchedRestaurant
-    ? `${matchedRestaurant.name} (${matchedRestaurant.restaurantCode || activeRestaurantCode || ''})`
-    : '(none selected)';
 
   useEffect(() => {
     init();
@@ -55,7 +64,7 @@ export function BlockedDayRequestsPanel({
 
   const employees = getEmployeesForRestaurant(activeRestaurantId);
 
-  const filteredRequests = useMemo(() => {
+  const scopedRequests = useMemo(() => {
     let scoped: BlockedDayRequest[] = blockedDayRequests;
     if (!isManager && currentUser) {
       scoped = scoped.filter(
@@ -63,9 +72,90 @@ export function BlockedDayRequestsPanel({
           request.requestedByAuthUserId === currentUser.authUserId || request.userId === currentUser.id
       );
     }
-    const filtered = scoped.filter((req) => req.status === statusFilter);
-    return filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [blockedDayRequests, statusFilter, currentUser, isManager]);
+    return scoped.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [blockedDayRequests, currentUser, isManager]);
+
+  const pendingRequests = useMemo(
+    () => scopedRequests.filter((request) => String(request.status).toUpperCase() === 'PENDING'),
+    [scopedRequests]
+  );
+  const totalRequestsCount = scopedRequests.length;
+
+  const filteredRequests = useMemo(() => {
+    if (requestTab === 'PENDING') {
+      return pendingRequests;
+    }
+    if (requestStatusFilter === 'ALL') {
+      return scopedRequests;
+    }
+    return scopedRequests.filter((request) => {
+      const status = String(request.status).toUpperCase();
+      if (requestStatusFilter === 'PENDING') return status === 'PENDING';
+      if (requestStatusFilter === 'APPROVED') return status === 'APPROVED';
+      if (requestStatusFilter === 'DENIED') return status === 'DENIED' || status === 'CANCELLED';
+      return true;
+    });
+  }, [pendingRequests, requestStatusFilter, requestTab, scopedRequests]);
+
+  const compareText = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+
+  const handleSortChange = (
+    key: 'employee' | 'dateRange' | 'status' | 'submitted' | 'reason' | 'managerNote'
+  ) => {
+    setSortKey((prevKey) => {
+      if (prevKey === key) {
+        setSortDir((prevDir) => (prevDir === 'asc' ? 'desc' : 'asc'));
+        return prevKey;
+      }
+      setSortDir('asc');
+      return key;
+    });
+  };
+
+  const sortedRequests = useMemo(() => {
+    if (!sortKey) return filteredRequests;
+    const direction = sortDir === 'asc' ? 1 : -1;
+    return [...filteredRequests].sort((a, b) => {
+      const employeeA = a.userId ? employees.find((emp) => emp.id === a.userId) : null;
+      const employeeB = b.userId ? employees.find((emp) => emp.id === b.userId) : null;
+      const aStatus = String(a.status).toUpperCase();
+      const bStatus = String(b.status).toUpperCase();
+      let result = 0;
+
+      if (sortKey === 'employee') {
+        const aName = employeeA?.name || (a.scope === 'ORG_BLACKOUT' ? 'All Staff' : 'Unknown');
+        const bName = employeeB?.name || (b.scope === 'ORG_BLACKOUT' ? 'All Staff' : 'Unknown');
+        result = compareText(aName, bName);
+      } else if (sortKey === 'dateRange') {
+        result = compareText(a.startDate, b.startDate);
+        if (result === 0) {
+          result = compareText(a.endDate, b.endDate);
+        }
+      } else if (sortKey === 'status') {
+        result = (STATUS_PRIORITY[aStatus] ?? 99) - (STATUS_PRIORITY[bStatus] ?? 99);
+      } else if (sortKey === 'submitted') {
+        const aTime = new Date(a.createdAt).getTime();
+        const bTime = new Date(b.createdAt).getTime();
+        result = aTime - bTime;
+      } else if (sortKey === 'reason') {
+        result = compareText(String(a.reason ?? '').toLowerCase(), String(b.reason ?? '').toLowerCase());
+      } else if (sortKey === 'managerNote') {
+        result = compareText(String(a.managerNote ?? '').toLowerCase(), String(b.managerNote ?? '').toLowerCase());
+      }
+
+      if (result === 0) {
+        result = compareText(a.id, b.id);
+      }
+      return result * direction;
+    });
+  }, [employees, filteredRequests, sortDir, sortKey]);
+
+  const renderSortIndicator = (
+    key: 'employee' | 'dateRange' | 'status' | 'submitted' | 'reason' | 'managerNote'
+  ) => {
+    if (sortKey !== key) return null;
+    return <span className="text-[10px]">{sortDir === 'asc' ? '▲' : '▼'}</span>;
+  };
 
   const handleDecision = async (id: string, status: 'APPROVED' | 'DENIED') => {
     if (reviewingIds.has(id)) return;
@@ -108,26 +198,48 @@ export function BlockedDayRequestsPanel({
         </header>
       )}
 
-      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-theme-tertiary text-[11px] text-theme-secondary border border-theme-primary">
-        <span className="text-theme-muted">Restaurant:</span>
-        <span className="text-theme-primary">{restaurantLabel}</span>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {(['PENDING', 'APPROVED', 'DENIED', 'CANCELLED'] as const).map((status) => (
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
           <button
-            key={status}
             type="button"
-            onClick={() => setStatusFilter(status)}
+            onClick={() => setRequestTab('PENDING')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-              statusFilter === status
+              requestTab === 'PENDING'
                 ? 'bg-amber-500 text-zinc-900'
                 : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
             }`}
           >
-            {status}
+            Pending ({pendingRequests.length})
           </button>
-        ))}
+          <button
+            type="button"
+            onClick={() => setRequestTab('REQUESTS')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              requestTab === 'REQUESTS'
+                ? 'bg-amber-500 text-zinc-900'
+                : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
+            }`}
+          >
+            Requests ({totalRequestsCount})
+          </button>
+        </div>
+        {requestTab === 'REQUESTS' && (
+          <label className="inline-flex items-center gap-2 text-xs text-theme-secondary">
+            <span className="text-theme-muted">Status</span>
+            <select
+              value={requestStatusFilter}
+              onChange={(event) =>
+                setRequestStatusFilter(event.target.value as 'ALL' | 'PENDING' | 'APPROVED' | 'DENIED')
+              }
+              className="px-2 py-1.5 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary"
+            >
+              <option value="ALL">All</option>
+              <option value="PENDING">Pending</option>
+              <option value="APPROVED">Approved</option>
+              <option value="DENIED">Denied</option>
+            </select>
+          </label>
+        )}
       </div>
 
       <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-4 overflow-x-auto">
@@ -138,16 +250,41 @@ export function BlockedDayRequestsPanel({
             <thead className="text-xs uppercase text-theme-muted border-b border-theme-primary">
               <tr>
                 <th className="py-2 px-3">Scope</th>
-                <th className="py-2 px-3">Employee</th>
-                <th className="py-2 px-3">Date Range</th>
-                <th className="py-2 px-3">Reason</th>
-                <th className="py-2 px-3">Status</th>
-                <th className="py-2 px-3">Manager Note</th>
+                <th className="py-2 px-3">
+                  <button type="button" onClick={() => handleSortChange('employee')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
+                    Employee {renderSortIndicator('employee')}
+                  </button>
+                </th>
+                <th className="py-2 px-3">
+                  <button type="button" onClick={() => handleSortChange('dateRange')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
+                    Date Range {renderSortIndicator('dateRange')}
+                  </button>
+                </th>
+                <th className="py-2 px-3">
+                  <button type="button" onClick={() => handleSortChange('reason')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
+                    Reason {renderSortIndicator('reason')}
+                  </button>
+                </th>
+                <th className="py-2 px-3">
+                  <button type="button" onClick={() => handleSortChange('status')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
+                    Status {renderSortIndicator('status')}
+                  </button>
+                </th>
+                <th className="py-2 px-3">
+                  <button type="button" onClick={() => handleSortChange('submitted')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
+                    Submitted {renderSortIndicator('submitted')}
+                  </button>
+                </th>
+                <th className="py-2 px-3">
+                  <button type="button" onClick={() => handleSortChange('managerNote')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
+                    Manager Note {renderSortIndicator('managerNote')}
+                  </button>
+                </th>
                 <th className="py-2 px-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-theme-primary">
-              {filteredRequests.map((request) => {
+              {sortedRequests.map((request) => {
                 const employee = request.userId
                   ? employees.find((emp) => emp.id === request.userId)
                   : null;
@@ -167,6 +304,9 @@ export function BlockedDayRequestsPanel({
                     <td className="py-3 px-3 text-xs text-theme-tertiary">{request.reason}</td>
                     <td className="py-3 px-3">
                       <span className="text-xs font-semibold">{request.status}</span>
+                    </td>
+                    <td className="py-3 px-3 text-theme-muted">
+                      {formatDateLong(request.createdAt.split('T')[0])}
                     </td>
                     <td className="py-3 px-3">
                       {isManager && request.status === 'PENDING' ? (
