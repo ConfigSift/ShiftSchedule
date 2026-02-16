@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Trash2, Edit3, XCircle } from 'lucide-react';
+import { Plus, Search, Trash2, Edit3, XCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabase/client';
 import { useAuthStore } from '../../store/authStore';
 import { useScheduleStore } from '../../store/scheduleStore';
@@ -97,7 +97,7 @@ export default function StaffPage() {
   const [invites, setInvites] = useState<PendingInvite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [formState, setFormState] = useState(EMPTY_FORM);
   const [employeeNumberTouched, setEmployeeNumberTouched] = useState(false);
@@ -929,7 +929,7 @@ export default function StaffPage() {
 
   // Must be called before any early returns
   const filteredUsers = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = searchQuery.trim().toLowerCase();
     const staffEmails = new Set(
       users
         .map((user) => String(user.email ?? '').trim().toLowerCase())
@@ -947,10 +947,12 @@ export default function StaffPage() {
       }
       if (row.fullName.toLowerCase().includes(term)) return true;
       if (row.email.toLowerCase().includes(term)) return true;
+      if (String(row.employeeNumber ?? '').padStart(4, '0').includes(term)) return true;
+      if (String(row.phone ?? '').toLowerCase().includes(term)) return true;
       const parts = row.fullName.toLowerCase().split(/\s+/);
       return parts.some((part) => part.includes(term));
     });
-  }, [users, invites, searchTerm]);
+  }, [users, invites, searchQuery]);
 
   const authExists = emailCheck.existsInAuth;
   const inviteOnly = authExists && emailCheck.hasMembershipInOtherOrg;
@@ -967,21 +969,44 @@ export default function StaffPage() {
   return (
     <div className="min-h-screen bg-theme-primary p-6">
       <div className="max-w-4xl mx-auto space-y-6">
-        <header className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-theme-primary">Staff</h1>
-            <p className="text-theme-tertiary mt-1">Manage team members for this restaurant.</p>
+        <div className="overflow-hidden rounded-3xl border border-gray-200 bg-white dark:border-white/10 dark:bg-zinc-900">
+        <header className="border-b border-theme-primary bg-theme-secondary">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between px-6 py-4">
+            <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+              <h1 className="text-base font-bold text-theme-primary">Staff</h1>
+              <div className="relative w-full sm:max-w-sm">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-theme-muted" />
+                <input
+                  type="text"
+                  placeholder="Search staff..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-9 w-full rounded-full border border-theme-primary bg-theme-tertiary py-2 pl-9 pr-9 text-xs text-theme-primary placeholder:text-theme-muted focus:outline-none focus:ring-2 focus:ring-amber-500/60"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-theme-muted hover:text-theme-primary"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-start lg:justify-end gap-2">
+              {isManager && (
+                <button
+                  type="button"
+                  onClick={openAddModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500 text-zinc-900 hover:bg-emerald-400 transition-colors text-xs font-semibold"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add Staff
+                </button>
+              )}
+            </div>
           </div>
-          {isManager && (
-            <button
-              type="button"
-              onClick={openAddModal}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              Add User
-            </button>
-          )}
         </header>
 
         {authBanner && (
@@ -1019,64 +1044,26 @@ export default function StaffPage() {
           </div>
         )}
 
-        <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-4 space-y-3">
+        <div className="bg-white dark:bg-zinc-900 px-6 pb-6 pt-4">
           {loading ? (
             <p className="text-theme-secondary">Loading team...</p>
           ) : filteredUsers.length === 0 ? (
-            <>
-              <div className="flex items-center gap-3 text-sm">
-                <input
-                  type="text"
-                  placeholder="Search staff..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="flex-1 bg-theme-primary/40 border border-theme-primary rounded-lg px-3 py-2 text-sm text-theme-primary placeholder:text-theme-muted focus:outline-none focus:ring-2 focus:ring-amber-500/60"
-                />
-                {searchTerm && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchTerm('')}
-                    className="text-xs text-theme-muted hover:text-theme-primary"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-              <p className="text-theme-muted">No users found.</p>
-            </>
+            <p className="text-theme-muted">No users found.</p>
           ) : (
             <>
-              <div className="flex items-center gap-3 text-sm">
-                <input
-                  type="text"
-                  placeholder="Search staff..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="flex-1 bg-theme-primary/40 border border-theme-primary rounded-lg px-3 py-2 text-sm text-theme-primary placeholder:text-theme-muted focus:outline-none focus:ring-2 focus:ring-amber-500/60"
-                />
-                {searchTerm && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchTerm('')}
-                    className="text-xs text-theme-muted hover:text-theme-primary"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-              <div className="space-y-2 divide-y divide-theme-primary/30">
+              <div className="divide-y divide-gray-100 dark:divide-white/10">
                 {filteredUsers.map((row) => {
                   if (isInviteRow(row)) {
                     return (
                       <div
                         key={row.id}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3"
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-2.5"
                       >
-                        <div>
-                          <p className="text-theme-primary font-medium text-base leading-tight">Pending Employee</p>
-                          <p className="text-xs text-theme-muted">{row.email}</p>
-                          <div className="mt-2">
-                            <span className="inline-flex items-center rounded-full bg-amber-500/10 text-amber-400 px-2 py-0.5 text-xs font-semibold">
+                        <div className="min-w-0">
+                          <p className="text-theme-primary font-semibold text-sm leading-tight">Pending Employee</p>
+                          <p className="text-xs text-theme-muted truncate">{row.email}</p>
+                          <div className="mt-1.5">
+                            <span className="inline-flex items-center rounded-full bg-amber-500/10 text-amber-400 px-2 py-0.5 text-[11px] font-semibold">
                               Invitation Sent
                             </span>
                           </div>
@@ -1086,7 +1073,7 @@ export default function StaffPage() {
                             <button
                               type="button"
                               onClick={() => handleRevokeInvite(row)}
-                              className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
                             >
                               <XCircle className="w-3 h-3" />
                               Cancel Invite
@@ -1102,20 +1089,20 @@ export default function StaffPage() {
                   return (
                     <div
                       key={user.id}
-                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3"
+                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-2.5"
                     >
-                      <div>
-                        <p className="text-theme-primary font-medium text-base leading-tight">{user.fullName}</p>
-                        <p className="text-xs text-theme-muted">{user.email}</p>
+                      <div className="min-w-0">
+                        <p className="text-theme-primary font-semibold text-sm leading-tight">{user.fullName}</p>
+                        <p className="text-xs text-theme-muted truncate">{user.email}</p>
                         {user.employeeNumber !== null && user.employeeNumber !== undefined && (
                           <p className="text-xs text-theme-muted">
                             Employee #: {String(user.employeeNumber).padStart(4, '0')}
                           </p>
                         )}
                         <p className="text-xs text-theme-muted">{user.phone}</p>
-                        <p className="text-xs text-theme-muted mt-1">
+                        <p className="text-xs text-theme-muted mt-0.5">
                           {user.accountType}
-                          {user.jobs.length > 0 ? ` · ${user.jobs.join(', ')}` : ''}
+                          {user.jobs.length > 0 ? ` | ${user.jobs.join(', ')}` : ''}
                         </p>
                       </div>
                       {isManager && (
@@ -1124,7 +1111,7 @@ export default function StaffPage() {
                             type="button"
                             onClick={() => openProfile(user, 'edit')}
                             disabled={!canManageUser(user)}
-                            className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-theme-secondary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
                           >
                             <Edit3 className="w-3 h-3" />
                             Edit
@@ -1133,7 +1120,7 @@ export default function StaffPage() {
                             type="button"
                             onClick={() => openDeleteModal(user)}
                             disabled={!canManageUser(user) || user.authUserId === currentUser?.authUserId}
-                            className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
                           >
                             <Trash2 className="w-3 h-3" />
                             Delete
@@ -1142,7 +1129,7 @@ export default function StaffPage() {
                             <button
                               type="button"
                               onClick={() => openResetModal(user)}
-                              className="inline-flex items-center gap-1 px-3 py-1 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
                             >
                               Reset PIN
                             </button>
@@ -1156,6 +1143,7 @@ export default function StaffPage() {
             </>
           )}
         </div>
+        </div>
       </div>
 
       {modalOpen && (
@@ -1163,7 +1151,7 @@ export default function StaffPage() {
           <div className="absolute inset-0 bg-black/60" onClick={closeModal} />
           <div className="relative w-full max-w-lg bg-theme-secondary border border-theme-primary rounded-2xl p-6 max-h-[90vh] overflow-hidden flex flex-col">
             <h2 className="text-lg font-semibold text-theme-primary shrink-0">
-              Add User
+              Add Staff
             </h2>
             {modalError && (
               <div className="mt-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
@@ -1381,7 +1369,7 @@ export default function StaffPage() {
                 disabled={submitting}
                 className="px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors disabled:opacity-50"
               >
-                {submitting ? 'Saving...' : 'Create User'}
+                {submitting ? 'Saving...' : 'Create Staff'}
               </button>
             </div>
           </div>

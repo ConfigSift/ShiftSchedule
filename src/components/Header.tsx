@@ -21,7 +21,6 @@ import {
   Clock,
   ClipboardList,
   Menu,
-  Settings,
   X,
   MoreHorizontal,
   CreditCard,
@@ -323,14 +322,6 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
                 ) : isRestrictedHeader ? (
                   <>
                     <Link
-                      href="/setup"
-                      onClick={() => setMoreMenuOpen(false)}
-                      className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                    >
-                      <Settings className="w-4 h-4" />
-                      Setup
-                    </Link>
-                    <Link
                       href="/restaurants"
                       onClick={() => setMoreMenuOpen(false)}
                       className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
@@ -466,13 +457,6 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
                         >
                           <Clock className="w-4 h-4" />
                           Schedule Settings
-                        </Link>
-                        <Link
-                          href="/setup"
-                          className="flex items-center gap-3 px-4 py-2.5 text-sm text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                        >
-                          <Settings className="w-4 h-4" />
-                          Setup
                         </Link>
                         {currentRole === 'ADMIN' && (
                           <Link

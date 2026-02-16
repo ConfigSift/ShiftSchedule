@@ -83,39 +83,51 @@ export default function ReviewRequestsPage() {
   return (
     <div className="min-h-screen bg-theme-primary p-6">
       <div className="max-w-6xl mx-auto space-y-6">
-        <header className="space-y-2">
-          <h1 className="text-2xl font-bold text-theme-primary">Review Requests</h1>
-          <p className="text-theme-tertiary mt-1">
-            {isManager
-              ? 'Approve or deny time off and blocked day requests.'
-              : 'Track your submitted time off requests.'}
-          </p>
-        </header>
+        <div className="overflow-hidden rounded-2xl border border-theme-primary bg-theme-secondary">
+          <header className="bg-theme-secondary">
+            <div className="flex flex-col gap-3 px-5 py-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <h1 className="text-base font-bold text-theme-primary">Review Requests</h1>
+                <p className="text-xs text-theme-tertiary mt-1">
+                  {isManager
+                    ? 'Track and process time off and blocked day requests.'
+                    : 'Track your submitted time off and blocked day requests.'}
+                </p>
+              </div>
 
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setTab('time-off')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-              activeTab === 'time-off'
-                ? 'bg-amber-500 text-zinc-900'
-                : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-            }`}
-          >
-            Time Off Requests
-          </button>
-          {isManager && (
-            <button
-              type="button"
-              onClick={() => setTab('blocked-days')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                activeTab === 'blocked-days'
-                  ? 'bg-amber-500 text-zinc-900'
-                  : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-              }`}
-            >
-              Blocked Day Requests
-            </button>
+              <div className="inline-flex items-center gap-1 rounded-full border border-theme-primary bg-theme-tertiary p-1 overflow-x-auto">
+                <button
+                  type="button"
+                  onClick={() => setTab('time-off')}
+                  className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap ${
+                    activeTab === 'time-off'
+                      ? 'bg-white text-zinc-900 shadow-sm dark:bg-white/10 dark:text-white dark:shadow-none'
+                      : 'text-theme-secondary hover:text-theme-primary'
+                  }`}
+                >
+                  Time Off Requests
+                </button>
+                {isManager && (
+                  <button
+                    type="button"
+                    onClick={() => setTab('blocked-days')}
+                    className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap ${
+                      activeTab === 'blocked-days'
+                        ? 'bg-white text-zinc-900 shadow-sm dark:bg-white/10 dark:text-white dark:shadow-none'
+                        : 'text-theme-secondary hover:text-theme-primary'
+                    }`}
+                  >
+                    Blocked Day Requests
+                  </button>
+                )}
+              </div>
+            </div>
+          </header>
+
+          {activeTab === 'time-off' ? (
+            <TimeOffRequestsPanel allowEmployee showHeader={false} />
+          ) : (
+            <BlockedDayRequestsPanel allowEmployee showHeader={false} />
           )}
         </div>
 
@@ -136,12 +148,6 @@ export default function ReviewRequestsPage() {
               </Link>
             </div>
           </div>
-        )}
-
-        {activeTab === 'time-off' ? (
-          <TimeOffRequestsPanel allowEmployee showHeader={false} />
-        ) : (
-          <BlockedDayRequestsPanel allowEmployee showHeader={false} />
         )}
       </div>
     </div>

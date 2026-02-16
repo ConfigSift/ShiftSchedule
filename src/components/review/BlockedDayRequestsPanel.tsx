@@ -14,11 +14,30 @@ type BlockedDayRequestsPanelProps = {
   onDelete?: (requestId: string) => void;
 };
 
-const STATUS_PRIORITY: Record<string, number> = {
-  PENDING: 0,
-  APPROVED: 1,
-  DENIED: 2,
-  CANCELLED: 2,
+const parseTimestamp = (value: unknown): number => {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const text = String(value ?? '').trim();
+  if (!text) return 0;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const getRequestTimestamp = (request: Record<string, unknown>): number => {
+  const direct =
+    parseTimestamp(request.submittedAt) ||
+    parseTimestamp(request.createdAt) ||
+    parseTimestamp(request.requestedAt) ||
+    parseTimestamp(request.updatedAt);
+  if (direct) return direct;
+
+  const createdDate = String(request.createdDate ?? '').trim();
+  const createdTime = String(request.createdTime ?? '').trim();
+  if (createdDate) {
+    const combined = parseTimestamp(`${createdDate}${createdTime ? `T${createdTime}` : ''}`);
+    if (combined) return combined;
+  }
+  return 0;
 };
 
 export function BlockedDayRequestsPanel({
@@ -38,10 +57,7 @@ export function BlockedDayRequestsPanel({
 
   const [requestTab, setRequestTab] = useState<'PENDING' | 'REQUESTS'>('PENDING');
   const [requestStatusFilter, setRequestStatusFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'DENIED'>('ALL');
-  const [sortKey, setSortKey] = useState<
-    'employee' | 'dateRange' | 'status' | 'submitted' | 'reason' | 'managerNote' | null
-  >(null);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [employeeQuery, setEmployeeQuery] = useState('');
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [reviewingIds, setReviewingIds] = useState<Set<string>>(new Set());
 
@@ -51,6 +67,7 @@ export function BlockedDayRequestsPanel({
   const currentRole = getUserRole(matchedRestaurant?.role ?? currentUser?.role);
   const isManager = isManagerRole(currentRole);
   const canView = isManager || allowEmployee;
+  const normalizedEmployeeQuery = employeeQuery.trim().toLowerCase();
 
   useEffect(() => {
     init();
@@ -72,7 +89,13 @@ export function BlockedDayRequestsPanel({
           request.requestedByAuthUserId === currentUser.authUserId || request.userId === currentUser.id
       );
     }
-    return scoped.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return [...scoped].sort((a, b) => {
+      const diff =
+        getRequestTimestamp(b as unknown as Record<string, unknown>) -
+        getRequestTimestamp(a as unknown as Record<string, unknown>);
+      if (diff !== 0) return diff;
+      return String(b.id).localeCompare(String(a.id));
+    });
   }, [blockedDayRequests, currentUser, isManager]);
 
   const pendingRequests = useMemo(
@@ -82,80 +105,37 @@ export function BlockedDayRequestsPanel({
   const totalRequestsCount = scopedRequests.length;
 
   const filteredRequests = useMemo(() => {
-    if (requestTab === 'PENDING') {
-      return pendingRequests;
+    const requests =
+      requestTab === 'PENDING'
+        ? pendingRequests
+        : requestStatusFilter === 'ALL'
+          ? scopedRequests
+          : scopedRequests.filter((request) => {
+              const status = String(request.status).toUpperCase();
+              if (requestStatusFilter === 'PENDING') return status === 'PENDING';
+              if (requestStatusFilter === 'APPROVED') return status === 'APPROVED';
+              if (requestStatusFilter === 'DENIED') return status === 'DENIED' || status === 'CANCELLED';
+              return true;
+            });
+    if (!isManager || !normalizedEmployeeQuery) {
+      return requests;
     }
-    if (requestStatusFilter === 'ALL') {
-      return scopedRequests;
-    }
-    return scopedRequests.filter((request) => {
-      const status = String(request.status).toUpperCase();
-      if (requestStatusFilter === 'PENDING') return status === 'PENDING';
-      if (requestStatusFilter === 'APPROVED') return status === 'APPROVED';
-      if (requestStatusFilter === 'DENIED') return status === 'DENIED' || status === 'CANCELLED';
-      return true;
+    return requests.filter((request) => {
+      const employee = request.userId ? employees.find((emp) => emp.id === request.userId) : null;
+      const name = String(employee?.name ?? (request.scope === 'ORG_BLACKOUT' ? 'All Staff' : '')).toLowerCase();
+      const email = String(employee?.profile?.email ?? '').toLowerCase();
+      return name.includes(normalizedEmployeeQuery) || email.includes(normalizedEmployeeQuery);
     });
-  }, [pendingRequests, requestStatusFilter, requestTab, scopedRequests]);
-
-  const compareText = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
-
-  const handleSortChange = (
-    key: 'employee' | 'dateRange' | 'status' | 'submitted' | 'reason' | 'managerNote'
-  ) => {
-    setSortKey((prevKey) => {
-      if (prevKey === key) {
-        setSortDir((prevDir) => (prevDir === 'asc' ? 'desc' : 'asc'));
-        return prevKey;
-      }
-      setSortDir('asc');
-      return key;
-    });
-  };
-
-  const sortedRequests = useMemo(() => {
-    if (!sortKey) return filteredRequests;
-    const direction = sortDir === 'asc' ? 1 : -1;
-    return [...filteredRequests].sort((a, b) => {
-      const employeeA = a.userId ? employees.find((emp) => emp.id === a.userId) : null;
-      const employeeB = b.userId ? employees.find((emp) => emp.id === b.userId) : null;
-      const aStatus = String(a.status).toUpperCase();
-      const bStatus = String(b.status).toUpperCase();
-      let result = 0;
-
-      if (sortKey === 'employee') {
-        const aName = employeeA?.name || (a.scope === 'ORG_BLACKOUT' ? 'All Staff' : 'Unknown');
-        const bName = employeeB?.name || (b.scope === 'ORG_BLACKOUT' ? 'All Staff' : 'Unknown');
-        result = compareText(aName, bName);
-      } else if (sortKey === 'dateRange') {
-        result = compareText(a.startDate, b.startDate);
-        if (result === 0) {
-          result = compareText(a.endDate, b.endDate);
-        }
-      } else if (sortKey === 'status') {
-        result = (STATUS_PRIORITY[aStatus] ?? 99) - (STATUS_PRIORITY[bStatus] ?? 99);
-      } else if (sortKey === 'submitted') {
-        const aTime = new Date(a.createdAt).getTime();
-        const bTime = new Date(b.createdAt).getTime();
-        result = aTime - bTime;
-      } else if (sortKey === 'reason') {
-        result = compareText(String(a.reason ?? '').toLowerCase(), String(b.reason ?? '').toLowerCase());
-      } else if (sortKey === 'managerNote') {
-        result = compareText(String(a.managerNote ?? '').toLowerCase(), String(b.managerNote ?? '').toLowerCase());
-      }
-
-      if (result === 0) {
-        result = compareText(a.id, b.id);
-      }
-      return result * direction;
-    });
-  }, [employees, filteredRequests, sortDir, sortKey]);
-
-  const renderSortIndicator = (
-    key: 'employee' | 'dateRange' | 'status' | 'submitted' | 'reason' | 'managerNote'
-  ) => {
-    if (sortKey !== key) return null;
-    return <span className="text-[10px]">{sortDir === 'asc' ? '▲' : '▼'}</span>;
-  };
+  }, [
+    employees,
+    isManager,
+    normalizedEmployeeQuery,
+    pendingRequests,
+    requestStatusFilter,
+    requestTab,
+    scopedRequests,
+  ]);
+  const displayedRequests = filteredRequests;
 
   const handleDecision = async (id: string, status: 'APPROVED' | 'DENIED') => {
     if (reviewingIds.has(id)) return;
@@ -188,7 +168,7 @@ export function BlockedDayRequestsPanel({
   }
 
   return (
-    <div className="space-y-6">
+    <div className={showHeader ? 'space-y-6' : 'space-y-0'}>
       {showHeader && (
         <header>
           <h1 className="text-2xl font-bold text-theme-primary">Blocked Day Requests</h1>
@@ -198,99 +178,103 @@ export function BlockedDayRequestsPanel({
         </header>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setRequestTab('PENDING')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-              requestTab === 'PENDING'
-                ? 'bg-amber-500 text-zinc-900'
-                : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-            }`}
-          >
-            Pending ({pendingRequests.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setRequestTab('REQUESTS')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-              requestTab === 'REQUESTS'
-                ? 'bg-amber-500 text-zinc-900'
-                : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
-            }`}
-          >
-            Requests ({totalRequestsCount})
-          </button>
-        </div>
-        {requestTab === 'REQUESTS' && (
-          <label className="inline-flex items-center gap-2 text-xs text-theme-secondary">
-            <span className="text-theme-muted">Status</span>
-            <select
-              value={requestStatusFilter}
-              onChange={(event) =>
-                setRequestStatusFilter(event.target.value as 'ALL' | 'PENDING' | 'APPROVED' | 'DENIED')
-              }
-              className="px-2 py-1.5 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary"
+      <div
+        className={
+          showHeader
+            ? 'rounded-2xl border border-theme-primary bg-theme-secondary px-4 py-3'
+            : 'border-t border-theme-primary bg-theme-secondary px-5 py-3'
+        }
+      >
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="inline-flex items-center gap-1 rounded-full border border-theme-primary bg-theme-tertiary p-1 overflow-x-auto">
+            <button
+              type="button"
+              onClick={() => setRequestTab('PENDING')}
+              className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap ${
+                requestTab === 'PENDING'
+                  ? 'bg-white text-zinc-900 shadow-sm dark:bg-white/10 dark:text-white dark:shadow-none'
+                  : 'text-theme-secondary hover:text-theme-primary'
+              }`}
             >
-              <option value="ALL">All</option>
-              <option value="PENDING">Pending</option>
-              <option value="APPROVED">Approved</option>
-              <option value="DENIED">Denied</option>
-            </select>
-          </label>
-        )}
+              Pending ({pendingRequests.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setRequestTab('REQUESTS')}
+              className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap ${
+                requestTab === 'REQUESTS'
+                  ? 'bg-white text-zinc-900 shadow-sm dark:bg-white/10 dark:text-white dark:shadow-none'
+                  : 'text-theme-secondary hover:text-theme-primary'
+              }`}
+            >
+              Requests ({totalRequestsCount})
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center justify-start lg:justify-end gap-2">
+          {isManager && (
+            <label className="inline-flex items-center gap-2 text-xs text-theme-secondary">
+              <span className="text-theme-muted">Employee</span>
+              <input
+                type="text"
+                value={employeeQuery}
+                onChange={(event) => setEmployeeQuery(event.target.value)}
+                placeholder="Filter by name"
+                className="px-2 py-1.5 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary dark:bg-zinc-950 dark:border-white/10 dark:text-white dark:placeholder-white/40"
+              />
+            </label>
+          )}
+          {requestTab === 'REQUESTS' && (
+            <label className="inline-flex items-center gap-2 text-xs text-theme-secondary">
+              <span className="text-theme-muted">Status</span>
+              <select
+                value={requestStatusFilter}
+                onChange={(event) =>
+                  setRequestStatusFilter(event.target.value as 'ALL' | 'PENDING' | 'APPROVED' | 'DENIED')
+                }
+                className="px-2 py-1.5 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary dark:bg-zinc-950 dark:border-white/10 dark:text-white"
+              >
+                <option value="ALL">All</option>
+                <option value="PENDING">Pending</option>
+                <option value="APPROVED">Approved</option>
+                <option value="DENIED">Denied</option>
+              </select>
+            </label>
+          )}
+        </div>
+        </div>
       </div>
 
-      <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-4 overflow-x-auto">
-        {filteredRequests.length === 0 ? (
-          <p className="text-theme-muted">No blocked day requests yet.</p>
+      <div
+        className={
+          showHeader
+            ? 'rounded-2xl border border-theme-primary bg-theme-secondary p-4 overflow-x-auto'
+            : 'border-t border-theme-primary bg-white dark:bg-zinc-900 dark:border-white/10 px-5 py-6 overflow-x-auto'
+        }
+      >
+        {displayedRequests.length === 0 ? (
+          <p className="text-theme-muted dark:text-white/60">No blocked day requests yet.</p>
         ) : (
-          <table className="w-full text-sm text-left text-theme-secondary">
-            <thead className="text-xs uppercase text-theme-muted border-b border-theme-primary">
+          <table className="w-full text-sm text-left text-theme-secondary dark:text-white/80">
+            <thead className="text-xs uppercase text-theme-muted border-b border-theme-primary dark:text-white/60 dark:border-white/10 dark:bg-white/5">
               <tr>
                 <th className="py-2 px-3">Scope</th>
-                <th className="py-2 px-3">
-                  <button type="button" onClick={() => handleSortChange('employee')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
-                    Employee {renderSortIndicator('employee')}
-                  </button>
-                </th>
-                <th className="py-2 px-3">
-                  <button type="button" onClick={() => handleSortChange('dateRange')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
-                    Date Range {renderSortIndicator('dateRange')}
-                  </button>
-                </th>
-                <th className="py-2 px-3">
-                  <button type="button" onClick={() => handleSortChange('reason')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
-                    Reason {renderSortIndicator('reason')}
-                  </button>
-                </th>
-                <th className="py-2 px-3">
-                  <button type="button" onClick={() => handleSortChange('status')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
-                    Status {renderSortIndicator('status')}
-                  </button>
-                </th>
-                <th className="py-2 px-3">
-                  <button type="button" onClick={() => handleSortChange('submitted')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
-                    Submitted {renderSortIndicator('submitted')}
-                  </button>
-                </th>
-                <th className="py-2 px-3">
-                  <button type="button" onClick={() => handleSortChange('managerNote')} className="inline-flex items-center gap-1 hover:text-theme-secondary transition-colors">
-                    Manager Note {renderSortIndicator('managerNote')}
-                  </button>
-                </th>
+                <th className="py-2 px-3">Employee</th>
+                <th className="py-2 px-3">Date Range</th>
+                <th className="py-2 px-3">Reason</th>
+                <th className="py-2 px-3">Status</th>
+                <th className="py-2 px-3">Submitted</th>
+                <th className="py-2 px-3">Manager Note</th>
                 <th className="py-2 px-3 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-theme-primary">
-              {sortedRequests.map((request) => {
+            <tbody className="divide-y divide-theme-primary dark:divide-white/10">
+              {displayedRequests.map((request) => {
                 const employee = request.userId
                   ? employees.find((emp) => emp.id === request.userId)
                   : null;
                 const canManage = Boolean(onEdit && onDelete) && isManager && request.status !== 'PENDING';
                 return (
-                  <tr key={request.id} className="text-theme-primary">
+                  <tr key={request.id} className="text-theme-primary dark:text-white">
                     <td className="py-3 px-3 text-xs text-theme-tertiary">
                       {request.scope === 'ORG_BLACKOUT' ? 'Org Blackout' : 'Employee Block'}
                     </td>
@@ -305,7 +289,7 @@ export function BlockedDayRequestsPanel({
                     <td className="py-3 px-3">
                       <span className="text-xs font-semibold">{request.status}</span>
                     </td>
-                    <td className="py-3 px-3 text-theme-muted">
+                    <td className="py-3 px-3 text-theme-muted dark:text-white/60">
                       {formatDateLong(request.createdAt.split('T')[0])}
                     </td>
                     <td className="py-3 px-3">
@@ -316,11 +300,11 @@ export function BlockedDayRequestsPanel({
                           onChange={(e) =>
                             setNotesById((prev) => ({ ...prev, [request.id]: e.target.value }))
                           }
-                          className="w-full px-2 py-1 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+                          className="w-full px-2 py-1 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary dark:bg-zinc-950 dark:border-white/10 dark:text-white dark:placeholder-white/40"
                           placeholder="Optional note"
                         />
                       ) : (
-                        <span className="text-theme-tertiary text-xs">{request.managerNote || '-'}</span>
+                        <span className="text-theme-tertiary dark:text-white/60 text-xs">{request.managerNote || '-'}</span>
                       )}
                     </td>
                     <td className="py-3 px-3 text-right">
@@ -357,7 +341,7 @@ export function BlockedDayRequestsPanel({
                           </button>
                         </div>
                       ) : (
-                        <span className="text-xs text-theme-muted">No actions</span>
+                        <span className="text-xs text-theme-muted dark:text-white/60">No actions</span>
                       )}
                     </td>
                   </tr>
