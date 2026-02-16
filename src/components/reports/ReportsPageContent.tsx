@@ -9,7 +9,6 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
-  ArrowLeft,
 } from 'lucide-react';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
@@ -30,8 +29,8 @@ import {
   generateDailyTimelineHTML,
   generateWeeklyScheduleHTML,
 } from './report-html';
-import { usePathname, useRouter } from 'next/navigation';
-import { getAppHomeHref } from '../../lib/routing/getAppHomeHref';
+import { usePathname } from 'next/navigation';
+import { getUserRole, isManagerRole } from '../../utils/role';
 
 type ReportType = 'roster' | 'timeline' | 'weekly';
 
@@ -94,6 +93,38 @@ type ReportsPageContentProps = {
   initialDate?: string;
 };
 
+type JobFilterOption = {
+  key: string;
+  label: string;
+  count: number;
+};
+
+const JOB_FILTER_STORAGE_PREFIX = 'crewshyft:reports:jobFilter';
+
+function normalizeJobLabel(job: string | null | undefined): string {
+  const label = String(job ?? '').trim();
+  return label || 'Unassigned';
+}
+
+function normalizeJobKey(job: string | null | undefined): string {
+  return normalizeJobLabel(job).toLowerCase();
+}
+
+function buildJobFilterOptions(shifts: Shift[]): JobFilterOption[] {
+  const byKey = new Map<string, JobFilterOption>();
+  shifts.forEach((shift) => {
+    const label = normalizeJobLabel(shift.job);
+    const key = normalizeJobKey(label);
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.count += 1;
+      return;
+    }
+    byKey.set(key, { key, label, count: 1 });
+  });
+  return Array.from(byKey.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
 type ReportsToolbarProps = {
   activeReport: ReportType;
   onChangeReport: (report: ReportType) => void;
@@ -103,8 +134,78 @@ type ReportsToolbarProps = {
   onNext: () => void;
   onPrint: () => void;
   onDownload: () => void;
-  onBack: () => void;
 };
+
+type JobFilterChipsProps = {
+  jobs: JobFilterOption[];
+  selected: Set<string>;
+  onToggle: (jobKey: string) => void;
+  onSelectAll: () => void;
+  onSelectNone: () => void;
+};
+
+function JobFilterChips({
+  jobs,
+  selected,
+  onToggle,
+  onSelectAll,
+  onSelectNone,
+}: JobFilterChipsProps) {
+  return (
+    <div className="no-print border-b border-theme-primary bg-theme-tertiary/40 px-4 py-2">
+      <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-theme-muted">Filter jobs</span>
+        </div>
+        <div className="flex items-center gap-1.5 sm:justify-end">
+          <button
+            type="button"
+            onClick={onSelectAll}
+            className="rounded-full border border-zinc-300 bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:bg-zinc-200 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1"
+          >
+            All
+          </button>
+          <button
+            type="button"
+            onClick={onSelectNone}
+            className="rounded-full border border-zinc-300 bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:bg-zinc-200 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1"
+          >
+            None
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-1 overflow-x-auto pb-0.5 sm:overflow-visible sm:pb-0">
+        <div className="flex min-w-max gap-1.5 sm:min-w-0 sm:flex-wrap">
+          {jobs.length === 0 && (
+            <span className="text-xs text-theme-muted">No jobs for this report range.</span>
+          )}
+          {jobs.map((job) => {
+            const isSelected = selected.has(job.key);
+            return (
+              <button
+                key={job.key}
+                type="button"
+                onClick={() => onToggle(job.key)}
+                aria-pressed={isSelected}
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 ${
+                  isSelected
+                    ? 'border-amber-500 bg-amber-500 text-zinc-900 hover:border-amber-400 hover:bg-amber-400'
+                    : 'border-zinc-300 bg-zinc-100 text-zinc-600 hover:border-zinc-400 hover:bg-zinc-200 hover:text-zinc-800'
+                }`}
+              >
+                <span>{job.label}</span>
+                <span className={`text-[10px] font-medium ${isSelected ? 'text-zinc-900/90' : 'text-zinc-500'}`}>
+                  ({job.count})
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ReportsToolbar({
   activeReport,
@@ -115,20 +216,11 @@ function ReportsToolbar({
   onNext,
   onPrint,
   onDownload,
-  onBack,
 }: ReportsToolbarProps) {
   return (
     <div className="reports-page-toolbar sticky top-0 z-20 border-b border-theme-primary bg-theme-secondary rounded-t-2xl">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between px-5 py-3">
         <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={onBack}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs font-semibold"
-            aria-label="Back to schedule"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            Back
-          </button>
           <h2 className="text-base font-bold text-theme-primary">Reports</h2>
 
           {/* Report type tabs */}
@@ -198,7 +290,6 @@ function ReportsToolbar({
 }
 
 export function ReportsPageContent({ initialView, initialDate }: ReportsPageContentProps) {
-  const router = useRouter();
   const pathname = usePathname();
   const {
     selectedDate,
@@ -208,13 +299,16 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
     applyRestaurantScope,
     loadRestaurantData,
   } = useScheduleStore();
-  const { activeRestaurantId, accessibleRestaurants } = useAuthStore();
+  const { activeRestaurantId, accessibleRestaurants, currentUser } = useAuthStore();
   const [activeReport, setActiveReport] = useState<ReportType>(initialView ?? 'roster');
   const initialDateValue = useMemo(
     () => parseDateParam(initialDate) ?? selectedDate,
     [initialDate, selectedDate]
   );
   const [reportDate, setReportDate] = useState<Date>(initialDateValue);
+  const [selectedJobKeys, setSelectedJobKeys] = useState<string[]>([]);
+  const [knownJobKeys, setKnownJobKeys] = useState<string[]>([]);
+  const [hydratedJobFilterKey, setHydratedJobFilterKey] = useState<string | null>(null);
 
   // Weekly report async state
   const [weeklyShifts, setWeeklyShifts] = useState<Shift[]>([]);
@@ -223,6 +317,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
   const isDemoRoute = pathname?.startsWith('/demo') ?? false;
 
   const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+  const isManager = isManagerRole(getUserRole(currentUser?.role));
 
   useEffect(() => {
     applyRestaurantScope(activeRestaurantId);
@@ -259,6 +354,126 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
     () => getPublishedShiftsForDate(shifts, dateString),
     [shifts, dateString]
   );
+
+  const rawActiveShifts = useMemo(
+    () => (activeReport === 'weekly' ? weeklyShifts : publishedShifts),
+    [activeReport, publishedShifts, weeklyShifts]
+  );
+
+  const jobFilterStorageKey = useMemo(
+    () => `${JOB_FILTER_STORAGE_PREFIX}:${activeRestaurantId ?? 'none'}:${activeReport}`,
+    [activeRestaurantId, activeReport]
+  );
+
+  const availableJobs = useMemo(() => buildJobFilterOptions(rawActiveShifts), [rawActiveShifts]);
+  const availableJobKeys = useMemo(() => availableJobs.map((job) => job.key), [availableJobs]);
+
+  useEffect(() => {
+    if (!isManager) {
+      setSelectedJobKeys([]);
+      setKnownJobKeys([]);
+      setHydratedJobFilterKey(null);
+      return;
+    }
+
+    let persistedSelected: string[] = [];
+    let persistedKnown: string[] = [];
+    try {
+      const raw = window.localStorage.getItem(jobFilterStorageKey);
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          persistedSelected = parsed.map((value) => normalizeJobKey(String(value)));
+          persistedKnown = [...persistedSelected];
+        } else if (parsed && typeof parsed === 'object') {
+          const parsedRecord = parsed as { selected?: unknown; known?: unknown };
+          persistedSelected = Array.isArray(parsedRecord.selected)
+            ? parsedRecord.selected.map((value) => normalizeJobKey(String(value)))
+            : [];
+          persistedKnown = Array.isArray(parsedRecord.known)
+            ? parsedRecord.known.map((value) => normalizeJobKey(String(value)))
+            : [];
+        }
+      }
+    } catch {
+      persistedSelected = [];
+      persistedKnown = [];
+    }
+
+    const knownSet = new Set(persistedKnown);
+    const newJobKeys = availableJobKeys.filter((key) => !knownSet.has(key));
+    const initialSelected =
+      persistedKnown.length > 0 || persistedSelected.length > 0
+        ? Array.from(new Set([...persistedSelected, ...newJobKeys]))
+        : availableJobKeys;
+    const nextKnown = Array.from(new Set([...persistedKnown, ...availableJobKeys]));
+
+    setSelectedJobKeys(initialSelected);
+    setKnownJobKeys(nextKnown);
+    setHydratedJobFilterKey(jobFilterStorageKey);
+  }, [availableJobKeys, isManager, jobFilterStorageKey]);
+
+  useEffect(() => {
+    if (!isManager || hydratedJobFilterKey !== jobFilterStorageKey) return;
+    const knownSet = new Set(knownJobKeys);
+    const newJobKeys = availableJobKeys.filter((key) => !knownSet.has(key));
+    if (newJobKeys.length === 0) return;
+    setSelectedJobKeys((prev) => Array.from(new Set([...prev, ...newJobKeys])));
+    setKnownJobKeys((prev) => Array.from(new Set([...prev, ...newJobKeys])));
+  }, [
+    availableJobKeys,
+    hydratedJobFilterKey,
+    isManager,
+    jobFilterStorageKey,
+    knownJobKeys,
+  ]);
+
+  useEffect(() => {
+    if (!isManager || hydratedJobFilterKey !== jobFilterStorageKey) return;
+    try {
+      window.localStorage.setItem(
+        jobFilterStorageKey,
+        JSON.stringify({
+          selected: selectedJobKeys,
+          known: knownJobKeys,
+        })
+      );
+    } catch {
+      // no-op if storage is unavailable
+    }
+  }, [
+    hydratedJobFilterKey,
+    isManager,
+    jobFilterStorageKey,
+    knownJobKeys,
+    selectedJobKeys,
+  ]);
+
+  const selectedJobKeySet = useMemo(() => new Set(selectedJobKeys), [selectedJobKeys]);
+
+  const filteredPublishedShifts = useMemo(() => {
+    if (!isManager) return publishedShifts;
+    return publishedShifts.filter((shift) => selectedJobKeySet.has(normalizeJobKey(shift.job)));
+  }, [isManager, publishedShifts, selectedJobKeySet]);
+
+  const filteredWeeklyShifts = useMemo(() => {
+    if (!isManager) return weeklyShifts;
+    return weeklyShifts.filter((shift) => selectedJobKeySet.has(normalizeJobKey(shift.job)));
+  }, [isManager, selectedJobKeySet, weeklyShifts]);
+
+  const handleToggleJobFilter = useCallback((jobKey: string) => {
+    setSelectedJobKeys((prev) =>
+      prev.includes(jobKey) ? prev.filter((value) => value !== jobKey) : [...prev, jobKey]
+    );
+  }, []);
+
+  const handleSelectAllJobs = useCallback(() => {
+    setSelectedJobKeys(availableJobKeys);
+  }, [availableJobKeys]);
+
+  const handleSelectNoJobs = useCallback(() => {
+    setSelectedJobKeys([]);
+  }, []);
 
   // All employees for the restaurant (active only)
   const activeEmployees = useMemo(
@@ -332,11 +547,11 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
 
       let bodyHTML = '';
       if (activeReport === 'roster') {
-        bodyHTML = generateDailyRosterHTML(reportDate, restaurantName, activeEmployees, publishedShifts);
+        bodyHTML = generateDailyRosterHTML(reportDate, restaurantName, activeEmployees, filteredPublishedShifts);
       } else if (activeReport === 'timeline') {
-        bodyHTML = generateDailyTimelineHTML(reportDate, restaurantName, activeEmployees, publishedShifts);
+        bodyHTML = generateDailyTimelineHTML(reportDate, restaurantName, activeEmployees, filteredPublishedShifts);
       } else {
-        bodyHTML = generateWeeklyScheduleHTML(weekDates, restaurantName, activeEmployees, weeklyShifts, {
+        bodyHTML = generateWeeklyScheduleHTML(weekDates, restaurantName, activeEmployees, filteredWeeklyShifts, {
           loading: weeklyLoading,
           error: weeklyError,
         });
@@ -347,13 +562,13 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
     [
       activeReport,
       activeEmployees,
-      publishedShifts,
+      filteredPublishedShifts,
       reportDate,
       restaurantName,
       weekDates,
       weeklyError,
       weeklyLoading,
-      weeklyShifts,
+      filteredWeeklyShifts,
     ]
   );
 
@@ -368,14 +583,6 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
     const html = wrapInHTMLDocument(bodyHTML, title, { orientation });
     renderReportToWindow(html, title);
   }, [buildReportHTML]);
-
-  const handleBack = useCallback(() => {
-    if (typeof window !== 'undefined' && window.history.length > 1) {
-      router.back();
-      return;
-    }
-    router.push(isDemoRoute ? '/demo' : getAppHomeHref());
-  }, [isDemoRoute, router]);
 
   const navLabel = isWeekly
     ? formatWeekNav(weekDates[0], weekDates[6])
@@ -393,8 +600,17 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
           onNext={handleNext}
           onPrint={handlePrint}
           onDownload={handleDownloadPdf}
-          onBack={handleBack}
         />
+
+        {isManager && (
+          <JobFilterChips
+            jobs={availableJobs}
+            selected={selectedJobKeySet}
+            onToggle={handleToggleJobFilter}
+            onSelectAll={handleSelectAllJobs}
+            onSelectNone={handleSelectNoJobs}
+          />
+        )}
 
         <div className="reports-page-content bg-white px-5 py-6 rounded-b-2xl">
         {activeReport === 'roster' && (
@@ -402,7 +618,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
             date={reportDate}
             restaurantName={restaurantName}
             employees={activeEmployees}
-            shifts={publishedShifts}
+            shifts={filteredPublishedShifts}
           />
         )}
 
@@ -411,7 +627,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
             date={reportDate}
             restaurantName={restaurantName}
             employees={activeEmployees}
-            shifts={publishedShifts}
+            shifts={filteredPublishedShifts}
           />
         )}
 
@@ -420,7 +636,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
             weekDates={weekDates}
             restaurantName={restaurantName}
             employees={activeEmployees}
-            shifts={weeklyShifts}
+            shifts={filteredWeeklyShifts}
             loading={weeklyLoading}
             error={weeklyError}
           />

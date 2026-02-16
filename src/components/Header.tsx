@@ -152,7 +152,11 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
     };
   }, [moreMenuOpen]);
 
+  const appHomeHref = getAppHomeHref();
   const isOnDashboard = pathname === '/dashboard';
+  const showAddShift =
+    pathname === appHomeHref
+    || (appHomeHref !== '/' && pathname.startsWith(`${appHomeHref}/`));
   const isEmployeeNavPage =
     pathname === '/dashboard' ||
     pathname === '/shift-exchange' ||
@@ -163,7 +167,6 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
   const isEmployee = currentRole === 'EMPLOYEE';
   const isRestrictedHeader = isSubscriptionBlocked && !locked;
   const showEmployeeMobileHeader = !locked && isEmployee && isEmployeeNavPage && !minimal;
-  const appHomeHref = getAppHomeHref();
   const logoHref = locked || isRestrictedHeader ? '/setup' : appHomeHref;
 
   function toYMD(date: Date): string {
@@ -242,7 +245,7 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
         {/* Right: Actions + More menu */}
         <div className="flex items-center gap-1 sm:gap-2 min-w-0 w-full justify-end">
           {/* Add Shift - hidden in minimal mode */}
-          {!locked && !minimal && !isRestrictedHeader && isManagerRole(currentRole) && (
+          {!locked && !minimal && !isRestrictedHeader && isManagerRole(currentRole) && showAddShift && (
             <button
               onClick={() => openModal('addShift')}
               className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:shadow-lg text-sm font-medium"

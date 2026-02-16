@@ -16,6 +16,67 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const BILLING_COOKIE_NAME = 'sf_billing_ok';
+const BILLING_COOKIE_MAX_AGE_SECONDS = 3600;
+const MANAGER_ROLE_VALUES = new Set(['admin', 'manager', 'owner', 'super_admin']);
+const EMPLOYEE_ROLE_VALUES = new Set(['employee', 'worker', 'staff', 'team_member']);
+
+function normalizeRole(value: unknown) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function sanitizeNextPath(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = String(value).trim();
+  if (!normalized.startsWith('/')) return null;
+  if (normalized.startsWith('//')) return null;
+  return normalized;
+}
+
+function setBillingCookie(response: NextResponse, isActive: boolean) {
+  if (isActive) {
+    response.cookies.set(BILLING_COOKIE_NAME, 'active', {
+      path: '/',
+      maxAge: BILLING_COOKIE_MAX_AGE_SECONDS,
+      sameSite: 'lax',
+    });
+    return;
+  }
+
+  response.cookies.set(BILLING_COOKIE_NAME, '', {
+    path: '/',
+    maxAge: 0,
+    sameSite: 'lax',
+  });
+}
+
+function applyCookiesAndBillingState(
+  target: NextResponse,
+  source: NextResponse,
+  isActive: boolean,
+) {
+  const responseWithCookies = applySupabaseCookies(target, source);
+  setBillingCookie(responseWithCookies, isActive);
+  return responseWithCookies;
+}
+
+function buildSubscribeRedirectUrl(request: NextRequest, nextPath: string | null) {
+  const subscribeUrl = new URL('/subscribe', request.url);
+  if (!nextPath) return subscribeUrl;
+
+  try {
+    const nextUrl = new URL(nextPath, request.url);
+    const intent = nextUrl.searchParams.get('intent');
+    const canceled = nextUrl.searchParams.get('canceled');
+    if (intent) subscribeUrl.searchParams.set('intent', intent);
+    if (canceled) subscribeUrl.searchParams.set('canceled', canceled);
+  } catch {
+    // Ignore malformed nextPath here and fall back to plain /subscribe.
+  }
+
+  return subscribeUrl;
+}
+
 function responseForDisabledBilling() {
   return {
     billingEnabled: false,
@@ -62,7 +123,13 @@ async function trySelfHealFromStripe(authUserId: string) {
 }
 
 export async function GET(request: NextRequest) {
+  const nextPath = sanitizeNextPath(request.nextUrl.searchParams.get('next'));
+  const hasNextRedirect = Boolean(nextPath);
+
   if (!BILLING_ENABLED) {
+    if (hasNextRedirect) {
+      return NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 });
+    }
     return NextResponse.json(responseForDisabledBilling());
   }
 
@@ -70,11 +137,35 @@ export async function GET(request: NextRequest) {
   const { data: authData, error: authError } = await supabase.auth.getUser();
   const authUserId = authData.user?.id;
   if (!authUserId) {
+    if (hasNextRedirect) {
+      const loginUrl = new URL('/login', request.url);
+      loginUrl.searchParams.set('next', nextPath ?? '/dashboard');
+      return applySupabaseCookies(NextResponse.redirect(loginUrl, { status: 302 }), response);
+    }
     const message =
       process.env.NODE_ENV === 'production'
         ? 'Not signed in. Please sign out/in again.'
         : authError?.message || 'Unauthorized.';
     return applySupabaseCookies(jsonError(message, 401), response);
+  }
+
+  const [{ data: profileRows }, { data: memberships, count: membershipCount, error: membershipError }] = await Promise.all([
+    supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('auth_user_id', authUserId)
+      .limit(1),
+    supabaseAdmin
+      .from('organization_memberships')
+      .select('role', { count: 'exact' })
+      .eq('auth_user_id', authUserId),
+  ]);
+
+  if (membershipError) {
+    return applySupabaseCookies(
+      NextResponse.json({ error: 'Unable to verify organization access.' }, { status: 500 }),
+      response,
+    );
   }
 
   const ownedResult = await getOwnedOrganizationCount(authUserId, supabaseAdmin);
@@ -85,15 +176,29 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { count: membershipCount } = await supabaseAdmin
-    .from('organization_memberships')
-    .select('id', { count: 'exact', head: true })
-    .eq('auth_user_id', authUserId);
+  const membershipRoles = (memberships ?? []).map((membership) => normalizeRole(membership.role));
+  const roleCandidates = [
+    normalizeRole(profileRows?.[0]?.role),
+    normalizeRole(authData.user?.user_metadata?.role),
+    ...membershipRoles,
+  ].filter(Boolean);
+  const hasManagerRole = roleCandidates.some((role) => MANAGER_ROLE_VALUES.has(role));
+  const hasEmployeeRole = roleCandidates.some((role) => EMPLOYEE_ROLE_VALUES.has(role));
 
   const ownedOrgCount = ownedResult.count;
+  const isManagerLike = hasManagerRole || ownedOrgCount > 0;
   const isNonOwnerMember = (membershipCount ?? 0) > 0 && ownedOrgCount === 0;
+  const isEmployeeLike = !isManagerLike && (hasEmployeeRole || isNonOwnerMember);
   if (isNonOwnerMember) {
-    return applySupabaseCookies(
+    if (hasNextRedirect) {
+      return applyCookiesAndBillingState(
+        NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
+        response,
+        true,
+      );
+    }
+
+    return applyCookiesAndBillingState(
       NextResponse.json({
         billingEnabled: true,
         active: true,
@@ -106,6 +211,7 @@ export async function GET(request: NextRequest) {
         over_limit: false,
       }),
       response,
+      true,
     );
   }
 
@@ -136,7 +242,39 @@ export async function GET(request: NextRequest) {
   const overLimit = baseActive && quantity < requiredQuantity;
   const active = baseActive && !overLimit;
 
-  return applySupabaseCookies(
+  if (hasNextRedirect) {
+    if (isEmployeeLike && !isManagerLike) {
+      return applyCookiesAndBillingState(
+        NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
+        response,
+        true,
+      );
+    }
+
+    if (active) {
+      return applyCookiesAndBillingState(
+        NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
+        response,
+        true,
+      );
+    }
+
+    if (isManagerLike) {
+      return applyCookiesAndBillingState(
+        NextResponse.redirect(buildSubscribeRedirectUrl(request, nextPath), { status: 302 }),
+        response,
+        false,
+      );
+    }
+
+    return applyCookiesAndBillingState(
+      NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
+      response,
+      true,
+    );
+  }
+
+  return applyCookiesAndBillingState(
     NextResponse.json({
       billingEnabled: true,
       active,
@@ -158,5 +296,6 @@ export async function GET(request: NextRequest) {
       over_limit: overLimit,
     }),
     response,
+    active,
   );
 }

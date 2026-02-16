@@ -133,19 +133,6 @@ function getTotalHours(shifts: Shift[]): number {
   return Math.round(total * 10) / 10;
 }
 
-// Collect active roles for legend
-function getActiveRoles(shifts: Shift[]): Array<{ job: string; color: string }> {
-  const seen = new Set<string>();
-  const roles: Array<{ job: string; color: string }> = [];
-  shifts.forEach((s) => {
-    const job = s.job ?? 'Unassigned';
-    if (seen.has(job)) return;
-    seen.add(job);
-    roles.push({ job, color: getJobColorClasses(job).color });
-  });
-  return roles;
-}
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -168,7 +155,6 @@ export function DailyTimelineReport({
   const effectiveEnd = getEffectiveEnd(shifts);
   const effectiveHours = effectiveEnd - TIMELINE_START;
   const totalHours = getTotalHours(shifts);
-  const activeRoles = getActiveRoles(shifts);
 
   // Build hour column headers
   const hours: number[] = [];
@@ -337,27 +323,9 @@ export function DailyTimelineReport({
         </div>
       )}
 
-      {/* Footer: legend + summary */}
+      {/* Footer */}
       <div className="report-footer flex flex-wrap items-center gap-x-4 gap-y-1 mt-4 pt-3 border-t border-zinc-200 text-[10px] text-zinc-500">
         <div className="footer-meta">Generated {formatReportTimestamp()}</div>
-        {shifts.length > 0 && (
-          <div className="color-legend ml-auto flex flex-wrap items-center gap-x-4 gap-y-1">
-            <div className="legend-item">
-              <span className="legend-dot am-dot" />
-              <span>AM shift</span>
-            </div>
-            <div className="legend-item">
-              <span className="legend-dot pm-dot" />
-              <span>PM shift</span>
-            </div>
-            {activeRoles.map((role) => (
-              <div key={role.job} className="legend-item">
-                <span className="legend-dot" style={{ backgroundColor: role.color }} />
-                <span>{role.job}</span>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );

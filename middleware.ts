@@ -370,7 +370,9 @@ async function runMiddleware(req: NextRequest) {
     const billingCookie = req.cookies.get('sf_billing_ok')?.value;
 
     if (!billingCookie) {
-      return redirectTo('/subscribe', 'billing:missing-cookie');
+      const statusUrl = new URL('/api/billing/subscription-status', req.url);
+      statusUrl.searchParams.set('next', `${originalPathname}${requestUrl.search}`);
+      return redirectTo(statusUrl, 'billing:missing-cookie');
     }
 
     if (billingCookie === 'past_due') {

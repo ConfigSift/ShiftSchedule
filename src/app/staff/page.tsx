@@ -56,10 +56,42 @@ const EMPTY_FORM = {
   jobPay: {} as Record<string, string>,
 };
 
+function normalizeEmployeeNumber(value: unknown): string | null {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const rounded = Math.trunc(numeric);
+  if (rounded < 0 || rounded > 9999) return null;
+  return String(rounded).padStart(4, '0');
+}
+
+function generateRandomEmployeeNumber(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const buffer = new Uint32Array(1);
+    crypto.getRandomValues(buffer);
+    return String(buffer[0] % 10000).padStart(4, '0');
+  }
+  return String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+}
+
+function generateUniqueEmployeeNumber(existingNumbers: Set<string>): string | null {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const candidate = generateRandomEmployeeNumber();
+    if (candidate === '0000') continue;
+    if (!existingNumbers.has(candidate)) return candidate;
+  }
+
+  for (let value = 1; value <= 9999; value += 1) {
+    const candidate = String(value).padStart(4, '0');
+    if (!existingNumbers.has(candidate)) return candidate;
+  }
+
+  return null;
+}
+
 export default function StaffPage() {
   const router = useRouter();
   const { currentUser, init, isInitialized, activeRestaurantId, signOut } = useAuthStore();
-  const { showToast } = useScheduleStore();
+  const { showToast, loadRestaurantData, getEmployeesForRestaurant } = useScheduleStore();
 
   const [users, setUsers] = useState<OrgUser[]>([]);
   const [invites, setInvites] = useState<PendingInvite[]>([]);
@@ -68,6 +100,9 @@ export default function StaffPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [formState, setFormState] = useState(EMPTY_FORM);
+  const [employeeNumberTouched, setEmployeeNumberTouched] = useState(false);
+  const [employeeNumberError, setEmployeeNumberError] = useState('');
+  const [employeeDataReadyForModal, setEmployeeDataReadyForModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [modalError, setModalError] = useState('');
   const [emailCheck, setEmailCheck] = useState({
@@ -118,6 +153,20 @@ export default function StaffPage() {
     }
     return ['MANAGER', 'EMPLOYEE'];
   }, [isAdmin, allowAdminCreation]);
+
+  const restaurantEmployees = useMemo(
+    () => getEmployeesForRestaurant(activeRestaurantId),
+    [activeRestaurantId, getEmployeesForRestaurant],
+  );
+
+  const existingEmployeeNumbers = useMemo(() => {
+    const existing = new Set<string>();
+    restaurantEmployees.forEach((employee) => {
+      const normalized = normalizeEmployeeNumber(employee.employeeNumber);
+      if (normalized) existing.add(normalized);
+    });
+    return existing;
+  }, [restaurantEmployees]);
 
 
   useEffect(() => {
@@ -209,6 +258,52 @@ export default function StaffPage() {
   }, [activeRestaurantId, isInitialized, currentUser, loadUsers]);
 
   useEffect(() => {
+    if (!modalOpen || !activeRestaurantId) {
+      setEmployeeDataReadyForModal(false);
+      return;
+    }
+
+    let cancelled = false;
+    setEmployeeDataReadyForModal(false);
+
+    void loadRestaurantData(activeRestaurantId).finally(() => {
+      if (cancelled) return;
+      setEmployeeDataReadyForModal(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRestaurantId, loadRestaurantData, modalOpen]);
+
+  useEffect(() => {
+    if (!modalOpen || !employeeDataReadyForModal) return;
+    if (employeeNumberTouched) return;
+    if (formState.employeeNumber.trim()) return;
+
+    const generated = generateUniqueEmployeeNumber(existingEmployeeNumbers);
+    if (!generated) {
+      setEmployeeNumberError('No available employee IDs.');
+      setModalError('No available employee IDs.');
+      return;
+    }
+
+    setEmployeeNumberError('');
+    setFormState((prev) => (prev.employeeNumber.trim()
+      ? prev
+      : {
+          ...prev,
+          employeeNumber: generated,
+        }));
+  }, [
+    employeeDataReadyForModal,
+    employeeNumberTouched,
+    existingEmployeeNumbers,
+    formState.employeeNumber,
+    modalOpen,
+  ]);
+
+  useEffect(() => {
     if (!modalOpen || !activeRestaurantId) return;
     const rawEmail = formState.email.trim().toLowerCase();
     if (!rawEmail) {
@@ -297,6 +392,9 @@ export default function StaffPage() {
 
   const openAddModal = () => {
     setFormState(EMPTY_FORM);
+    setEmployeeNumberTouched(false);
+    setEmployeeNumberError('');
+    setEmployeeDataReadyForModal(false);
     setEmailCheck({
       status: 'idle',
       existsInAuth: false,
@@ -313,6 +411,9 @@ export default function StaffPage() {
   const closeModal = () => {
     setModalOpen(false);
     setFormState(EMPTY_FORM);
+    setEmployeeNumberTouched(false);
+    setEmployeeNumberError('');
+    setEmployeeDataReadyForModal(false);
     setEmailCheck({
       status: 'idle',
       existsInAuth: false,
@@ -324,6 +425,22 @@ export default function StaffPage() {
     });
     setModalError('');
     setError('');
+  };
+
+  const handleRegenerateEmployeeNumber = () => {
+    const generated = generateUniqueEmployeeNumber(existingEmployeeNumbers);
+    if (!generated) {
+      setEmployeeNumberError('No available employee IDs.');
+      setModalError('No available employee IDs.');
+      return;
+    }
+
+    setEmployeeNumberTouched(false);
+    setEmployeeNumberError('');
+    if (modalError === 'Employee ID already exists. Please choose another.') {
+      setModalError('');
+    }
+    setFormState((prev) => ({ ...prev, employeeNumber: generated }));
   };
 
   const openResetModal = (user: OrgUser) => {
@@ -446,12 +563,27 @@ export default function StaffPage() {
       return;
     }
 
-    if (!/^\d{4}$/.test(formState.employeeNumber.trim())) {
-      setModalError('Employee number must be 4 digits.');
+    const normalizedEmployeeNumber = formState.employeeNumber.trim();
+    if (!normalizedEmployeeNumber) {
+      setEmployeeNumberError('Employee ID is required.');
+      setModalError('Employee ID is required.');
       return;
     }
-    if (formState.employeeNumber.trim() === '0000') {
+
+    if (!/^\d{4}$/.test(normalizedEmployeeNumber)) {
+      setEmployeeNumberError('Employee ID must be 4 digits.');
+      setModalError('Employee ID must be 4 digits.');
+      return;
+    }
+
+    if (normalizedEmployeeNumber === '0000') {
       setModalError('Employee number 0000 is not allowed.');
+      return;
+    }
+
+    if (existingEmployeeNumbers.has(normalizedEmployeeNumber)) {
+      setEmployeeNumberError('Employee ID already exists. Please choose another.');
+      setModalError('Employee ID already exists. Please choose another.');
       return;
     }
 
@@ -493,7 +625,7 @@ export default function StaffPage() {
           fullName: formState.fullName.trim(),
           phone: formState.phone.trim() || '',
           email: normalizedEmail,
-          employeeNumber: Number(formState.employeeNumber),
+          employeeNumber: Number(normalizedEmployeeNumber),
           accountType: formState.accountType,
           jobs: formState.jobs,
           ...(pinToSend ? { pinCode: pinToSend } : {}),
@@ -531,7 +663,8 @@ export default function StaffPage() {
           console.log('[create-user] status', result.status, 'error', result.error, 'data', result.data);
         }
         if (result.status === 409 && result.code === 'EMPLOYEE_ID_TAKEN') {
-          setModalError('Employee ID already exists. Please choose a different one.');
+          setEmployeeNumberError('Employee ID already exists. Please choose another.');
+          setModalError('Employee ID already exists. Please choose another.');
           setSubmitting(false);
           return;
         }
@@ -1090,14 +1223,43 @@ export default function StaffPage() {
                   inputMode="numeric"
                   maxLength={4}
                   value={formState.employeeNumber}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    if (modalError) setModalError('');
+                    if (employeeNumberError) setEmployeeNumberError('');
+                    setEmployeeNumberTouched(true);
                     setFormState((prev) => ({
                       ...prev,
                       employeeNumber: e.target.value.replace(/\D/g, ''),
-                    }))
-                  }
-                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
+                    }));
+                  }}
+                  onBlur={() => {
+                    if (formState.employeeNumber.trim() && /^\d{1,4}$/.test(formState.employeeNumber.trim())) {
+                      setFormState((prev) => ({
+                        ...prev,
+                        employeeNumber: prev.employeeNumber.trim().padStart(4, '0'),
+                      }));
+                    }
+                  }}
+                  className={`w-full mt-1 px-3 py-2 bg-theme-tertiary border rounded-lg text-theme-primary ${
+                    employeeNumberError ? 'border-red-500' : 'border-theme-primary'
+                  }`}
                 />
+                {employeeNumberError ? (
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <p className="text-xs text-red-400">{employeeNumberError}</p>
+                    {(employeeNumberError.includes('already exists') || employeeNumberError.includes('No available')) && (
+                      <button
+                        type="button"
+                        onClick={handleRegenerateEmployeeNumber}
+                        className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                      >
+                        Regenerate
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-theme-muted mt-1">Auto-generated unique 4-digit ID. You can edit it.</p>
+                )}
               </div>
               <div>
                 <label className="text-sm text-theme-secondary">Phone</label>

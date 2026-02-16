@@ -558,6 +558,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         jobs: normalized.jobs,
         hourlyPay: normalized.hourlyPay,
         jobPay: normalized.jobPay,
+        employeeNumber: normalized.employeeNumber ?? null,
         email: normalized.email ?? undefined,
         phone: normalized.phone ?? undefined,
       };

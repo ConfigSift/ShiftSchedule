@@ -9,7 +9,6 @@ import {
   formatReportWeekRange,
   formatHourForReport,
   getJobColorClasses,
-  getJobColorKey,
   compareJobs,
 } from './report-utils';
 import { ReportHeader } from './ReportHeader';
@@ -210,19 +209,6 @@ export function WeeklyScheduleReport({
 
   const weekStart = weekDates[0];
   const weekEnd = weekDates[6];
-  const activeRoles = useMemo(
-    () =>
-      Array.from(
-        shifts.reduce((acc, shift) => {
-          if (shift.isBlocked) return acc;
-          const job = shift.job ?? 'Unassigned';
-          if (!acc.has(job)) acc.set(job, getJobColorKey(job));
-          return acc;
-        }, new Map<string, string>())
-      ),
-    [shifts]
-  );
-
   return (
     <div className="report-weekly-root">
       <ReportHeader
@@ -336,25 +322,9 @@ export function WeeklyScheduleReport({
         </table>
       )}
 
-      {/* Footer: legend + totals */}
+      {/* Footer */}
       <div className="report-footer flex flex-wrap items-center gap-x-4 gap-y-1 mt-4 pt-3 border-t border-zinc-200 text-[10px] text-zinc-500">
         <div className="footer-meta">Generated {formatReportTimestamp()}</div>
-        <div className="color-legend ml-auto flex flex-wrap items-center gap-x-4 gap-y-1">
-          <div className="legend-item">
-            <span className="legend-dot" style={{ backgroundColor: '#f59e0b' }} />
-            <span>AM shift</span>
-          </div>
-          <div className="legend-item">
-            <span className="legend-dot" style={{ backgroundColor: '#6366f1' }} />
-            <span>PM shift</span>
-          </div>
-          {activeRoles.map(([job, key]) => (
-            <div key={job} className="legend-item">
-              <span className={`legend-dot role-${key}-solid`} />
-              <span>{job}</span>
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );

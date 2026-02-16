@@ -53,42 +53,12 @@ function renderStatsBar(items: Array<{ label: string; value: string; accent?: bo
   `;
 }
 
-function renderLegendItems(items: Array<{ label: string; className?: string; style?: string }>): string {
-  if (!items.length) return '';
-  return items
-    .map((item) => {
-      const extraClass = item.className ? ` ${item.className}` : '';
-      const dotStyle = item.style ? `style="${item.style}"` : '';
-      return `
-        <div class="legend-item">
-          <span class="legend-dot${extraClass}" ${dotStyle}></span>
-          <span>${escapeHTML(item.label)}</span>
-        </div>
-      `;
-    })
-    .join('');
-}
-
-function renderFooter(timestamp: string, legendHTML?: string): string {
+function renderFooter(timestamp: string): string {
   return `
     <div class="report-footer">
       <div class="footer-meta">Generated ${escapeHTML(timestamp)}</div>
-      ${legendHTML ? `<div class="color-legend">${legendHTML}</div>` : ''}
     </div>
   `;
-}
-
-function getActiveRoles(shifts: Shift[]): Array<{ job: string; key: string }> {
-  const seen = new Set<string>();
-  const roles: Array<{ job: string; key: string }> = [];
-  shifts.forEach((shift) => {
-    if (shift.isBlocked) return;
-    const job = shift.job ?? 'Unassigned';
-    if (seen.has(job)) return;
-    seen.add(job);
-    roles.push({ job, key: getJobColorKey(job) });
-  });
-  return roles;
 }
 
 function formatPhone(emp: Employee): string {
@@ -106,9 +76,7 @@ export function generateDailyRosterHTML(
   employees: Employee[],
   shifts: Shift[]
 ): string {
-  const stats = calculateDailyStats(employees, shifts);
   const timestamp = formatReportTimestamp();
-  const totalHours = shifts.reduce((sum, shift) => sum + Math.max(0, shift.endHour - shift.startHour), 0);
 
   const employeeMap = new Map(employees.map((e) => [e.id, e]));
   const employeeIds = new Set(shifts.map((s) => s.employeeId));
@@ -158,16 +126,6 @@ export function generateDailyRosterHTML(
   const pmGroups = buildGroups('PM');
   const hasShifts = shifts.length > 0;
 
-  const legendItems = [
-    ...(stats.doublesCount > 0
-      ? [{ label: 'Double shift', className: 'legend-dot', style: 'background:#f59e0b;' }]
-      : []),
-    ...getActiveRoles(shifts).map((role) => ({
-      label: role.job,
-      className: `legend-dot role-${role.key}-solid`,
-    })),
-  ];
-
   return `
     <div class="report-page report-roster-root report-print">
       ${renderHeaderHTML({
@@ -175,25 +133,13 @@ export function generateDailyRosterHTML(
         title: 'Daily Roster',
         dateLabel: formatReportDate(date),
       })}
-      ${renderStatsBar(
-        [
-          { label: 'Staff', value: String(stats.total) },
-          { label: 'AM', value: String(stats.amCount) },
-          { label: 'PM', value: String(stats.pmCount) },
-          ...(stats.doublesCount > 0 ? [{ label: 'Doubles', value: String(stats.doublesCount), accent: true }] : []),
-          { label: 'Total Hours', value: `${Math.round(totalHours * 10) / 10}h`, className: 'print-hide-total-hours' },
-          ...(stats.estLaborCost > 0
-            ? [{ label: 'Est. Labor', value: `$${stats.estLaborCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}` }]
-            : []),
-        ]
-      )}
       ${
         !hasShifts
           ? `<div class="empty-state">No shifts scheduled.</div>`
           : `
         <div class="roster-columns">
           <div class="roster-column roster-column-am">
-            <h2>AM Shift \u2013 ${stats.amCount} staff</h2>
+            <h2>AM Shift</h2>
             ${
               amGroups.length === 0
                 ? '<div class="employee-row"><span class="employee-name">No AM shifts</span></div>'
@@ -224,7 +170,7 @@ export function generateDailyRosterHTML(
             }
           </div>
           <div class="roster-column roster-column-pm">
-            <h2>PM Shift \u2013 ${stats.pmCount} staff</h2>
+            <h2>PM Shift</h2>
             ${
               pmGroups.length === 0
                 ? '<div class="employee-row"><span class="employee-name">No PM shifts</span></div>'
@@ -257,7 +203,7 @@ export function generateDailyRosterHTML(
         </div>
       `
       }
-      ${renderFooter(timestamp, renderLegendItems(legendItems))}
+      ${renderFooter(timestamp)}
     </div>
   `;
 }
@@ -294,7 +240,6 @@ export function generateDailyTimelineHTML(
   const stats = calculateDailyStats(employees, shifts);
   const timestamp = formatReportTimestamp();
   const totalHours = shifts.reduce((sum, shift) => sum + Math.max(0, shift.endHour - shift.startHour), 0);
-  const roles = getActiveRoles(shifts);
 
   let maxEnd = 23;
   shifts.forEach((shift) => {
@@ -341,15 +286,6 @@ export function generateDailyTimelineHTML(
     if (!rows || rows.length === 0) continue;
     groups.push({ job, key: getJobColorKey(job), rows });
   }
-
-  const legendItems = [
-    { label: 'AM shift', className: 'am-dot' },
-    { label: 'PM shift', className: 'pm-dot' },
-    ...roles.map((role) => ({
-      label: role.job,
-      className: `legend-dot role-${role.key}-solid`,
-    })),
-  ];
 
   return `
     <div class="report-page report-timeline-root">
@@ -448,7 +384,7 @@ export function generateDailyTimelineHTML(
         </div>
       `
       }
-      ${renderFooter(timestamp, renderLegendItems(legendItems))}
+      ${renderFooter(timestamp)}
     </div>
   `;
 }
@@ -541,11 +477,6 @@ export function generateWeeklyScheduleHTML(
     groups.push({ job, key: getJobColorKey(job), rows });
   }
 
-  const legendItems = [
-    { label: 'AM shift', className: 'am-dot' },
-    { label: 'PM shift', className: 'pm-dot' },
-  ];
-
   const hasShifts = shifts.length > 0;
 
   return `
@@ -630,7 +561,7 @@ export function generateWeeklyScheduleHTML(
         </table>
       `
       }
-      ${renderFooter(timestamp, renderLegendItems(legendItems))}
+      ${renderFooter(timestamp)}
     </div>
   `;
 }

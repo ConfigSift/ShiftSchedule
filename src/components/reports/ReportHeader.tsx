@@ -50,15 +50,17 @@ export function ReportHeader({
       </div>
 
       {stats && stats.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-right">
-          {stats.map((stat) => (
-            <div key={stat.label} className="min-w-[90px]">
-              <div className="text-[10px] uppercase tracking-wide text-zinc-400">
-                {stat.label}
+        <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-5 gap-y-2">
+            {stats.map((stat) => (
+              <div key={stat.label} className="min-w-[86px]">
+                <div className="text-[9px] uppercase tracking-[0.18em] text-zinc-400">
+                  {stat.label}
+                </div>
+                <div className="text-base font-bold text-zinc-900 leading-tight">{stat.value}</div>
               </div>
-              <div className="text-sm font-semibold text-zinc-900">{stat.value}</div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 

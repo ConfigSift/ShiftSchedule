@@ -166,6 +166,7 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
       padding: 6px 10px;
       border-radius: 4px;
       margin-bottom: 8px;
+      text-align: center;
     }
 
     .roster-column-am h2 {
@@ -504,6 +505,11 @@ export function getPrintCSS(options?: { orientation?: 'portrait' | 'landscape'; 
       .report-page { padding: 0; max-width: none; }
       .no-print { display: none !important; }
       .print-hide-total-hours { display: none !important; }
+      .color-legend,
+      .legend-item,
+      .legend-dot {
+        display: none !important;
+      }
 
       /* Prevent row breaks */
       .employee-row,
