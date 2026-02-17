@@ -173,6 +173,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
           await refreshProfile();
           showToast('Profile updated', 'success');
         }}
+        onSuccess={(message) => showToast(message, 'success')}
         onError={(message) => showToast(message, 'error')}
         onAuthError={(message) => showToast(message, 'error')}
       />

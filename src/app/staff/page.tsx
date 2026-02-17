@@ -52,7 +52,6 @@ const EMPTY_FORM = {
   phone: '',
   accountType: 'EMPLOYEE',
   jobs: [] as string[],
-  passcode: '',
   jobPay: {} as Record<string, string>,
 };
 
@@ -114,11 +113,6 @@ export default function StaffPage() {
     hasMembershipInThisOrg: false,
     hasMembershipInOtherOrg: false,
   });
-  
-  const [resetModalOpen, setResetModalOpen] = useState(false);
-  const [resetTarget, setResetTarget] = useState<OrgUser | null>(null);
-  const [resetPasscode, setResetPasscode] = useState('');
-  const [resetConfirm, setResetConfirm] = useState('');
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<OrgUser | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
@@ -133,12 +127,6 @@ export default function StaffPage() {
   const allowAdminCreation = process.env.NEXT_PUBLIC_ENABLE_ADMIN_CREATION === 'true';
 
   const canManageUser = (user: OrgUser) => {
-    if (isAdmin) return true;
-    if (!isManager) return false;
-    return user.accountType !== 'ADMIN';
-  };
-
-  const canResetPin = (user: OrgUser) => {
     if (isAdmin) return true;
     if (!isManager) return false;
     return user.accountType !== 'ADMIN';
@@ -208,7 +196,7 @@ export default function StaffPage() {
 
     const mapped = (data || []).map((row) => {
       const normalized = normalizeUserRow(row);
-      const displayEmail = normalized.email ?? normalized.realEmail ?? '';
+      const displayEmail = normalized.email ?? '';
       return {
         id: normalized.id,
         authUserId: normalized.authUserId ?? null,
@@ -379,9 +367,6 @@ export default function StaffPage() {
         hasMembershipInThisOrg,
         hasMembershipInOtherOrg,
       });
-      if (existsInAuth) {
-        setFormState((prev) => (prev.passcode ? { ...prev, passcode: '' } : prev));
-      }
     }, 350);
 
     return () => {
@@ -443,22 +428,6 @@ export default function StaffPage() {
     setFormState((prev) => ({ ...prev, employeeNumber: generated }));
   };
 
-  const openResetModal = (user: OrgUser) => {
-    setError('');
-    setSuccessMessage('');
-    setResetTarget(user);
-    setResetPasscode('');
-    setResetConfirm('');
-    setResetModalOpen(true);
-  };
-
-  const closeResetModal = () => {
-    setResetModalOpen(false);
-    setResetTarget(null);
-    setResetPasscode('');
-    setResetConfirm('');
-  };
-
   const openDeleteModal = (user: OrgUser) => {
     setError('');
     setSuccessMessage('');
@@ -495,12 +464,8 @@ export default function StaffPage() {
       );
       // Also update profileUser so if modal re-renders before close, it has fresh data
       setProfileUser(updatedUser);
-      // Don't call loadUsers() here - we already have fresh data from API
-      // Calling loadUsers() could overwrite with stale data due to replication lag
-    } else {
-      // Only refetch if we didn't get updated user from API
-      await loadUsers();
     }
+    await loadUsers();
   };
 
   const handleAuthExpired = (message: string) => {
@@ -533,8 +498,6 @@ export default function StaffPage() {
     if (!formState.fullName.trim()) missingFields.push('Full name');
     if (!formState.email.trim()) missingFields.push('Email');
     if (!formState.employeeNumber.trim()) missingFields.push('Employee number');
-    const requiresPin = !emailCheck.existsInAuth;
-    if (requiresPin && !formState.passcode.trim()) missingFields.push('PIN');
     if (missingFields.length > 0) {
       setModalError(`Missing required fields: ${missingFields.join(', ')}.`);
       return;
@@ -555,11 +518,6 @@ export default function StaffPage() {
     }
     if (emailCheck.alreadyMember) {
       setModalError('User already belongs to this restaurant.');
-      return;
-    }
-
-    if (requiresPin && !/^\d{6}$/.test(formState.passcode)) {
-      setModalError('PIN must be exactly 6 digits.');
       return;
     }
 
@@ -616,7 +574,6 @@ export default function StaffPage() {
     setSubmitting(true);
 
     try {
-      const pinToSend = requiresPin ? formState.passcode : '';
       const normalizedEmail = formState.email.trim().toLowerCase();
       const result = await apiFetch('/api/admin/create-user', {
         method: 'POST',
@@ -628,7 +585,6 @@ export default function StaffPage() {
           employeeNumber: Number(normalizedEmployeeNumber),
           accountType: formState.accountType,
           jobs: formState.jobs,
-          ...(pinToSend ? { pinCode: pinToSend } : {}),
           hourlyPay: avgHourlyPay,
           jobPay: jobPayPayload,
         },
@@ -693,6 +649,16 @@ export default function StaffPage() {
           setSubmitting(false);
           return;
         }
+        if (
+          result.code === 'AUTH_INVITE_FAILED'
+          || result.code === 'AUTH_RECOVERY_FAILED'
+          || result.code === 'AUTH_USER_LOOKUP_FAILED'
+          || result.code === 'MISSING_AUTH_ID'
+        ) {
+          setModalError(result.error || 'Unable to send onboarding email. Please try again.');
+          setSubmitting(false);
+          return;
+        }
         const errorFromJson =
           responseObject && typeof responseObject.error === 'string' ? responseObject.error : '';
         const errorObject =
@@ -732,7 +698,9 @@ export default function StaffPage() {
       }
 
       if (created) {
-        const msg = action === 'ADDED_EXISTING_AUTH' ? 'Employee added.' : 'Employee created.';
+        const msg = action === 'ADDED_EXISTING_AUTH'
+          ? 'Employee added. Password setup email sent.'
+          : 'Employee created. Onboarding email sent.';
         setSuccessMessage(msg);
         closeModal();
       } else if (invited) {
@@ -830,101 +798,6 @@ export default function StaffPage() {
 
     showToast('Invitation canceled', 'success');
     await loadUsers();
-  };
-
-  const canResetSelf = () => {
-    if (!resetTarget || !currentUser) return false;
-    return resetTarget.authUserId === currentUser.authUserId;
-  };
-
-  const handleResetPasscode = async () => {
-    if (!activeRestaurantId || !resetTarget) return;
-    setError('');
-    setSuccessMessage('');
-    setAuthBanner(null);
-
-    const normalizedPin = resetPasscode.replace(/\D/g, '').slice(0, 6);
-    const normalizedConfirm = resetConfirm.replace(/\D/g, '').slice(0, 6);
-
-    if (normalizedPin !== resetPasscode) {
-      setResetPasscode(normalizedPin);
-    }
-    if (normalizedConfirm !== resetConfirm) {
-      setResetConfirm(normalizedConfirm);
-    }
-
-    if (!/^\d{6}$/.test(normalizedPin)) {
-      setError('PIN must be exactly 6 digits.');
-      return;
-    }
-
-    if (normalizedPin === '000000') {
-      setError('PIN cannot be 000000.');
-      return;
-    }
-
-    if (normalizedPin !== normalizedConfirm) {
-      setError('PINs do not match.');
-      return;
-    }
-
-    if (canResetSelf()) {
-      const confirmed = window.confirm('Reset your own PIN? This will sign you out.');
-      if (!confirmed) return;
-    }
-
-    setSubmitting(true);
-    try {
-      if (process.env.NODE_ENV !== 'production') {
-         
-        console.debug('[reset-pin] pin', normalizedPin, normalizedPin.length, 'confirm', normalizedConfirm, normalizedConfirm.length);
-      }
-      const payload = {
-        userId: resetTarget.id,
-        organizationId: activeRestaurantId,
-        pinCode: normalizedPin,
-      };
-      if (process.env.NODE_ENV !== 'production') {
-         
-        console.debug('[reset-pin]', {
-          userId: resetTarget.id,
-          email: resetTarget.email,
-          pinLen: normalizedPin.length,
-        });
-         
-        console.debug('[reset-pin] payload', payload);
-      }
-      const result = await apiFetch('/api/admin/set-passcode', {
-        method: 'POST',
-        json: payload,
-      });
-
-      if (!result.ok) {
-        if (process.env.NODE_ENV !== 'production') {
-           
-          console.log('[set-passcode] status', result.status, 'error', result.error, 'data', result.data);
-        }
-        if (result.status === 401) {
-          const message = result.error || 'Session expired. Please sign out and sign in again.';
-          handleAuthExpired(message);
-        } else if (result.status === 403) {
-          const message = result.error || 'You dont have permission for that action.';
-          setError(message);
-          showToast(message, 'error');
-        } else {
-          setError(result.error || 'Unable to reset PIN.');
-        }
-        setSubmitting(false);
-        return;
-      }
-
-      setSuccessMessage('PIN updated.');
-      closeResetModal();
-    } catch {
-      setError('Request failed. Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
   };
 
   // Must be called before any early returns
@@ -1125,15 +998,6 @@ export default function StaffPage() {
                             <Trash2 className="w-3 h-3" />
                             Delete
                           </button>
-                          {canResetPin(user) && (
-                            <button
-                              type="button"
-                              onClick={() => openResetModal(user)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
-                            >
-                              Reset PIN
-                            </button>
-                          )}
                         </div>
                       )}
                     </div>
@@ -1332,16 +1196,12 @@ export default function StaffPage() {
                   type="password"
                   inputMode="numeric"
                   maxLength={6}
-                  value={formState.passcode}
-                  onChange={(e) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      passcode: e.target.value.replace(/\D/g, '').slice(0, 6),
-                    }))
-                  }
-                  disabled={authExists}
+                  value=""
+                  onChange={() => undefined}
+                  disabled
                   className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary disabled:opacity-60"
                 />
+                <p className="text-xs text-theme-muted mt-1">PIN login is disabled for now.</p>
                 {inviteOnly && (
                   <p className="text-xs text-theme-muted mt-1">
                     This employee already has an account in another restaurant. An invitation will be sent.
@@ -1349,7 +1209,7 @@ export default function StaffPage() {
                 )}
                 {addDirect && (
                   <p className="text-xs text-theme-muted mt-1">
-                    This employee already has an account. They will be added directly. PIN cannot be set here.
+                    This employee already has an account. They will be added directly.
                   </p>
                 )}
               </div>
@@ -1386,63 +1246,10 @@ export default function StaffPage() {
         currentAuthUserId={currentUser?.authUserId ?? null}
         onClose={closeProfile}
         onSaved={handleProfileSaved}
+        onSuccess={(message) => setSuccessMessage(message)}
         onError={setError}
         onAuthError={handleAuthExpired}
       />
-
-      {resetModalOpen && resetTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60" onClick={closeResetModal} />
-          <div className="relative w-full max-w-md bg-theme-secondary border border-theme-primary rounded-2xl p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-theme-primary">Reset PIN</h2>
-            <p className="text-sm text-theme-tertiary">
-              Update PIN for {resetTarget.fullName || resetTarget.email}.
-            </p>
-            <div className="space-y-3">
-              <div>
-                <label className="text-sm text-theme-secondary">New PIN</label>
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={resetPasscode}
-                  onChange={(e) => setResetPasscode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-theme-secondary">Confirm PIN</label>
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={resetConfirm}
-                  onChange={(e) => setResetConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  className="w-full mt-1 px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary"
-                />
-              </div>
-            </div>
-            {error && <p className="text-sm text-red-400">{error}</p>}
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={closeResetModal}
-                className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleResetPasscode}
-                disabled={!/^\d{6}$/.test(resetPasscode) || resetPasscode === '000000' || resetPasscode !== resetConfirm || submitting}
-                className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
-              >
-                {submitting ? 'Updating...' : 'Update PIN'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {deleteModalOpen && deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

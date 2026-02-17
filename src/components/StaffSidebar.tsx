@@ -596,6 +596,7 @@ export function StaffSidebar() {
             await loadRestaurantData(activeRestaurantId);
             showToast('Profile updated', 'success');
           }}
+          onSuccess={(message) => showToast(message, 'success')}
           onError={(message) => showToast(message, 'error')}
           onAuthError={(message) => showToast(message, 'error')}
         />

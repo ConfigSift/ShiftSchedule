@@ -5,8 +5,8 @@ import { getUserRole } from '@/utils/role';
 import { normalizeJobs } from '@/utils/jobs';
 import { splitFullName } from '@/utils/userMapper';
 import { normalizeEmployeeNumber, validateEmployeeNumber } from '@/utils/employeeAuth';
-import { normalizePin } from '@/utils/pinNormalize';
 import { getAdminAuthApi } from '@/lib/supabase/adminAuth';
+import { getBaseUrls } from '@/lib/routing/getBaseUrls';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -135,6 +135,25 @@ function toPostgrestErrorShape(error: PostgrestErrorShape | null | undefined) {
   };
 }
 
+function isExistingAuthUserError(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('already been registered') ||
+    normalized.includes('already registered') ||
+    normalized.includes('already exists')
+  );
+}
+
+function getStaffOnboardingRedirect(request: NextRequest) {
+  const forwardedHost = request.headers.get('x-forwarded-host') ?? request.headers.get('host') ?? '';
+  const forwardedProto = request.headers.get('x-forwarded-proto') ?? '';
+  const requestOrigin = forwardedHost
+    ? `${forwardedProto || 'https'}://${forwardedHost}`
+    : request.nextUrl.origin;
+  const { loginBaseUrl } = getBaseUrls(requestOrigin);
+  return `${loginBaseUrl}/reset-passcode`;
+}
+
 export async function POST(request: NextRequest) {
   const { supabase, response } = createSupabaseRouteClient(request);
   const hasRefreshToken = request.cookies.getAll().some(
@@ -170,11 +189,6 @@ export async function POST(request: NextRequest) {
         422
       );
     }
-
-    const pinValueRaw = payload.pinCode ?? payload.passcode ?? '';
-    const pinValue = String(pinValueRaw ?? '').trim();
-    const pinProvided = pinValue.length > 0;
-    let normalizedPin: string | null = null;
 
     if (!validateEmployeeNumber(payload.employeeNumber)) {
       return toResponse(
@@ -370,64 +384,80 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!existingAuthUserId && pinProvided) {
-      try {
-        normalizedPin = normalizePin(pinValue);
-      } catch {
-        return toResponse(
-          { created: false, invited: false, already_member: false, error: 'PIN must be 6 digits.' },
-          400
-        );
-      }
-    }
-
-    if (!existingAuthUserId && !pinProvided) {
-      return toResponse(
-        {
-          created: false,
-          invited: false,
-          already_member: false,
-          error: 'PIN is required for new accounts.',
-        },
-        400
-      );
-    }
-
     let authUserIdToUse = existingAuthUserId;
     let invited = false;
     let action: CreateResponse['action'] = 'CREATED';
+    const onboardingRedirectTo = getStaffOnboardingRedirect(request);
 
     if (!authUserIdToUse) {
-      const normalizedPinValue = normalizedPin ?? '';
-      if (!normalizedPinValue) {
+      const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
+        normalizedEmail,
+        { redirectTo: onboardingRedirectTo }
+      );
+
+      if (inviteError) {
+        if (isExistingAuthUserError(inviteError.message ?? '')) {
+          const fallbackAuthUserId = await findAuthUserIdByEmail(normalizedEmail);
+          if (!fallbackAuthUserId) {
+            return toResponse(
+              {
+                created: false,
+                invited: false,
+                already_member: false,
+                code: 'AUTH_USER_LOOKUP_FAILED',
+                error: 'User account exists but could not be linked. Please try again.',
+              },
+              409
+            );
+          }
+          authUserIdToUse = fallbackAuthUserId;
+        } else {
+          return toResponse(
+            {
+              created: false,
+              invited: false,
+              already_member: false,
+              code: 'AUTH_INVITE_FAILED',
+              error: inviteError.message ?? 'Unable to send onboarding email.',
+            },
+            400
+          );
+        }
+      } else {
+        authUserIdToUse = inviteData?.user?.id ?? (await findAuthUserIdByEmail(normalizedEmail));
+      }
+
+      if (!authUserIdToUse) {
         return toResponse(
           {
             created: false,
             invited: false,
             already_member: false,
-            error: 'PIN is required for new accounts.',
+            code: 'MISSING_AUTH_ID',
+            error: 'Unable to create auth user for this email.',
+          },
+          409
+        );
+      }
+
+      action = 'CREATED';
+    } else {
+      const { error: recoveryError } = await supabaseAdmin.auth.resetPasswordForEmail(normalizedEmail, {
+        redirectTo: onboardingRedirectTo,
+      });
+      if (recoveryError) {
+        return toResponse(
+          {
+            created: false,
+            invited: false,
+            already_member: false,
+            code: 'AUTH_RECOVERY_FAILED',
+            error: recoveryError.message ?? 'Unable to send onboarding email.',
           },
           400
         );
       }
 
-      const { data: createdAuthUser, error: createAuthError } = await supabaseAdmin.auth.admin.createUser({
-        email: normalizedEmail,
-        password: normalizedPinValue,
-        email_confirm: process.env.NODE_ENV !== 'production',
-      });
-
-      if (createAuthError || !createdAuthUser?.user?.id) {
-        const message = createAuthError?.message ?? 'Unable to create auth user.';
-        return toResponse(
-          { created: false, invited: false, already_member: false, error: message },
-          400
-        );
-      }
-
-      authUserIdToUse = createdAuthUser.user.id;
-      action = 'CREATED';
-    } else {
       if (hasMembershipInOtherOrg) {
         invited = true;
         action = 'INVITED';
