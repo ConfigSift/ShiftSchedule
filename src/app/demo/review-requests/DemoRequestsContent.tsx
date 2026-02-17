@@ -27,7 +27,7 @@ function DemoRequestsInner() {
   const [endDate, setEndDate] = useState('');
   const [requestType, setRequestType] = useState<'Vacation' | 'Sick' | 'Personal'>('Vacation');
   const [reason, setReason] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED'>('PENDING');
+  const [statusFilter, setStatusFilter] = useState<'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELED'>('PENDING');
 
   const handleGetStartedClick = useCallback((event: React.MouseEvent<HTMLAnchorElement>) => {
     if (getIsLocalhost(window.location.host)) return;
@@ -210,7 +210,7 @@ function DemoRequestsInner() {
 
           <div className="rounded-2xl border border-theme-primary bg-theme-secondary p-4 space-y-3">
             <div className="flex flex-wrap gap-2">
-              {(['PENDING', 'APPROVED', 'DENIED', 'CANCELLED'] as const).map((status) => (
+              {(['PENDING', 'APPROVED', 'DENIED', 'CANCELED'] as const).map((status) => (
                 <button
                   key={status}
                   onClick={() => setStatusFilter(status)}

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { Clock } from 'lucide-react';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
 import { formatDateLong } from '../../utils/timeUtils';
@@ -12,11 +13,35 @@ type TimeOffRequestsPanelProps = {
 };
 
 const getStatusClasses = (status: string) => {
-  const normalized = String(status).toUpperCase();
+  const normalized = normalizeTimeOffStatus(status);
   if (normalized === 'PENDING') return 'bg-amber-500/20 text-amber-400';
   if (normalized === 'APPROVED') return 'bg-emerald-500/20 text-emerald-400';
   if (normalized === 'DENIED') return 'bg-red-500/20 text-red-400';
+  if (normalized === 'CANCELED') return 'bg-zinc-500/20 text-zinc-400';
   return 'bg-theme-tertiary text-theme-muted';
+};
+
+const normalizeTimeOffStatus = (status: unknown): 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELED' => {
+  const normalized = String(status ?? '').trim().toUpperCase();
+  if (normalized === 'CANCELLED') return 'CANCELED';
+  if (normalized === 'APPROVED' || normalized === 'DENIED' || normalized === 'CANCELED') {
+    return normalized;
+  }
+  return 'PENDING';
+};
+
+const formatCanceledAt = (value?: string | null): string | null => {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 };
 
 const parseTimestamp = (value: unknown): number => {
@@ -49,6 +74,7 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
   const {
     timeOffRequests,
     reviewTimeOffRequest,
+    cancelTimeOffRequest,
     getEmployeeById,
     showToast,
     loadRestaurantData,
@@ -57,14 +83,23 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
 
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [requestTab, setRequestTab] = useState<'PENDING' | 'REQUESTS'>('PENDING');
-  const [requestStatusFilter, setRequestStatusFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'DENIED'>('ALL');
+  const [requestStatusFilter, setRequestStatusFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELED'>('ALL');
   const [employeeQuery, setEmployeeQuery] = useState('');
   const [reviewingIds, setReviewingIds] = useState<Set<string>>(new Set());
+  const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set());
   const [optimisticRemovedIds, setOptimisticRemovedIds] = useState<Set<string>>(new Set());
   const [optimisticStatusById, setOptimisticStatusById] = useState<Record<string, 'APPROVED' | 'DENIED'>>({});
   const [submittingById, setSubmittingById] = useState<Record<string, 'APPROVED' | 'DENIED'>>({});
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const todayYmd = useMemo(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, []);
 
   const matchedRestaurant = activeRestaurantId
     ? accessibleRestaurants.find((restaurant) => restaurant.id === activeRestaurantId)
@@ -128,7 +163,7 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
         : requestStatusFilter === 'ALL'
           ? scopedRequests
           : scopedRequests.filter(
-              (request) => String(request.status).toUpperCase() === requestStatusFilter
+              (request) => normalizeTimeOffStatus(request.status) === requestStatusFilter
             );
     if (!isManager || !normalizedEmployeeQuery) {
       return requests;
@@ -154,6 +189,13 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
     [filteredRequests, selectedRequestId]
   );
   const displayedRequests = filteredRequests;
+
+  const canCancelRequest = (request: { employeeId: string; status: string; startDate: string }) =>
+    Boolean(currentUser) &&
+    request.employeeId === currentUser?.id &&
+    (normalizeTimeOffStatus(request.status) === 'PENDING' ||
+      normalizeTimeOffStatus(request.status) === 'APPROVED') &&
+    request.startDate > todayYmd;
 
   const handleDecision = async (id: string, status: 'APPROVED' | 'DENIED') => {
     if (!currentUser) return;
@@ -191,6 +233,52 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
     setOptimisticStatusById((prev) => ({ ...prev, [id]: status }));
     if (activeRestaurantId) {
       loadRestaurantData(activeRestaurantId);
+    }
+  };
+
+  const handleCancelRequest = async (id: string) => {
+    if (cancelingIds.has(id)) return;
+    setActionError(null);
+    const request = displayedRequests.find((item) => item.id === id);
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[timeoff] withdraw click', {
+        requestId: id,
+        status: request?.status,
+        startDate: request?.startDate,
+      });
+    }
+    setCancelingIds((prev) => new Set(prev).add(id));
+    try {
+      const result = await cancelTimeOffRequest(id);
+      if (!result.success) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.error('[timeoff] withdraw failed', result.error);
+        }
+        const message = result.error || 'Unable to withdraw this request.';
+        setActionError(`Could not cancel request: ${message}`);
+        showToast(message, 'error');
+        return;
+      }
+      if (activeRestaurantId) {
+        await loadRestaurantData(activeRestaurantId);
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[timeoff] withdraw success', { requestId: id });
+      }
+      showToast('Request canceled', 'success');
+    } catch (err) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('[timeoff] withdraw failed', err);
+      }
+      const message = err instanceof Error ? err.message : 'Unable to withdraw this request.';
+      setActionError(`Could not cancel request: ${message}`);
+      showToast(message, 'error');
+    } finally {
+      setCancelingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -264,7 +352,9 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
               <select
                 value={requestStatusFilter}
                 onChange={(event) =>
-                  setRequestStatusFilter(event.target.value as 'ALL' | 'PENDING' | 'APPROVED' | 'DENIED')
+                  setRequestStatusFilter(
+                    event.target.value as 'ALL' | 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELED'
+                  )
                 }
                 className="px-2 py-1.5 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary dark:bg-zinc-950 dark:border-white/10 dark:text-white"
               >
@@ -272,6 +362,7 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
                 <option value="PENDING">Pending</option>
                 <option value="APPROVED">Approved</option>
                 <option value="DENIED">Denied</option>
+                <option value="CANCELED">Canceled</option>
               </select>
             </label>
           )}
@@ -295,6 +386,11 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
             : 'border-t border-theme-primary bg-white dark:bg-zinc-900 dark:border-white/10 px-5 py-6 overflow-x-auto'
         }
       >
+        {actionError && (
+          <div className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            {actionError}
+          </div>
+        )}
         {displayedRequests.length === 0 ? (
           <p className="text-theme-muted dark:text-white/60">No time off requests yet.</p>
         ) : isEmployeeView ? (
@@ -303,11 +399,24 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
               const employee = getEmployeeById(request.employeeId);
               const { reason } = splitReason(request.reason);
               const jobText = employee?.jobs?.length ? employee.jobs.join(', ') : 'No job';
+              const normalizedStatus = normalizeTimeOffStatus(request.status);
+              const canCancel = canCancelRequest(request);
+              const canceledAtFormatted = formatCanceledAt(request.canceledAt ?? request.canceled_at ?? null);
+              const canceledTitle = canceledAtFormatted
+                ? `${canceledAtFormatted}${request.canceledAt ? ` (${request.canceledAt})` : ''}`
+                : undefined;
               return (
-                <button
+                <div
                   key={request.id}
-                  type="button"
                   onClick={() => setSelectedRequestId(request.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setSelectedRequestId(request.id);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
                   className="w-full rounded-2xl border border-theme-primary bg-theme-primary/40 p-4 text-left transition-colors hover:bg-theme-hover/30"
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -318,15 +427,42 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
                       </p>
                       <p className="text-xs text-theme-tertiary mt-1">{jobText}</p>
                     </div>
-                    <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getStatusClasses(String(request.status))}`}>
-                      {request.status}
-                    </span>
+                    <div className="flex flex-col items-end gap-1">
+                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getStatusClasses(String(request.status))}`}>
+                        {normalizedStatus}
+                      </span>
+                      {normalizedStatus === 'CANCELED' && canceledAtFormatted && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[11px] text-theme-muted dark:text-white/60"
+                          title={canceledTitle}
+                        >
+                          <Clock className="h-3 w-3" />
+                          Canceled {canceledAtFormatted}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <p className="text-sm text-theme-secondary truncate mt-3">{reason}</p>
                   <p className="text-xs text-theme-muted mt-2">
                     Submitted {formatDateLong(request.createdAt.split('T')[0])}
                   </p>
-                </button>
+                  {canCancel && (
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          void handleCancelRequest(request.id);
+                        }}
+                        disabled={cancelingIds.has(request.id)}
+                        className="w-full px-3 py-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {cancelingIds.has(request.id) ? 'Withdrawing...' : 'Withdraw'}
+                      </button>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -348,7 +484,12 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
               {displayedRequests.map((request) => {
                 const employee = getEmployeeById(request.employeeId);
                 const { reason, note } = splitReason(request.reason);
-                const isPending = String(request.status).toUpperCase() === 'PENDING';
+                const normalizedStatus = normalizeTimeOffStatus(request.status);
+                const isPending = normalizedStatus === 'PENDING';
+                const canceledAtFormatted = formatCanceledAt(request.canceledAt ?? request.canceled_at ?? null);
+                const canceledTitle = canceledAtFormatted
+                  ? `${canceledAtFormatted}${request.canceledAt ? ` (${request.canceledAt})` : ''}`
+                  : undefined;
                 return (
                   <tr key={request.id} className="text-theme-primary dark:text-white">
                     <td className="py-3 px-3">
@@ -363,9 +504,20 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
                       {request.startDate !== request.endDate && ` - ${formatDateLong(request.endDate)}`}
                     </td>
                     <td className="py-3 px-3">
-                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getStatusClasses(String(request.status))}`}>
-                        {request.status}
-                      </span>
+                      <div className="flex flex-col items-start gap-1">
+                        <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getStatusClasses(normalizedStatus)}`}>
+                          {normalizedStatus}
+                        </span>
+                        {normalizedStatus === 'CANCELED' && canceledAtFormatted && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[11px] text-theme-muted dark:text-white/60"
+                            title={canceledTitle}
+                          >
+                            <Clock className="h-3 w-3" />
+                            Canceled {canceledAtFormatted}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-3 text-theme-muted dark:text-white/60">
                       {formatDateLong(request.createdAt.split('T')[0])}
@@ -439,7 +591,7 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
               </button>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
-              {(['ALL', 'PENDING', 'APPROVED', 'DENIED'] as const).map((option) => (
+              {(['ALL', 'PENDING', 'APPROVED', 'DENIED', 'CANCELED'] as const).map((option) => (
                 <button
                   key={option}
                   type="button"
@@ -453,7 +605,15 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
                       : 'bg-theme-tertiary text-theme-secondary hover:bg-theme-hover'
                   }`}
                 >
-                  {option === 'ALL' ? 'All' : option === 'PENDING' ? 'Pending' : option === 'APPROVED' ? 'Approved' : 'Denied'}
+                  {option === 'ALL'
+                    ? 'All'
+                    : option === 'PENDING'
+                      ? 'Pending'
+                      : option === 'APPROVED'
+                        ? 'Approved'
+                        : option === 'DENIED'
+                          ? 'Denied'
+                          : 'Canceled'}
                 </button>
               ))}
             </div>
@@ -490,7 +650,7 @@ export function TimeOffRequestsPanel({ allowEmployee = false, showHeader = true 
               </p>
               <p className="text-theme-primary">
                 <span className="text-theme-muted mr-2">Status:</span>
-                {selectedRequest.status}
+                {normalizeTimeOffStatus(selectedRequest.status)}
               </p>
               <p className="text-theme-primary">
                 <span className="text-theme-muted mr-2">Job:</span>

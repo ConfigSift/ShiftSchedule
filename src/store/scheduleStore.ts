@@ -95,6 +95,15 @@ function readNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(asNumber) ? asNumber : fallback;
 }
 
+function normalizeTimeOffStatus(value: unknown): TimeOffStatus {
+  const normalized = readString(value, 'PENDING').trim().toUpperCase();
+  if (normalized === 'CANCELLED') return 'CANCELED';
+  if (normalized === 'APPROVED' || normalized === 'DENIED' || normalized === 'CANCELED') {
+    return normalized;
+  }
+  return 'PENDING';
+}
+
 function toShiftRow(row: UnknownRow, fallbackRestaurantId?: string): Shift {
   return {
     id: readString(row.id),
@@ -114,6 +123,7 @@ function toShiftRow(row: UnknownRow, fallbackRestaurantId?: string): Shift {
 }
 
 function toTimeOffRow(row: UnknownRow): TimeOffRequest {
+  const canceledAt = readOptionalString(row.canceled_at ?? row.cancelled_at);
   return {
     id: readString(row.id),
     employeeId: readString(
@@ -127,12 +137,14 @@ function toTimeOffRow(row: UnknownRow): TimeOffRequest {
     startDate: readString(row.start_date),
     endDate: readString(row.end_date),
     reason: readOptionalString(row.reason ?? row.note),
-    status: readString(row.status, 'PENDING').toUpperCase() as TimeOffStatus,
+    status: normalizeTimeOffStatus(row.status),
     createdAt: readString(row.created_at, new Date().toISOString()),
     updatedAt: readOptionalString(row.updated_at),
     reviewedBy: readOptionalString(row.reviewed_by),
     reviewedAt: readOptionalString(row.reviewed_at),
     managerNote: readOptionalString(row.manager_note),
+    canceledAt,
+    canceled_at: canceledAt,
   };
 }
 
@@ -1710,7 +1722,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     if (!organizationId) {
       return { success: false, error: 'Organization not selected.' };
     }
-    const normalizedStatus = String(status || '').toUpperCase() as TimeOffStatus;
+    const normalizedStatus = normalizeTimeOffStatus(status);
 
     const result = await apiFetch<{ request: Record<string, unknown> }>('/api/time-off/review', {
       method: 'POST',
@@ -1732,11 +1744,13 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         req.id === id
           ? {
               ...req,
-              status: String(data.status ?? normalizedStatus).toUpperCase() as TimeOffStatus,
+              status: normalizeTimeOffStatus(data.status ?? normalizedStatus),
               reviewedBy: readOptionalString(data.reviewed_by) ?? req.reviewedBy,
               reviewedAt: readOptionalString(data.reviewed_at) ?? req.reviewedAt,
               managerNote: readOptionalString(data.manager_note) ?? req.managerNote,
               updatedAt: readOptionalString(data.updated_at) ?? req.updatedAt,
+              canceledAt: readOptionalString(data.canceled_at ?? data.cancelled_at) ?? req.canceledAt,
+              canceled_at: readOptionalString(data.canceled_at ?? data.cancelled_at) ?? req.canceled_at,
             }
           : req
       ),
@@ -1768,8 +1782,10 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         req.id === id
           ? {
               ...req,
-              status: String(data.status ?? 'CANCELLED').toUpperCase() as TimeOffStatus,
+              status: normalizeTimeOffStatus(data.status ?? 'CANCELED'),
               updatedAt: readOptionalString(data.updated_at) ?? req.updatedAt,
+              canceledAt: readOptionalString(data.canceled_at ?? data.cancelled_at) ?? req.canceledAt,
+              canceled_at: readOptionalString(data.canceled_at ?? data.cancelled_at) ?? req.canceled_at,
             }
           : req
       ),

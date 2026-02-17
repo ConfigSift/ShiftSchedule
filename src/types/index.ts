@@ -71,7 +71,7 @@ export interface Shift {
   swapStatus?: 'none' | 'offered' | 'claimed';
 }
 
-export type TimeOffStatus = 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELLED';
+export type TimeOffStatus = 'PENDING' | 'APPROVED' | 'DENIED' | 'CANCELED';
 
 export interface TimeOffRequest {
   id: string;
@@ -86,6 +86,8 @@ export interface TimeOffRequest {
   reviewedBy?: string;
   reviewedAt?: string;
   managerNote?: string;
+  canceledAt?: string;
+  canceled_at?: string;
 }
 
 export interface BlockedPeriod {

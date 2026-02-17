@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
-import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
 import { normalizeUserRow } from '@/utils/userMapper';
 
@@ -11,6 +10,18 @@ type CancelPayload = {
   id: string;
   organizationId: string;
 };
+
+function toLocalYmd(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeStatus(value: unknown): string {
+  const normalized = String(value ?? '').trim().toUpperCase();
+  return normalized === 'CANCELLED' ? 'CANCELED' : normalized;
+}
 
 export async function POST(request: NextRequest) {
   let payload: CancelPayload;
@@ -43,6 +54,7 @@ export async function POST(request: NextRequest) {
     .from('users')
     .select('*')
     .eq('auth_user_id', authUserId)
+    .eq('organization_id', payload.organizationId)
     .maybeSingle();
 
   if (requesterError || !requesterRow) {
@@ -54,10 +66,11 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('Organization mismatch.', 403), response);
   }
 
-  const { data: target, error: targetError } = await supabaseAdmin
+  const { data: target, error: targetError } = await supabase
     .from('time_off_requests')
     .select('*')
     .eq('id', payload.id)
+    .eq('organization_id', payload.organizationId)
     .maybeSingle();
 
   if (targetError || !target) {
@@ -77,12 +90,12 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError('You cannot cancel this request.', 403), response);
   }
 
-  const currentStatus = String(target.status ?? '').toUpperCase();
-  if (currentStatus !== 'PENDING') {
+  const currentStatus = normalizeStatus(target.status);
+  if (currentStatus !== 'PENDING' && currentStatus !== 'APPROVED') {
     return applySupabaseCookies(
       NextResponse.json(
         {
-          error: 'Only pending requests can be cancelled.',
+          error: 'Only pending or approved requests can be canceled.',
           details: { status: target.status },
         },
         { status: 400 }
@@ -91,13 +104,31 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { data, error } = await supabaseAdmin
+  const startDate = String(target.start_date ?? '').trim();
+  const today = toLocalYmd(new Date());
+  if (!startDate || startDate <= today) {
+    return applySupabaseCookies(
+      NextResponse.json(
+        {
+          error: 'Only future requests can be canceled.',
+          details: { startDate: target.start_date, today },
+        },
+        { status: 400 }
+      ),
+      response
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabase
     .from('time_off_requests')
     .update({
-      status: 'CANCELLED',
-      updated_at: new Date().toISOString(),
+      status: 'CANCELED',
+      canceled_at: nowIso,
+      updated_at: nowIso,
     })
     .eq('id', payload.id)
+    .eq('organization_id', payload.organizationId)
     .select('*')
     .single();
 

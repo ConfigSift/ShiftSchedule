@@ -581,7 +581,8 @@ export function DemoProvider({ children }: DemoProviderProps) {
             request.id === id
               ? {
                   ...request,
-                  status: 'CANCELLED',
+                  status: 'CANCELED',
+                  canceledAt: now,
                   updatedAt: now,
                 }
               : request,
