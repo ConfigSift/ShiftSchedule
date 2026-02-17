@@ -13,6 +13,7 @@ const LOGIN_ROUTE_PREFIXES = ['/login', '/signup', '/start', '/onboarding', '/au
 const APP_ROUTE_PREFIXES = [
   '/dashboard',
   '/restaurants',
+  '/join',
   '/staff',
   '/reports',
   '/chat',
@@ -28,10 +29,11 @@ const APP_ROUTE_PREFIXES = [
   '/subscribe',
 ];
 
-const PUBLIC_EXACT_PATHS = ['/', '/join'];
-const PUBLIC_PATH_PREFIXES = ['/login', '/signup', '/join', '/start', '/onboarding', '/setup', '/auth/callback', '/auth/error'];
+const PUBLIC_EXACT_PATHS = ['/'];
+const PUBLIC_PATH_PREFIXES = ['/login', '/signup', '/start', '/onboarding', '/setup', '/auth/callback', '/auth/error'];
 const AUTH_ENTRY_PATH_PREFIXES = ['/login', '/signup'];
 const PROTECTED_APP_ROUTE_PREFIXES = [
+  '/join',
   '/dashboard',
   '/restaurants',
   '/staff',
