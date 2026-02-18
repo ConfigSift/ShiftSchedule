@@ -31,6 +31,7 @@ export type EmployeeRow = {
   id: string;
   authUserId: string | null;
   displayName: string | null;
+  isOwner: boolean;
   role: string;
   position: string | null;
   isActive: boolean | null;
@@ -188,33 +189,34 @@ export async function getRestaurantEmployees(
   ]);
 
   const ownerAuthUserId = String(ownerMembership?.auth_user_id ?? '').trim() || null;
-  let ownerProfileName: string | null = null;
-  if (ownerAuthUserId) {
-    const ownerProfileRes = await db
-      .from('account_profiles')
-      .select('owner_name')
-      .eq('auth_user_id', ownerAuthUserId)
-      .maybeSingle();
-    ownerProfileName = normalizeNullableText(ownerProfileRes.data?.owner_name);
-  }
+  const authUserIds = usersRows
+    .map((row) => normalizeNullableText(row.auth_user_id))
+    .filter((id): id is string => Boolean(id));
+  const profileNameByAuthUserId = await fetchProfileNamesByAuthUserIds(authUserIds);
+  const ownerProfileName = ownerAuthUserId
+    ? profileNameByAuthUserId.get(ownerAuthUserId) ?? null
+    : null;
 
   const employees: EmployeeRow[] = usersRows.map((r) => {
     const authUserId = normalizeNullableText(r.auth_user_id);
-    const role = ownerAuthUserId && authUserId === ownerAuthUserId
-      ? 'owner'
-      : normalizeRole(r.role, r.account_type);
+    const role = normalizeRole(r.role, r.account_type);
+    const employeeNumber = r.employee_number != null ? String(r.employee_number) : null;
+    const id = String(r.id ?? '');
 
     return {
-      id: String(r.id),
+      id,
       authUserId,
-      displayName:
-        normalizeNullableText(r.full_name)
-        ?? normalizeNullableText(r.real_email)
-        ?? normalizeNullableText(r.email),
+      displayName: resolveDisplayName({
+        row: r,
+        profileName: authUserId ? profileNameByAuthUserId.get(authUserId) ?? null : null,
+        employeeNumber,
+        rowId: id,
+      }),
+      isOwner: false,
       role,
       position: normalizeNullableText(r.position),
       isActive: r.is_active === null || r.is_active === undefined ? null : Boolean(r.is_active),
-      employeeNumber: r.employee_number != null ? String(r.employee_number) : null,
+      employeeNumber,
       pinReady: Boolean(r.pin_hash),
       email: normalizeNullableText(r.real_email) ?? normalizeNullableText(r.email),
       phone: normalizeNullableText(r.phone),
@@ -222,11 +224,35 @@ export async function getRestaurantEmployees(
     };
   });
 
-  if (ownerAuthUserId && !employees.some((row) => row.authUserId === ownerAuthUserId)) {
+  let ownerAlreadyInUsers = false;
+  if (ownerAuthUserId) {
+    const hasAuthUserIdSignal = employees.some((row) => Boolean(row.authUserId));
+
+    if (hasAuthUserIdSignal) {
+      const ownerRow = employees.find((row) => row.authUserId === ownerAuthUserId);
+      if (ownerRow) {
+        ownerRow.isOwner = true;
+        ownerAlreadyInUsers = true;
+      }
+    } else {
+      // TODO: Prefer auth_user_id matching for reliable owner dedupe when available.
+      const ownerRoleRow = employees.find((row) => {
+        const role = String(row.role ?? '').trim().toLowerCase();
+        return role === 'owner' || role === 'admin';
+      });
+      if (ownerRoleRow) {
+        ownerRoleRow.isOwner = true;
+        ownerAlreadyInUsers = true;
+      }
+    }
+  }
+
+  if (ownerAuthUserId && !ownerAlreadyInUsers) {
     employees.push({
       id: ownerAuthUserId,
       authUserId: ownerAuthUserId,
-      displayName: ownerProfileName,
+      displayName: ownerProfileName ?? `Owner (${ownerAuthUserId.slice(0, 8)})`,
+      isOwner: true,
       role: 'owner',
       position: null,
       isActive: null,
@@ -301,6 +327,7 @@ async function fetchUsersForOrganization(
   const db = getAdminSupabase();
   // Keep select list conservative for production schema compatibility.
   const selectCandidates = [
+    'id, auth_user_id, full_name, name, first_name, last_name, role, position, is_active, employee_number, pin_hash, real_email, email, phone',
     'id, auth_user_id, full_name, role, position, is_active, employee_number, pin_hash, real_email, email, phone',
     'id, auth_user_id, full_name, role, is_active, employee_number, pin_hash, real_email, email, phone',
     'id, role, is_active, employee_number, pin_hash',
@@ -365,6 +392,57 @@ async function fetchOwnerMembership(
   }
 
   return adminRes.data ?? null;
+}
+
+async function fetchProfileNamesByAuthUserIds(
+  authUserIds: string[],
+): Promise<Map<string, string>> {
+  const uniqueIds = [...new Set(authUserIds)].filter(Boolean);
+  const out = new Map<string, string>();
+  if (uniqueIds.length === 0) return out;
+
+  const db = getAdminSupabase();
+  const { data, error } = await db
+    .from('account_profiles')
+    .select('auth_user_id, owner_name')
+    .in('auth_user_id', uniqueIds);
+
+  if (error) {
+    throw toEmployeesQueryError('Failed to load account profile names for employees.', error);
+  }
+
+  for (const row of (data ?? []) as { auth_user_id: string | null; owner_name: string | null }[]) {
+    const authUserId = String(row.auth_user_id ?? '').trim();
+    const ownerName = normalizeNullableText(row.owner_name);
+    if (authUserId && ownerName) out.set(authUserId, ownerName);
+  }
+
+  return out;
+}
+
+function resolveDisplayName(input: {
+  row: Record<string, unknown>;
+  profileName: string | null;
+  employeeNumber: string | null;
+  rowId: string;
+}): string {
+  const { row, profileName, employeeNumber, rowId } = input;
+
+  const fullName =
+    normalizeNullableText(row.full_name)
+    ?? normalizeNullableText(row.name)
+    ?? joinNameParts(normalizeNullableText(row.first_name), normalizeNullableText(row.last_name));
+  if (fullName) return fullName;
+  if (profileName) return profileName;
+  if (employeeNumber) return `Employee #${employeeNumber}`;
+
+  const shortId = String(rowId ?? '').trim().slice(0, 8);
+  return shortId ? `User ${shortId}` : 'User';
+}
+
+function joinNameParts(first: string | null, last: string | null): string | null {
+  const combined = [first, last].filter(Boolean).join(' ').trim();
+  return combined || null;
 }
 
 function isMissingColumnError(error: PostgrestLikeError, column?: string): boolean {

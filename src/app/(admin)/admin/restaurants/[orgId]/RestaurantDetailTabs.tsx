@@ -286,6 +286,7 @@ type EmployeesPayload = {
     id: string;
     authUserId: string | null;
     displayName: string | null;
+    isOwner: boolean;
     role: string;
     position: string | null;
     isActive: boolean | null;
@@ -394,7 +395,12 @@ function EmployeesTab({ orgId }: { orgId: string }) {
                   >
                     <td className="py-2 pr-4 text-zinc-700">
                       <div className="flex items-center gap-2">
-                        <span>{e.displayName ?? 'Unnamed Account'}</span>
+                        <span>{e.displayName ?? 'User'}</span>
+                        {e.isOwner && (
+                          <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+                            Owner
+                          </span>
+                        )}
                         {e.source === 'membership' && (
                           <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600">
                             Membership-only
