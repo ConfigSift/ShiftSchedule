@@ -21,9 +21,8 @@ export async function fetchOverviewData(): Promise<OverviewData> {
   // KPI queries
   // -------------------------------------------------------------------------
   const [
-    orgsTotal,
-    locationsTotal,
-    usersTotal,
+    restaurantsTotal,
+    ownerAuthUserIds,
     activeSubs,
     intents7d,
     intents30d,
@@ -33,8 +32,7 @@ export async function fetchOverviewData(): Promise<OverviewData> {
     shifts30d,
   ] = await Promise.all([
     db.from('organizations').select('id', { count: 'exact', head: true }),
-    db.from('locations').select('id', { count: 'exact', head: true }),
-    db.from('users').select('id', { count: 'exact', head: true }),
+    fetchDistinctOwnerAuthUserIds(),
     db
       .from('subscriptions')
       .select('id', { count: 'exact', head: true })
@@ -65,10 +63,18 @@ export async function fetchOverviewData(): Promise<OverviewData> {
       .gte('created_at', d30),
   ]);
 
+  const adminIds = parseAdminAuthUserIds();
+  const ownerCount = ownerAuthUserIds.length;
+  const ownerCountExcludingAdmins = ownerAuthUserIds.filter((id) => !adminIds.has(id)).length;
+
   const kpis: OverviewKpis = {
-    totalOrganizations: orgsTotal.count ?? 0,
-    totalLocations: locationsTotal.count ?? 0,
-    totalUsers: usersTotal.count ?? 0,
+    // KPI semantics:
+    // totalOrganizations => unique restaurant owner accounts
+    // totalLocations => restaurants (organizations rows)
+    // totalUsers => owner accounts excluding platform admin allow-list IDs
+    totalOrganizations: ownerCount,
+    totalLocations: restaurantsTotal.count ?? 0,
+    totalUsers: ownerCountExcludingAdmins,
     activeSubscriptions: activeSubs.count ?? 0,
     newIntents7d: intents7d.count ?? 0,
     newIntents30d: intents30d.count ?? 0,
@@ -168,6 +174,43 @@ export async function fetchOverviewData(): Promise<OverviewData> {
     kpis,
     alerts: { provisioningErrors, incompleteSubscriptions, pendingCancellations },
   };
+}
+
+async function fetchDistinctOwnerAuthUserIds(): Promise<string[]> {
+  const db = getAdminSupabase();
+  const pageSize = 1000;
+  const ids = new Set<string>();
+  let from = 0;
+
+  while (true) {
+    const to = from + pageSize - 1;
+    const { data, error } = await db
+      .from('organization_memberships')
+      .select('auth_user_id')
+      .eq('role', 'owner')
+      .range(from, to);
+
+    if (error) {
+      throw new Error(error.message || 'Unable to load owner memberships.');
+    }
+
+    const rows = (data ?? []) as { auth_user_id: string | null }[];
+    for (const row of rows) {
+      const id = String(row.auth_user_id ?? '').trim();
+      if (id) ids.add(id);
+    }
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return [...ids];
+}
+
+function parseAdminAuthUserIds(): Set<string> {
+  const raw = String(process.env.ADMIN_AUTH_USER_IDS ?? '').trim();
+  if (!raw) return new Set<string>();
+  return new Set(raw.split(',').map((id) => id.trim()).filter(Boolean));
 }
 
 function summarizeError(raw: unknown): string {

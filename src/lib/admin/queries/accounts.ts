@@ -20,6 +20,11 @@ export type AccountListResult = {
   pageSize: number;
 };
 
+type OwnerMembershipRow = {
+  auth_user_id: string;
+  organization_id: string;
+};
+
 type ProfileRow = {
   auth_user_id: string;
   owner_name: string | null;
@@ -33,11 +38,6 @@ type BillingRow = {
   quantity: number | null;
 };
 
-type MembershipRow = {
-  auth_user_id: string;
-  organization_id: string;
-};
-
 export async function getAccountsList(
   filters: AccountFilters = {},
   page = 1,
@@ -49,101 +49,74 @@ export async function getAccountsList(
   const safePageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? pageSize : 25));
   const normalizedSort = normalizeSort(sort);
 
-  const { data: profileRows, error: profileError } = await db
-    .from('account_profiles')
-    .select('auth_user_id, owner_name');
-
-  if (profileError) {
-    throw new Error(profileError.message || 'Unable to load account profiles.');
-  }
-
-  const profiles = (profileRows ?? []) as ProfileRow[];
-  if (profiles.length === 0) {
+  const ownerMemberships = await fetchOwnerMemberships();
+  if (ownerMemberships.length === 0) {
     return { data: [], total: 0, page: safePage, pageSize: safePageSize };
   }
 
-  const authUserIds = [...new Set(profiles.map((row) => String(row.auth_user_id ?? '')).filter(Boolean))];
-  const [authUsersMap, billingRes, membershipsRes] = await Promise.all([
-    getAuthUsersByIds(authUserIds),
-    db
-      .from('billing_accounts')
-      .select('auth_user_id, stripe_customer_id, stripe_subscription_id, status, quantity')
-      .in('auth_user_id', authUserIds),
-    db
-      .from('organization_memberships')
-      .select('auth_user_id, organization_id')
-      .in('auth_user_id', authUserIds)
-      .in('role', ['owner', 'admin']),
-  ]);
-
-  const billingRows = (billingRes.data ?? []) as BillingRow[];
-  const membershipRows = (membershipsRes.data ?? []) as MembershipRow[];
-
-  const billingMap = new Map<string, BillingRow>();
-  for (const row of billingRows) {
-    billingMap.set(row.auth_user_id, row);
+  const ownerIds = [...new Set(ownerMemberships.map((row) => row.auth_user_id))];
+  const orgIdsByOwner = new Map<string, string[]>();
+  for (const row of ownerMemberships) {
+    const list = orgIdsByOwner.get(row.auth_user_id) ?? [];
+    list.push(row.organization_id);
+    orgIdsByOwner.set(row.auth_user_id, list);
   }
+  const allOwnedOrgIds = [...new Set(ownerMemberships.map((row) => row.organization_id))];
 
-  const ownerOrgsMap = new Map<string, string[]>();
-  for (const membership of membershipRows) {
-    const list = ownerOrgsMap.get(membership.auth_user_id) ?? [];
-    list.push(membership.organization_id);
-    ownerOrgsMap.set(membership.auth_user_id, list);
-  }
-  const allOrgIds = [...new Set([...ownerOrgsMap.values()].flat())];
-
-  const [locationsRes, employeesRes, shiftsRes] = await Promise.all([
-    allOrgIds.length
-      ? db.from('locations').select('organization_id').in('organization_id', allOrgIds)
+  const [profiles, billingRows, authUsersMap, usersRows, shiftsRows] = await Promise.all([
+    fetchProfilesByOwnerIds(ownerIds),
+    fetchBillingByOwnerIds(ownerIds),
+    getAuthUsersByIds(ownerIds),
+    allOwnedOrgIds.length > 0
+      ? db.from('users').select('organization_id').in('organization_id', allOwnedOrgIds)
       : Promise.resolve({ data: [], error: null }),
-    allOrgIds.length
-      ? db.from('users').select('organization_id').in('organization_id', allOrgIds)
-      : Promise.resolve({ data: [], error: null }),
-    allOrgIds.length
+    allOwnedOrgIds.length > 0
       ? db
           .from('shifts')
           .select('organization_id, created_at')
-          .in('organization_id', allOrgIds)
+          .in('organization_id', allOwnedOrgIds)
           .order('created_at', { ascending: false })
-          .limit(10_000)
+          .limit(20_000)
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  const locationsByOrg = countByOrg(locationsRes.data as Record<string, unknown>[] | null);
-  const employeesByOrg = countByOrg(employeesRes.data as Record<string, unknown>[] | null);
+  const profileMap = new Map<string, ProfileRow>();
+  for (const row of profiles) profileMap.set(row.auth_user_id, row);
+
+  const billingMap = new Map<string, BillingRow>();
+  for (const row of billingRows) billingMap.set(row.auth_user_id, row);
+
+  const employeesByOrg = countByOrg((usersRows.data ?? []) as Record<string, unknown>[]);
   const lastShiftByOrg = new Map<string, string>();
-  for (const row of (shiftsRes.data ?? []) as { organization_id: string; created_at: string }[]) {
+  for (const row of (shiftsRows.data ?? []) as { organization_id: string; created_at: string }[]) {
     if (!lastShiftByOrg.has(row.organization_id)) {
       lastShiftByOrg.set(row.organization_id, row.created_at);
     }
   }
 
-  let rows: AccountRow[] = profiles.map((profile) => {
-    const authUserId = profile.auth_user_id;
-    const email = authUsersMap.get(authUserId) ?? null;
+  let rows: AccountRow[] = ownerIds.map((authUserId) => {
+    const profile = profileMap.get(authUserId);
+    const ownerName = normalizeNullableText(profile?.owner_name);
     const hasAuthUser = authUsersMap.has(authUserId);
-    const ownerName = normalizeNullableText(profile.owner_name);
+    const email = authUsersMap.get(authUserId) ?? null;
+    const billing = billingMap.get(authUserId);
+    const ownedOrgIds = orgIdsByOwner.get(authUserId) ?? [];
+
+    let employeesCount = 0;
+    let lastShiftCreatedAt: string | null = null;
+    for (const orgId of ownedOrgIds) {
+      employeesCount += employeesByOrg.get(orgId) ?? 0;
+      const latestShift = lastShiftByOrg.get(orgId);
+      if (latestShift && (!lastShiftCreatedAt || latestShift > lastShiftCreatedAt)) {
+        lastShiftCreatedAt = latestShift;
+      }
+    }
 
     const profileState: ProfileState = !hasAuthUser
       ? 'orphaned'
       : ownerName
         ? 'ok'
         : 'missing_name';
-
-    const billing = billingMap.get(authUserId);
-    const orgIds = ownerOrgsMap.get(authUserId) ?? [];
-
-    let locationsCount = 0;
-    let employeesCount = 0;
-    let lastShiftCreatedAt: string | null = null;
-    for (const orgId of orgIds) {
-      locationsCount += locationsByOrg.get(orgId) ?? 0;
-      employeesCount += employeesByOrg.get(orgId) ?? 0;
-      const shiftDate = lastShiftByOrg.get(orgId);
-      if (shiftDate && (!lastShiftCreatedAt || shiftDate > lastShiftCreatedAt)) {
-        lastShiftCreatedAt = shiftDate;
-      }
-    }
 
     return {
       authUserId,
@@ -155,8 +128,9 @@ export async function getAccountsList(
       stripeCustomerId: billing?.stripe_customer_id ?? null,
       stripeSubscriptionId: billing?.stripe_subscription_id ?? null,
       quantity: billing?.quantity ?? null,
-      ownedOrganizationsCount: orgIds.length,
-      locationsCount,
+      ownedOrganizationsCount: ownedOrgIds.length,
+      // In this admin directory, locations means restaurants owned by this owner.
+      locationsCount: ownedOrgIds.length,
       employeesCount,
       lastShiftCreatedAt,
     };
@@ -167,8 +141,8 @@ export async function getAccountsList(
     if (term) {
       rows = rows.filter((row) =>
         row.authUserId.toLowerCase().includes(term)
-        || (row.email?.toLowerCase().includes(term) ?? false)
-        || (row.ownerName?.toLowerCase().includes(term) ?? false),
+        || (row.ownerName?.toLowerCase().includes(term) ?? false)
+        || (row.email?.toLowerCase().includes(term) ?? false),
       );
     }
   }
@@ -184,11 +158,11 @@ export async function getAccountsList(
     rows = rows.filter((row) => row.profileState === filters.profileState);
   }
 
-  const total = rows.length;
   rows = sortRows(rows, normalizedSort);
-
+  const total = rows.length;
   const from = (safePage - 1) * safePageSize;
   const to = from + safePageSize;
+
   return {
     data: rows.slice(from, to),
     total,
@@ -197,14 +171,67 @@ export async function getAccountsList(
   };
 }
 
-function normalizeNullableText(value: unknown): string | null {
-  const trimmed = String(value ?? '').trim();
-  return trimmed ? trimmed : null;
+async function fetchOwnerMemberships(): Promise<OwnerMembershipRow[]> {
+  const db = getAdminSupabase();
+  const pageSize = 1000;
+  const rows: OwnerMembershipRow[] = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + pageSize - 1;
+    const { data, error } = await db
+      .from('organization_memberships')
+      .select('auth_user_id, organization_id')
+      .eq('role', 'owner')
+      .range(from, to);
+
+    if (error) {
+      throw new Error(error.message || 'Unable to load owner memberships.');
+    }
+
+    const pageRows = (data ?? []) as OwnerMembershipRow[];
+    rows.push(...pageRows);
+    if (pageRows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return rows;
 }
 
-function countByOrg(rows: Record<string, unknown>[] | null): Map<string, number> {
+async function fetchProfilesByOwnerIds(ownerIds: string[]): Promise<ProfileRow[]> {
+  const db = getAdminSupabase();
+  if (ownerIds.length === 0) return [];
+  const { data, error } = await db
+    .from('account_profiles')
+    .select('auth_user_id, owner_name')
+    .in('auth_user_id', ownerIds);
+  if (error) {
+    throw new Error(error.message || 'Unable to load owner profiles.');
+  }
+  return (data ?? []) as ProfileRow[];
+}
+
+async function fetchBillingByOwnerIds(ownerIds: string[]): Promise<BillingRow[]> {
+  const db = getAdminSupabase();
+  if (ownerIds.length === 0) return [];
+  const { data, error } = await db
+    .from('billing_accounts')
+    .select('auth_user_id, stripe_customer_id, stripe_subscription_id, status, quantity')
+    .in('auth_user_id', ownerIds);
+  if (error) {
+    throw new Error(error.message || 'Unable to load owner billing accounts.');
+  }
+  return (data ?? []) as BillingRow[];
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  const text = String(value ?? '').trim();
+  return text ? text : null;
+}
+
+function countByOrg(rows: Record<string, unknown>[]): Map<string, number> {
   const map = new Map<string, number>();
-  for (const row of rows ?? []) {
+  for (const row of rows) {
     const orgId = String(row.organization_id ?? '');
     if (!orgId) continue;
     map.set(orgId, (map.get(orgId) ?? 0) + 1);
@@ -232,8 +259,8 @@ function normalizeSort(sort: AccountSort): AccountSort {
 }
 
 function sortRows(rows: AccountRow[], sort: AccountSort): AccountRow[] {
-  const key = sort.column as keyof AccountRow;
   const dir = sort.direction === 'asc' ? 1 : -1;
+  const key = sort.column as keyof AccountRow;
   return [...rows].sort((a, b) => {
     const av = a[key];
     const bv = b[key];

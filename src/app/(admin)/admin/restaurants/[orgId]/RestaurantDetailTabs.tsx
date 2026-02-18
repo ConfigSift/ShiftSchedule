@@ -205,7 +205,9 @@ function OverviewTab({ memberships }: { memberships: MembershipRow[] }) {
 
 function RoleBadge({ role }: { role: string }) {
   const colors =
-    role === 'admin'
+    role === 'owner'
+      ? 'bg-violet-100 text-violet-700'
+      : role === 'admin'
       ? 'bg-indigo-100 text-indigo-700'
       : role === 'manager'
         ? 'bg-amber-100 text-amber-700'
@@ -274,14 +276,16 @@ function LocationsTab({ orgId }: { orgId: string }) {
 type EmployeesPayload = {
   employees: {
     id: string;
-    fullName: string;
+    authUserId: string | null;
+    displayName: string | null;
     role: string;
-    jobs: string[];
-    isActive: boolean;
-    employeeNumber: number | null;
-    hasPinHash: boolean;
+    position: string | null;
+    isActive: boolean | null;
+    employeeNumber: string | null;
+    pinReady: boolean;
     email: string | null;
     phone: string | null;
+    source: 'users' | 'membership';
   }[];
 };
 
@@ -290,7 +294,8 @@ function EmployeesTab({ orgId }: { orgId: string }) {
   if (loading) return <TabSpinner />;
   if (error) return <AdminFetchError message="Failed to load employees" detail={error} onRetry={retry} />;
   const employees = data?.employees ?? [];
-  const activeCount = employees.filter((e) => e.isActive).length;
+  const activeCount = employees.filter((e) => e.isActive === true).length;
+  const inactiveCount = employees.filter((e) => e.isActive === false).length;
 
   return (
     <div className="space-y-4">
@@ -303,7 +308,7 @@ function EmployeesTab({ orgId }: { orgId: string }) {
           Active: <strong>{activeCount}</strong>
         </span>
         <span className="rounded-md bg-zinc-50 px-3 py-1 text-zinc-400">
-          Inactive: <strong>{employees.length - activeCount}</strong>
+          Inactive: <strong>{inactiveCount}</strong>
         </span>
       </div>
 
@@ -317,7 +322,7 @@ function EmployeesTab({ orgId }: { orgId: string }) {
                 <tr className="border-b border-zinc-100 text-xs uppercase tracking-wide text-zinc-500">
                   <th scope="col" className="pb-2 pr-4">Name</th>
                   <th scope="col" className="pb-2 pr-4">Role</th>
-                  <th scope="col" className="pb-2 pr-4">Jobs</th>
+                  <th scope="col" className="pb-2 pr-4">Source</th>
                   <th scope="col" className="pb-2 pr-4 text-center">Active</th>
                   <th scope="col" className="pb-2 pr-4 text-right">Emp #</th>
                   <th scope="col" className="pb-2 text-center">PIN</th>
@@ -327,27 +332,38 @@ function EmployeesTab({ orgId }: { orgId: string }) {
                 {employees.map((e) => (
                   <tr
                     key={e.id}
-                    className={e.isActive ? '' : 'opacity-50'}
+                    className={e.isActive === false ? 'opacity-50' : ''}
                   >
-                    <td className="py-2 pr-4 text-zinc-700">{e.fullName}</td>
+                    <td className="py-2 pr-4 text-zinc-700">
+                      <div className="flex items-center gap-2">
+                        <span>{e.displayName ?? 'Unnamed Account'}</span>
+                        {e.source === 'membership' && (
+                          <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600">
+                            Membership-only
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="py-2 pr-4">
                       <RoleBadge role={e.role.toLowerCase()} />
                     </td>
                     <td className="py-2 pr-4 text-xs text-zinc-500">
-                      {e.jobs.length > 0 ? e.jobs.join(', ') : '—'}
+                      {e.source === 'membership' ? 'Owner membership' : 'User profile'}
                     </td>
                     <td className="py-2 pr-4 text-center">
-                      {e.isActive ? (
+                      {e.isActive === true ? (
                         <Check className="mx-auto h-4 w-4 text-emerald-500" />
-                      ) : (
+                      ) : e.isActive === false ? (
                         <X className="mx-auto h-4 w-4 text-zinc-300" />
+                      ) : (
+                        <span className="text-zinc-300">—</span>
                       )}
                     </td>
                     <td className="py-2 pr-4 text-right tabular-nums text-zinc-500">
                       {e.employeeNumber ?? '—'}
                     </td>
                     <td className="py-2 text-center">
-                      {e.hasPinHash ? (
+                      {e.pinReady ? (
                         <Check className="mx-auto h-4 w-4 text-emerald-500" />
                       ) : (
                         <X className="mx-auto h-4 w-4 text-zinc-300" />

@@ -310,7 +310,7 @@ function AccountTableRow({
   onDeleteOrphan: (row: AccountRow) => void;
 }) {
   const title = row.ownerName
-    || (row.profileState === 'orphaned' ? 'Orphaned profile' : 'Missing profile name');
+    || (row.profileState === 'orphaned' ? 'Orphaned profile' : 'Unnamed Account');
 
   return (
     <tr className="transition-colors hover:bg-zinc-50">

@@ -45,17 +45,17 @@ export default async function AdminOverviewPage() {
       {kpis && (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          label="Total Organizations"
+          label="Restaurant Owners"
           value={kpis.totalOrganizations}
           icon={<Building2 className="h-5 w-5 text-indigo-500" />}
         />
         <KpiCard
-          label="Total Locations"
+          label="Restaurants"
           value={kpis.totalLocations}
           icon={<MapPin className="h-5 w-5 text-sky-500" />}
         />
         <KpiCard
-          label="Total Users"
+          label="Owner Accounts"
           value={kpis.totalUsers}
           icon={<Users className="h-5 w-5 text-violet-500" />}
         />

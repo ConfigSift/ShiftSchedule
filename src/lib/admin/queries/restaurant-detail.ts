@@ -29,14 +29,16 @@ export type LocationRow = {
 
 export type EmployeeRow = {
   id: string;
-  fullName: string;
+  authUserId: string | null;
+  displayName: string | null;
   role: string;
-  jobs: string[];
-  isActive: boolean;
-  employeeNumber: number | null;
-  hasPinHash: boolean;
+  position: string | null;
+  isActive: boolean | null;
+  employeeNumber: string | null;
+  pinReady: boolean;
   email: string | null;
   phone: string | null;
+  source: 'users' | 'membership';
 };
 
 export type UsageCounts = {
@@ -173,26 +175,82 @@ export async function getRestaurantEmployees(
   orgId: string,
 ): Promise<EmployeeRow[]> {
   const db = getAdminSupabase();
-  const { data } = await db
-    .from('users')
-    .select(
-      'id, full_name, role, account_type, jobs, is_active, employee_number, pin_hash, real_email, email, phone',
-    )
-    .eq('organization_id', orgId)
-    .order('full_name', { ascending: true });
+  const [usersRes, ownerMembershipRes] = await Promise.all([
+    db
+      .from('users')
+      .select(
+        'id, auth_user_id, full_name, role, account_type, is_active, employee_number, pin_hash, real_email, email, phone',
+      )
+      .eq('organization_id', orgId)
+      .order('full_name', { ascending: true }),
+    db
+      .from('organization_memberships')
+      .select('auth_user_id')
+      .eq('organization_id', orgId)
+      .eq('role', 'owner')
+      .limit(1)
+      .maybeSingle(),
+  ]);
 
-  return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
-    id: String(r.id),
-    fullName: String(r.full_name ?? ''),
-    role: String(r.role ?? r.account_type ?? 'EMPLOYEE'),
-    jobs: Array.isArray(r.jobs) ? (r.jobs as string[]) : [],
-    isActive: r.is_active !== false,
-    employeeNumber:
-      r.employee_number != null ? Number(r.employee_number) : null,
-    hasPinHash: Boolean(r.pin_hash),
-    email: (r.real_email as string) || (r.email as string) || null,
-    phone: (r.phone as string) || null,
-  }));
+  const ownerAuthUserId = String(ownerMembershipRes.data?.auth_user_id ?? '').trim() || null;
+  let ownerProfileName: string | null = null;
+  if (ownerAuthUserId) {
+    const ownerProfileRes = await db
+      .from('account_profiles')
+      .select('owner_name')
+      .eq('auth_user_id', ownerAuthUserId)
+      .maybeSingle();
+    ownerProfileName = normalizeNullableText(ownerProfileRes.data?.owner_name);
+  }
+
+  const employees: EmployeeRow[] = ((usersRes.data ?? []) as Record<string, unknown>[]).map((r) => {
+    const authUserId = normalizeNullableText(r.auth_user_id);
+    const role = ownerAuthUserId && authUserId === ownerAuthUserId
+      ? 'owner'
+      : normalizeRole(r.role, r.account_type);
+
+    return {
+      id: String(r.id),
+      authUserId,
+      displayName: normalizeNullableText(r.full_name),
+      role,
+      position: null,
+      isActive: r.is_active === null || r.is_active === undefined ? null : Boolean(r.is_active),
+      employeeNumber: r.employee_number != null ? String(r.employee_number) : null,
+      pinReady: Boolean(r.pin_hash),
+      email: normalizeNullableText(r.real_email) ?? normalizeNullableText(r.email),
+      phone: normalizeNullableText(r.phone),
+      source: 'users',
+    };
+  });
+
+  if (ownerAuthUserId && !employees.some((row) => row.authUserId === ownerAuthUserId)) {
+    employees.push({
+      id: ownerAuthUserId,
+      authUserId: ownerAuthUserId,
+      displayName: ownerProfileName,
+      role: 'owner',
+      position: null,
+      isActive: null,
+      employeeNumber: null,
+      pinReady: false,
+      email: null,
+      phone: null,
+      source: 'membership',
+    });
+  }
+
+  return employees;
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  const text = String(value ?? '').trim();
+  return text ? text : null;
+}
+
+function normalizeRole(role: unknown, accountType: unknown): string {
+  const raw = String(role ?? accountType ?? 'employee').trim().toLowerCase();
+  return raw || 'employee';
 }
 
 // ---------------------------------------------------------------------------
