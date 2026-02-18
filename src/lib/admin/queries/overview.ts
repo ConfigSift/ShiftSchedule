@@ -1,5 +1,11 @@
 import { getAdminSupabase } from '@/lib/admin/supabase';
-import type { OverviewKpis, AlertItem } from '@/lib/admin/types';
+import type { AlertItem, OverviewKpis } from '@/lib/admin/types';
+
+export type OverviewDebugInfo = {
+  ownersCountStrategy: 'memberships' | 'fallback';
+  ownersSample: string[];
+  membershipsRoleDistinct: string[];
+};
 
 export type OverviewData = {
   kpis: OverviewKpis;
@@ -8,21 +14,21 @@ export type OverviewData = {
     incompleteSubscriptions: AlertItem[];
     pendingCancellations: AlertItem[];
   };
+  debug?: OverviewDebugInfo;
 };
 
 export async function fetchOverviewData(): Promise<OverviewData> {
   const db = getAdminSupabase();
+  const includeDebug = process.env.ADMIN_DEBUG === '1';
 
   const now = new Date();
   const d7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const d30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-  // -------------------------------------------------------------------------
-  // KPI queries
-  // -------------------------------------------------------------------------
+  const ownerResolution = await resolveOwnerAuthUsers(includeDebug);
+
   const [
     restaurantsTotal,
-    ownerAuthUserIds,
     activeSubs,
     intents7d,
     intents30d,
@@ -32,7 +38,6 @@ export async function fetchOverviewData(): Promise<OverviewData> {
     shifts30d,
   ] = await Promise.all([
     db.from('organizations').select('id', { count: 'exact', head: true }),
-    fetchDistinctOwnerAuthUserIds(),
     db
       .from('subscriptions')
       .select('id', { count: 'exact', head: true })
@@ -63,17 +68,15 @@ export async function fetchOverviewData(): Promise<OverviewData> {
       .gte('created_at', d30),
   ]);
 
-  const adminIds = parseAdminAuthUserIds();
-  const ownerCount = ownerAuthUserIds.length;
-  const ownerCountExcludingAdmins = ownerAuthUserIds.filter((id) => !adminIds.has(id)).length;
+  const ownerCount = ownerResolution.ownerAuthUserIds.length;
+  const ownerCountExcludingAdmins = ownerResolution.ownerAuthUserIds.filter(
+    (id) => !parseAdminAuthUserIds().has(id),
+  ).length;
 
   const kpis: OverviewKpis = {
-    // KPI semantics:
-    // totalOrganizations => unique restaurant owner accounts
-    // totalLocations => restaurants (organizations rows)
-    // totalUsers => owner accounts excluding platform admin allow-list IDs
     totalOrganizations: ownerCount,
     totalLocations: restaurantsTotal.count ?? 0,
+    // Kept for API shape compatibility even though the card is hidden in UI.
     totalUsers: ownerCountExcludingAdmins,
     activeSubscriptions: activeSubs.count ?? 0,
     newIntents7d: intents7d.count ?? 0,
@@ -84,9 +87,6 @@ export async function fetchOverviewData(): Promise<OverviewData> {
     shiftsCreated30d: shifts30d.count ?? 0,
   };
 
-  // -------------------------------------------------------------------------
-  // Alert queries
-  // -------------------------------------------------------------------------
   const [provErrorsRes, incompletSubsRes, pendingCancelRes] = await Promise.all([
     db
       .from('organization_create_intents')
@@ -108,7 +108,6 @@ export async function fetchOverviewData(): Promise<OverviewData> {
       .limit(10),
   ]);
 
-  // --- Provisioning errors ---------------------------------------------------
   const provisioningErrors: AlertItem[] = (provErrorsRes.data ?? []).map(
     (row: Record<string, unknown>) => ({
       id: String(row.id ?? ''),
@@ -122,7 +121,6 @@ export async function fetchOverviewData(): Promise<OverviewData> {
     }),
   );
 
-  // --- Incomplete subscriptions ----------------------------------------------
   type OrgSubRow = {
     id: string;
     name: string;
@@ -156,13 +154,12 @@ export async function fetchOverviewData(): Promise<OverviewData> {
       entityType: 'organization' as const,
     }));
 
-  // --- Pending cancellations -------------------------------------------------
   const pendingCancellations: AlertItem[] = (pendingCancelRes.data ?? []).map(
     (row: Record<string, unknown>) => ({
       id: String(row.id ?? ''),
       severity: 'warning' as const,
       category: 'subscription_past_due' as const,
-      title: `Org ${String(row.organization_id ?? '').slice(0, 8)}…`,
+      title: `Org ${String(row.organization_id ?? '').slice(0, 8)}...`,
       description: `Cancels at period end${row.current_period_end ? ` (${new Date(String(row.current_period_end)).toLocaleDateString()})` : ''}`,
       timestamp: String(row.current_period_end ?? ''),
       entityId: String(row.organization_id ?? ''),
@@ -173,13 +170,47 @@ export async function fetchOverviewData(): Promise<OverviewData> {
   return {
     kpis,
     alerts: { provisioningErrors, incompleteSubscriptions, pendingCancellations },
+    ...(includeDebug
+      ? {
+          debug: {
+            ownersCountStrategy: ownerResolution.strategy,
+            ownersSample: ownerResolution.ownerAuthUserIds.slice(0, 3),
+            membershipsRoleDistinct: ownerResolution.membershipsRoleDistinct,
+          } satisfies OverviewDebugInfo,
+        }
+      : {}),
   };
 }
 
-async function fetchDistinctOwnerAuthUserIds(): Promise<string[]> {
+type OwnerResolution = {
+  ownerAuthUserIds: string[];
+  strategy: 'memberships' | 'fallback';
+  membershipsRoleDistinct: string[];
+};
+
+async function resolveOwnerAuthUsers(includeDebug: boolean): Promise<OwnerResolution> {
+  const membershipOwners = await fetchMembershipOwnerIds();
+  const membershipsRoleDistinct = includeDebug ? await fetchDistinctMembershipRoles() : [];
+
+  if (membershipOwners.length > 0) {
+    return {
+      ownerAuthUserIds: membershipOwners,
+      strategy: 'memberships',
+      membershipsRoleDistinct,
+    };
+  }
+
+  return {
+    ownerAuthUserIds: await fetchFallbackOwnerIds(),
+    strategy: 'fallback',
+    membershipsRoleDistinct,
+  };
+}
+
+async function fetchMembershipOwnerIds(): Promise<string[]> {
   const db = getAdminSupabase();
-  const pageSize = 1000;
   const ids = new Set<string>();
+  const pageSize = 1000;
   let from = 0;
 
   while (true) {
@@ -187,7 +218,7 @@ async function fetchDistinctOwnerAuthUserIds(): Promise<string[]> {
     const { data, error } = await db
       .from('organization_memberships')
       .select('auth_user_id')
-      .eq('role', 'owner')
+      .ilike('role', 'owner')
       .range(from, to);
 
     if (error) {
@@ -205,6 +236,78 @@ async function fetchDistinctOwnerAuthUserIds(): Promise<string[]> {
   }
 
   return [...ids];
+}
+
+async function fetchFallbackOwnerIds(): Promise<string[]> {
+  const db = getAdminSupabase();
+  const ownerIds = new Set<string>();
+
+  const [billingRes, intentsRes, adminMembershipsRes] = await Promise.all([
+    db.from('billing_accounts').select('auth_user_id'),
+    db
+      .from('organization_create_intents')
+      .select('auth_user_id, status, organization_id')
+      .or('status.eq.completed,organization_id.not.is.null'),
+    db
+      .from('organization_memberships')
+      .select('auth_user_id')
+      .ilike('role', 'admin'),
+  ]);
+
+  if (billingRes.error) {
+    throw new Error(billingRes.error.message || 'Unable to load billing owners.');
+  }
+  if (intentsRes.error) {
+    throw new Error(intentsRes.error.message || 'Unable to load completed intents.');
+  }
+  if (adminMembershipsRes.error) {
+    throw new Error(adminMembershipsRes.error.message || 'Unable to load admin memberships.');
+  }
+
+  for (const row of (billingRes.data ?? []) as { auth_user_id: string | null }[]) {
+    const id = String(row.auth_user_id ?? '').trim();
+    if (id) ownerIds.add(id);
+  }
+  for (const row of (intentsRes.data ?? []) as { auth_user_id: string | null }[]) {
+    const id = String(row.auth_user_id ?? '').trim();
+    if (id) ownerIds.add(id);
+  }
+  for (const row of (adminMembershipsRes.data ?? []) as { auth_user_id: string | null }[]) {
+    const id = String(row.auth_user_id ?? '').trim();
+    if (id) ownerIds.add(id);
+  }
+
+  return [...ownerIds];
+}
+
+async function fetchDistinctMembershipRoles(): Promise<string[]> {
+  const db = getAdminSupabase();
+  const roles = new Set<string>();
+  const pageSize = 1000;
+  let from = 0;
+
+  while (true) {
+    const to = from + pageSize - 1;
+    const { data, error } = await db
+      .from('organization_memberships')
+      .select('role')
+      .range(from, to);
+
+    if (error) {
+      throw new Error(error.message || 'Unable to load membership roles.');
+    }
+
+    const rows = (data ?? []) as { role: string | null }[];
+    for (const row of rows) {
+      const role = String(row.role ?? '').trim();
+      if (role) roles.add(role);
+    }
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return [...roles].sort();
 }
 
 function parseAdminAuthUserIds(): Set<string> {

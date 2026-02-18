@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies } from '@/lib/supabase/route';
 import { requireAdmin } from '@/lib/admin/auth';
+import { getAdminSupabase } from '@/lib/admin/supabase';
 import {
   getRestaurantOverview,
   getRestaurantLocations,
@@ -37,6 +38,7 @@ export async function GET(
 
   const tab = request.nextUrl.searchParams.get('tab') || 'overview';
   const requestId = crypto.randomUUID();
+  const db = getAdminSupabase();
 
   try {
     switch (tab) {
@@ -63,9 +65,24 @@ export async function GET(
       }
 
       case 'employees': {
-        const employees = await getRestaurantEmployees(orgId);
+        const [employees, expectedEmployees] = await Promise.all([
+          getRestaurantEmployees(orgId),
+          db
+            .from('users')
+            .select('id', { count: 'exact', head: true })
+            .eq('organization_id', orgId),
+        ]);
+        const expectedEmployeesCount = expectedEmployees.count ?? 0;
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[admin/restaurants:employees]', {
+            orgId,
+            tab,
+            expectedEmployeesCount,
+            returnedRows: employees.length,
+          });
+        }
         return applySupabaseCookies(
-          NextResponse.json({ requestId, tab, employees }),
+          NextResponse.json({ requestId, tab, expectedEmployeesCount, employees }),
           response,
         );
       }

@@ -2,7 +2,6 @@ import Link from 'next/link';
 import {
   Building2,
   MapPin,
-  Users,
   CreditCard,
   Sparkles,
   Store,
@@ -43,7 +42,7 @@ export default async function AdminOverviewPage() {
 
       {/* KPI cards — row 1 */}
       {kpis && (
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <KpiCard
           label="Restaurant Owners"
           value={kpis.totalOrganizations}
@@ -53,11 +52,6 @@ export default async function AdminOverviewPage() {
           label="Restaurants"
           value={kpis.totalLocations}
           icon={<MapPin className="h-5 w-5 text-sky-500" />}
-        />
-        <KpiCard
-          label="Owner Accounts"
-          value={kpis.totalUsers}
-          icon={<Users className="h-5 w-5 text-violet-500" />}
         />
         <KpiCard
           label="Active Subscriptions"

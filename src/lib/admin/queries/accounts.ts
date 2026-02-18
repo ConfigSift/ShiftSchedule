@@ -1,5 +1,5 @@
-import { getAdminSupabase } from '@/lib/admin/supabase';
 import { getAuthUsersByIds } from '@/lib/admin/authUsers';
+import { getAdminSupabase } from '@/lib/admin/supabase';
 import type { AccountRow, ProfileState } from '@/lib/admin/types';
 
 export type AccountFilters = {
@@ -13,16 +13,17 @@ export type AccountSort = {
   direction: 'asc' | 'desc';
 };
 
+export type AccountListDebug = {
+  ownersStrategy: 'memberships' | 'fallback';
+  ownersFound: number;
+};
+
 export type AccountListResult = {
   data: AccountRow[];
   total: number;
   page: number;
   pageSize: number;
-};
-
-type OwnerMembershipRow = {
-  auth_user_id: string;
-  organization_id: string;
+  debug?: AccountListDebug;
 };
 
 type ProfileRow = {
@@ -38,6 +39,11 @@ type BillingRow = {
   quantity: number | null;
 };
 
+type OwnerSeedResolution = {
+  ownerIds: string[];
+  strategy: 'memberships' | 'fallback';
+};
+
 export async function getAccountsList(
   filters: AccountFilters = {},
   page = 1,
@@ -48,25 +54,26 @@ export async function getAccountsList(
   const safePage = Math.max(1, Number.isFinite(page) ? page : 1);
   const safePageSize = Math.min(100, Math.max(1, Number.isFinite(pageSize) ? pageSize : 25));
   const normalizedSort = normalizeSort(sort);
+  const includeDebug = process.env.ADMIN_DEBUG === '1';
 
-  const ownerMemberships = await fetchOwnerMemberships();
-  if (ownerMemberships.length === 0) {
-    return { data: [], total: 0, page: safePage, pageSize: safePageSize };
+  const ownerSeed = await resolveOwnerSeed();
+  if (ownerSeed.ownerIds.length === 0) {
+    return {
+      data: [],
+      total: 0,
+      page: safePage,
+      pageSize: safePageSize,
+      ...(includeDebug ? { debug: { ownersStrategy: ownerSeed.strategy, ownersFound: 0 } } : {}),
+    };
   }
 
-  const ownerIds = [...new Set(ownerMemberships.map((row) => row.auth_user_id))];
-  const orgIdsByOwner = new Map<string, string[]>();
-  for (const row of ownerMemberships) {
-    const list = orgIdsByOwner.get(row.auth_user_id) ?? [];
-    list.push(row.organization_id);
-    orgIdsByOwner.set(row.auth_user_id, list);
-  }
-  const allOwnedOrgIds = [...new Set(ownerMemberships.map((row) => row.organization_id))];
+  const orgIdsByOwner = await resolveOwnedOrgIdsByOwner(ownerSeed.ownerIds);
+  const allOwnedOrgIds = [...new Set([...orgIdsByOwner.values()].flat())];
 
   const [profiles, billingRows, authUsersMap, usersRows, shiftsRows] = await Promise.all([
-    fetchProfilesByOwnerIds(ownerIds),
-    fetchBillingByOwnerIds(ownerIds),
-    getAuthUsersByIds(ownerIds),
+    fetchProfilesByOwnerIds(ownerSeed.ownerIds),
+    fetchBillingByOwnerIds(ownerSeed.ownerIds),
+    getAuthUsersByIds(ownerSeed.ownerIds),
     allOwnedOrgIds.length > 0
       ? db.from('users').select('organization_id').in('organization_id', allOwnedOrgIds)
       : Promise.resolve({ data: [], error: null }),
@@ -94,7 +101,7 @@ export async function getAccountsList(
     }
   }
 
-  let rows: AccountRow[] = ownerIds.map((authUserId) => {
+  let rows: AccountRow[] = ownerSeed.ownerIds.map((authUserId) => {
     const profile = profileMap.get(authUserId);
     const ownerName = normalizeNullableText(profile?.owner_name);
     const hasAuthUser = authUsersMap.has(authUserId);
@@ -129,7 +136,6 @@ export async function getAccountsList(
       stripeSubscriptionId: billing?.stripe_subscription_id ?? null,
       quantity: billing?.quantity ?? null,
       ownedOrganizationsCount: ownedOrgIds.length,
-      // In this admin directory, locations means restaurants owned by this owner.
       locationsCount: ownedOrgIds.length,
       employeesCount,
       lastShiftCreatedAt,
@@ -168,34 +174,151 @@ export async function getAccountsList(
     total,
     page: safePage,
     pageSize: safePageSize,
+    ...(includeDebug
+      ? {
+          debug: {
+            ownersStrategy: ownerSeed.strategy,
+            ownersFound: ownerSeed.ownerIds.length,
+          } satisfies AccountListDebug,
+        }
+      : {}),
   };
 }
 
-async function fetchOwnerMemberships(): Promise<OwnerMembershipRow[]> {
+async function resolveOwnerSeed(): Promise<OwnerSeedResolution> {
+  const fromMemberships = await fetchOwnerIdsFromMemberships();
+  if (fromMemberships.length > 0) {
+    return { ownerIds: fromMemberships, strategy: 'memberships' };
+  }
+
+  return {
+    ownerIds: await fetchOwnerIdsFallback(),
+    strategy: 'fallback',
+  };
+}
+
+async function fetchOwnerIdsFromMemberships(): Promise<string[]> {
   const db = getAdminSupabase();
+  const ownerIds = new Set<string>();
   const pageSize = 1000;
-  const rows: OwnerMembershipRow[] = [];
   let from = 0;
 
   while (true) {
     const to = from + pageSize - 1;
     const { data, error } = await db
       .from('organization_memberships')
-      .select('auth_user_id, organization_id')
-      .eq('role', 'owner')
+      .select('auth_user_id')
+      .ilike('role', 'owner')
       .range(from, to);
 
     if (error) {
       throw new Error(error.message || 'Unable to load owner memberships.');
     }
 
-    const pageRows = (data ?? []) as OwnerMembershipRow[];
-    rows.push(...pageRows);
-    if (pageRows.length < pageSize) break;
+    const rows = (data ?? []) as { auth_user_id: string | null }[];
+    for (const row of rows) {
+      const id = String(row.auth_user_id ?? '').trim();
+      if (id) ownerIds.add(id);
+    }
+
+    if (rows.length < pageSize) break;
     from += pageSize;
   }
 
-  return rows;
+  return [...ownerIds];
+}
+
+async function fetchOwnerIdsFallback(): Promise<string[]> {
+  const db = getAdminSupabase();
+  const ownerIds = new Set<string>();
+
+  const [billingRes, intentsRes] = await Promise.all([
+    db.from('billing_accounts').select('auth_user_id'),
+    db
+      .from('organization_create_intents')
+      .select('auth_user_id, status')
+      .eq('status', 'completed'),
+  ]);
+
+  if (billingRes.error) {
+    throw new Error(billingRes.error.message || 'Unable to load billing account owners.');
+  }
+  if (intentsRes.error) {
+    throw new Error(intentsRes.error.message || 'Unable to load completed intent owners.');
+  }
+
+  for (const row of (billingRes.data ?? []) as { auth_user_id: string | null }[]) {
+    const id = String(row.auth_user_id ?? '').trim();
+    if (id) ownerIds.add(id);
+  }
+  for (const row of (intentsRes.data ?? []) as { auth_user_id: string | null }[]) {
+    const id = String(row.auth_user_id ?? '').trim();
+    if (id) ownerIds.add(id);
+  }
+
+  return [...ownerIds];
+}
+
+async function resolveOwnedOrgIdsByOwner(ownerIds: string[]): Promise<Map<string, string[]>> {
+  const fromMemberships = await fetchOwnedOrgIdsFromMemberships(ownerIds);
+  const hasAnyMembershipOrg = [...fromMemberships.values()].some((orgIds) => orgIds.length > 0);
+  if (hasAnyMembershipOrg) return fromMemberships;
+  return fetchOwnedOrgIdsFromCompletedIntents(ownerIds);
+}
+
+async function fetchOwnedOrgIdsFromMemberships(ownerIds: string[]): Promise<Map<string, string[]>> {
+  const db = getAdminSupabase();
+  const out = new Map<string, string[]>();
+  if (ownerIds.length === 0) return out;
+
+  const { data, error } = await db
+    .from('organization_memberships')
+    .select('auth_user_id, organization_id')
+    .in('auth_user_id', ownerIds)
+    .ilike('role', 'owner');
+
+  if (error) {
+    throw new Error(error.message || 'Unable to load owner organization memberships.');
+  }
+
+  for (const row of (data ?? []) as { auth_user_id: string; organization_id: string | null }[]) {
+    const authUserId = String(row.auth_user_id ?? '').trim();
+    const orgId = String(row.organization_id ?? '').trim();
+    if (!authUserId || !orgId) continue;
+    const list = out.get(authUserId) ?? [];
+    if (!list.includes(orgId)) list.push(orgId);
+    out.set(authUserId, list);
+  }
+
+  return out;
+}
+
+async function fetchOwnedOrgIdsFromCompletedIntents(ownerIds: string[]): Promise<Map<string, string[]>> {
+  const db = getAdminSupabase();
+  const out = new Map<string, string[]>();
+  if (ownerIds.length === 0) return out;
+
+  const { data, error } = await db
+    .from('organization_create_intents')
+    .select('auth_user_id, organization_id, status')
+    .in('auth_user_id', ownerIds)
+    .eq('status', 'completed')
+    .not('organization_id', 'is', null);
+
+  if (error) {
+    throw new Error(error.message || 'Unable to load owner organizations from intents.');
+  }
+
+  for (const row of (data ?? []) as { auth_user_id: string; organization_id: string | null }[]) {
+    const authUserId = String(row.auth_user_id ?? '').trim();
+    const orgId = String(row.organization_id ?? '').trim();
+    if (!authUserId || !orgId) continue;
+    const list = out.get(authUserId) ?? [];
+    if (!list.includes(orgId)) list.push(orgId);
+    out.set(authUserId, list);
+  }
+
+  return out;
 }
 
 async function fetchProfilesByOwnerIds(ownerIds: string[]): Promise<ProfileRow[]> {

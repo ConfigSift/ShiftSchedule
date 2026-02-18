@@ -175,24 +175,12 @@ export async function getRestaurantEmployees(
   orgId: string,
 ): Promise<EmployeeRow[]> {
   const db = getAdminSupabase();
-  const [usersRes, ownerMembershipRes] = await Promise.all([
-    db
-      .from('users')
-      .select(
-        'id, auth_user_id, full_name, role, account_type, is_active, employee_number, pin_hash, real_email, email, phone',
-      )
-      .eq('organization_id', orgId)
-      .order('full_name', { ascending: true }),
-    db
-      .from('organization_memberships')
-      .select('auth_user_id')
-      .eq('organization_id', orgId)
-      .eq('role', 'owner')
-      .limit(1)
-      .maybeSingle(),
+  const [usersRows, ownerMembership] = await Promise.all([
+    fetchUsersForOrganization(orgId),
+    fetchOwnerMembership(orgId),
   ]);
 
-  const ownerAuthUserId = String(ownerMembershipRes.data?.auth_user_id ?? '').trim() || null;
+  const ownerAuthUserId = String(ownerMembership?.auth_user_id ?? '').trim() || null;
   let ownerProfileName: string | null = null;
   if (ownerAuthUserId) {
     const ownerProfileRes = await db
@@ -203,7 +191,7 @@ export async function getRestaurantEmployees(
     ownerProfileName = normalizeNullableText(ownerProfileRes.data?.owner_name);
   }
 
-  const employees: EmployeeRow[] = ((usersRes.data ?? []) as Record<string, unknown>[]).map((r) => {
+  const employees: EmployeeRow[] = usersRows.map((r) => {
     const authUserId = normalizeNullableText(r.auth_user_id);
     const role = ownerAuthUserId && authUserId === ownerAuthUserId
       ? 'owner'
@@ -212,9 +200,12 @@ export async function getRestaurantEmployees(
     return {
       id: String(r.id),
       authUserId,
-      displayName: normalizeNullableText(r.full_name),
+      displayName:
+        normalizeNullableText(r.full_name)
+        ?? normalizeNullableText(r.real_email)
+        ?? normalizeNullableText(r.email),
       role,
-      position: null,
+      position: normalizeNullableText(r.position),
       isActive: r.is_active === null || r.is_active === undefined ? null : Boolean(r.is_active),
       employeeNumber: r.employee_number != null ? String(r.employee_number) : null,
       pinReady: Boolean(r.pin_hash),
@@ -241,6 +232,82 @@ export async function getRestaurantEmployees(
   }
 
   return employees;
+}
+
+async function fetchUsersForOrganization(orgId: string): Promise<Record<string, unknown>[]> {
+  const db = getAdminSupabase();
+  const primarySelect =
+    'id, auth_user_id, full_name, role, account_type, position, is_active, employee_number, pin_hash, real_email, email, phone, created_at';
+  const fallbackSelect =
+    'id, auth_user_id, full_name, role, account_type, is_active, employee_number, pin_hash, real_email, email, phone';
+
+  const primaryRes = await db
+    .from('users')
+    .select(primarySelect)
+    .eq('organization_id', orgId)
+    .order('created_at', { ascending: true });
+  if (!primaryRes.error) {
+    return (primaryRes.data ?? []) as Record<string, unknown>[];
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    console.warn('[admin/restaurant-detail] users primary select failed, using fallback', {
+      orgId,
+      message: primaryRes.error.message,
+    });
+  }
+  const fallbackRes = await db
+    .from('users')
+    .select(fallbackSelect)
+    .eq('organization_id', orgId)
+    .order('id', { ascending: true });
+
+  if (fallbackRes.error) {
+    throw new Error(fallbackRes.error.message || 'Unable to load restaurant employees.');
+  }
+
+  if (primaryRes.error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[admin/restaurant-detail] users fallback loaded after primary failure', {
+        orgId,
+      });
+    }
+  }
+  return (fallbackRes.data ?? []) as Record<string, unknown>[];
+}
+
+async function fetchOwnerMembership(
+  orgId: string,
+): Promise<{ auth_user_id: string | null } | null> {
+  const db = getAdminSupabase();
+  const ownerRes = await db
+    .from('organization_memberships')
+    .select('auth_user_id')
+    .eq('organization_id', orgId)
+    .ilike('role', 'owner')
+    .limit(1)
+    .maybeSingle();
+
+  if (ownerRes.error) {
+    throw new Error(ownerRes.error.message || 'Unable to load owner membership.');
+  }
+
+  if (ownerRes.data?.auth_user_id) return ownerRes.data;
+
+  // Some production data uses admin for the owner seat.
+  const adminRes = await db
+    .from('organization_memberships')
+    .select('auth_user_id')
+    .eq('organization_id', orgId)
+    .ilike('role', 'admin')
+    .limit(1)
+    .maybeSingle();
+
+  if (adminRes.error) {
+    throw new Error(adminRes.error.message || 'Unable to load fallback owner membership.');
+  }
+
+  return adminRes.data ?? null;
 }
 
 function normalizeNullableText(value: unknown): string | null {

@@ -274,6 +274,7 @@ function LocationsTab({ orgId }: { orgId: string }) {
 // ---------------------------------------------------------------------------
 
 type EmployeesPayload = {
+  expectedEmployeesCount?: number;
   employees: {
     id: string;
     authUserId: string | null;
@@ -294,11 +295,20 @@ function EmployeesTab({ orgId }: { orgId: string }) {
   if (loading) return <TabSpinner />;
   if (error) return <AdminFetchError message="Failed to load employees" detail={error} onRetry={retry} />;
   const employees = data?.employees ?? [];
+  const expectedEmployeesCount = data?.expectedEmployeesCount ?? employees.length;
   const activeCount = employees.filter((e) => e.isActive === true).length;
   const inactiveCount = employees.filter((e) => e.isActive === false).length;
+  const showMismatchBanner = expectedEmployeesCount > 0 && employees.length === 0;
 
   return (
     <div className="space-y-4">
+      {showMismatchBanner && (
+        <AdminBanner
+          variant="warning"
+          message="Employee count mismatch — check users.organization_id mapping."
+        />
+      )}
+
       {/* Summary */}
       <div className="flex gap-4 text-sm">
         <span className="rounded-md bg-zinc-100 px-3 py-1 text-zinc-600">
