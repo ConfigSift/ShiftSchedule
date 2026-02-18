@@ -16,6 +16,8 @@ const FAILED_NOTICE_PATH = '/login?notice=verification-failed';
 
 function toSafeRedirectPath(candidate: string | null, fallback: string) {
   if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) return fallback;
+  // `next` must remain an internal path to avoid open redirects.
+  if (/http/i.test(candidate)) return fallback;
   return candidate;
 }
 

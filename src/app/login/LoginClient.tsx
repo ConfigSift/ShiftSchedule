@@ -13,6 +13,7 @@ import { resolvePostAuthDestination } from '@/lib/authRedirect';
 
 type LoginClientProps = {
   notice?: string | null;
+  nextPath?: string | null;
   setupDisabled: boolean;
 };
 
@@ -29,9 +30,29 @@ function resolvePersona(value: unknown) {
   return normalizePersona(value) ?? readStoredPersona();
 }
 
-export default function LoginClient({ notice, setupDisabled }: LoginClientProps) {
+function pathMatchesPrefix(pathname: string, prefix: string) {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+function sanitizeNextPath(candidate?: string | null): string | null {
+  const value = String(candidate ?? '').trim();
+  if (!value || !value.startsWith('/') || value.startsWith('//')) return null;
+  if (/http/i.test(value)) return null;
+  const pathname = value.split('?')[0] ?? '/';
+  if (
+    pathMatchesPrefix(pathname, '/login')
+    || pathMatchesPrefix(pathname, '/signup')
+    || pathMatchesPrefix(pathname, '/auth')
+  ) {
+    return null;
+  }
+  return value;
+}
+
+export default function LoginClient({ notice, nextPath, setupDisabled }: LoginClientProps) {
   const router = useRouter();
   const { currentUser, accessibleRestaurants, init } = useAuthStore();
+  const safeNextPath = sanitizeNextPath(nextPath);
 
   const [email, setEmail] = useState('');
   const [passcode, setPasscode] = useState('');
@@ -67,6 +88,12 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
   useEffect(() => {
     if (!currentUser && accessibleRestaurants.length === 0) return;
 
+    // If login was triggered from a protected page, return there after auth.
+    if (safeNextPath) {
+      router.replace(safeNextPath);
+      return;
+    }
+
     const persona = resolvePersona(currentUser?.persona);
     if (!persona) {
       router.replace('/persona');
@@ -75,7 +102,7 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
 
     const destination = resolvePostAuthDestination(accessibleRestaurants.length, currentUser?.role, persona);
     router.replace(destination);
-  }, [currentUser, accessibleRestaurants, router]);
+  }, [currentUser, accessibleRestaurants, router, safeNextPath]);
 
   const isPasscodeValid = passcode.trim().length >= 6;
   const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -116,6 +143,11 @@ export default function LoginClient({ notice, setupDisabled }: LoginClientProps)
         accessibleRestaurants: refreshedRestaurants,
         currentUser: refreshedUser,
       } = useAuthStore.getState();
+
+      if (safeNextPath) {
+        router.replace(safeNextPath);
+        return;
+      }
 
       const persona = resolvePersona(refreshedUser?.persona);
       if (!persona) {

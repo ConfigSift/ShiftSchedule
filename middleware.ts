@@ -11,6 +11,7 @@ const APP_HOME_REDIRECT_PATH = '/dashboard';
 const MARKETING_ROUTES = ['/', '/pricing', '/features', '/privacy', '/terms'];
 const LOGIN_ROUTE_PREFIXES = ['/login', '/signup', '/start', '/onboarding', '/auth', '/reset-passcode'];
 const APP_ROUTE_PREFIXES = [
+  '/admin',
   '/dashboard',
   '/restaurants',
   '/join',
@@ -33,6 +34,7 @@ const PUBLIC_EXACT_PATHS = ['/'];
 const PUBLIC_PATH_PREFIXES = ['/login', '/signup', '/start', '/onboarding', '/setup', '/auth/callback', '/auth/error'];
 const AUTH_ENTRY_PATH_PREFIXES = ['/login', '/signup'];
 const PROTECTED_APP_ROUTE_PREFIXES = [
+  '/admin',
   '/join',
   '/dashboard',
   '/restaurants',
@@ -53,6 +55,7 @@ const PROTECTED_APP_ROUTE_PREFIXES = [
 
 /** Routes that skip the subscription billing gate entirely */
 const BILLING_EXEMPT_PREFIXES = [
+  '/admin',
   '/subscribe',
   '/api/billing/',
   '/api/auth/',
@@ -104,6 +107,18 @@ function getSupabaseEnvEdgeSafe() {
 function isManagerRole(value: unknown): boolean {
   const role = String(value ?? '').trim().toUpperCase();
   return role === 'ADMIN' || role === 'MANAGER';
+}
+
+let cachedPlatformAdminIds: string[] | null = null;
+function getPlatformAdminIds(): string[] {
+  if (cachedPlatformAdminIds) return cachedPlatformAdminIds;
+  const raw = process.env.ADMIN_AUTH_USER_IDS ?? '';
+  cachedPlatformAdminIds = raw.split(',').map((id) => id.trim()).filter(Boolean);
+  return cachedPlatformAdminIds;
+}
+
+function isPlatformAdmin(authUserId: string): boolean {
+  return getPlatformAdminIds().includes(authUserId);
 }
 
 function pathMatchesPrefix(pathname: string, prefix: string) {
@@ -196,6 +211,19 @@ function buildLoginRedirectUrl(req: NextRequest, localOrPreviewHost: boolean, ne
   const loginUrl = localOrPreviewHost
     ? new URL('/login', req.url)
     : buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, '/login');
+  // Clear any inherited query from the source URL; only carry intent via `next`.
+  loginUrl.search = '';
+  if (nextPath) {
+    loginUrl.searchParams.set('next', nextPath);
+  }
+  return loginUrl;
+}
+
+function buildAdminLoginRedirectUrl(req: NextRequest, localOrPreviewHost: boolean, nextPath: string) {
+  const loginUrl = localOrPreviewHost
+    ? new URL('/admin/login', req.url)
+    : buildHostRedirectUrl(req, APP_SUBDOMAIN, '/admin/login');
+  loginUrl.search = '';
   if (nextPath) {
     loginUrl.searchParams.set('next', nextPath);
   }
@@ -222,6 +250,10 @@ async function runMiddleware(req: NextRequest) {
   const requestPathWithQuery = `${originalPathname}${requestUrl.search}`;
 
   if (isNonPageAsset(originalPathname)) {
+    return NextResponse.next();
+  }
+
+  if (pathMatchesPrefix(originalPathname, '/admin/login')) {
     return NextResponse.next();
   }
 
@@ -329,7 +361,11 @@ async function runMiddleware(req: NextRequest) {
     if (!protectedRoute) {
       return response;
     }
+    // Preserve the full original path + query so login can return users to deep admin URLs.
     const nextPath = `${originalPathname}${requestUrl.search}`;
+    if (pathMatchesPrefix(routeForGuards, '/admin')) {
+      return redirectTo(buildAdminLoginRedirectUrl(req, localOrPreviewHost, nextPath), 'auth:missing-session:admin');
+    }
     return redirectTo(buildLoginRedirectUrl(req, localOrPreviewHost, nextPath), 'auth:missing-session');
   }
 
@@ -339,7 +375,8 @@ async function runMiddleware(req: NextRequest) {
 
   const onRestaurantsRoute = pathMatchesPrefix(routeForGuards, '/restaurants');
   const onSetupRoute = pathMatchesPrefix(routeForGuards, '/setup');
-  if (!onRestaurantsRoute && !onSetupRoute) {
+  const onAdminRoute = pathMatchesPrefix(routeForGuards, '/admin');
+  if (!onRestaurantsRoute && !onSetupRoute && !onAdminRoute) {
     const { count, error: membershipCountError } = await supabase
       .from('organization_memberships')
       .select('organization_id', { count: 'exact', head: true })
@@ -347,6 +384,12 @@ async function runMiddleware(req: NextRequest) {
 
     if (!membershipCountError && (count ?? 0) === 0) {
       return redirectTo(NO_ORG_REDIRECT_PATH, 'org:no-memberships');
+    }
+  }
+
+  if (pathMatchesPrefix(routeForGuards, '/admin')) {
+    if (!isPlatformAdmin(user.id)) {
+      return redirectTo('/dashboard?notice=forbidden', 'admin:not-platform-admin');
     }
   }
 
