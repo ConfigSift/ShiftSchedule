@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies } from '@/lib/supabase/route';
 import { requireAdmin } from '@/lib/admin/auth';
-import { getAdminSupabase } from '@/lib/admin/supabase';
 import {
   getRestaurantOverview,
   getRestaurantLocations,
@@ -38,7 +37,6 @@ export async function GET(
 
   const tab = request.nextUrl.searchParams.get('tab') || 'overview';
   const requestId = crypto.randomUUID();
-  const db = getAdminSupabase();
 
   try {
     switch (tab) {
@@ -65,26 +63,49 @@ export async function GET(
       }
 
       case 'employees': {
-        const [employees, expectedEmployees] = await Promise.all([
-          getRestaurantEmployees(orgId),
-          db
-            .from('users')
-            .select('id', { count: 'exact', head: true })
-            .eq('organization_id', orgId),
-        ]);
-        const expectedEmployeesCount = expectedEmployees.count ?? 0;
-        if (process.env.NODE_ENV !== 'production') {
-          console.log('[admin/restaurants:employees]', {
-            orgId,
-            tab,
-            expectedEmployeesCount,
-            returnedRows: employees.length,
-          });
+        try {
+          const data = await getRestaurantEmployees(orgId);
+          if (process.env.NODE_ENV !== 'production') {
+            console.log('[admin/restaurants:employees]', {
+              requestId,
+              orgId,
+              tab,
+              expectedEmployeesCount: data.expectedEmployeesCount,
+              returnedRows: data.employees.length,
+              resolvedOrgFkColumn: data.resolvedOrgFkColumn,
+            });
+          }
+          return applySupabaseCookies(
+            NextResponse.json({
+              requestId,
+              tab,
+              expectedEmployeesCount: data.expectedEmployeesCount,
+              employees: data.employees,
+            }),
+            response,
+          );
+        } catch (err) {
+          const parsed = parseErrorWithPostgrestFields(err);
+          console.error(
+            `[admin/restaurants/${orgId}]`,
+            requestId,
+            'tab=employees',
+            parsed,
+          );
+          return applySupabaseCookies(
+            NextResponse.json(
+              {
+                error: parsed.message || 'Failed to load employees data.',
+                code: parsed.code,
+                hint: parsed.hint,
+                details: parsed.details,
+                requestId,
+              },
+              { status: 500 },
+            ),
+            response,
+          );
         }
-        return applySupabaseCookies(
-          NextResponse.json({ requestId, tab, expectedEmployeesCount, employees }),
-          response,
-        );
       }
 
       case 'usage': {
@@ -131,4 +152,46 @@ export async function GET(
       response,
     );
   }
+}
+
+function parseErrorWithPostgrestFields(err: unknown): {
+  message: string;
+  code?: string;
+  hint?: string;
+  details?: unknown;
+} {
+  if (err instanceof Error) {
+    const withFields = err as Error & {
+      code?: string;
+      hint?: string;
+      details?: unknown;
+      cause?: unknown;
+    };
+    const cause = withFields.cause as
+      | { message?: string; code?: string; hint?: string; details?: unknown }
+      | undefined;
+    return {
+      message: withFields.message || cause?.message || 'Unknown error',
+      code: withFields.code ?? cause?.code,
+      hint: withFields.hint ?? cause?.hint,
+      details: withFields.details ?? cause?.details,
+    };
+  }
+
+  if (typeof err === 'object' && err !== null) {
+    const obj = err as {
+      message?: string;
+      code?: string;
+      hint?: string;
+      details?: unknown;
+    };
+    return {
+      message: obj.message || 'Unknown error',
+      code: obj.code,
+      hint: obj.hint,
+      details: obj.details,
+    };
+  }
+
+  return { message: String(err || 'Unknown error') };
 }

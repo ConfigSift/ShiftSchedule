@@ -41,6 +41,12 @@ export type EmployeeRow = {
   source: 'users' | 'membership';
 };
 
+export type RestaurantEmployeesResult = {
+  expectedEmployeesCount: number;
+  employees: EmployeeRow[];
+  resolvedOrgFkColumn: string;
+};
+
 export type UsageCounts = {
   shifts: number;
   timeOffRequests: number;
@@ -173,10 +179,11 @@ export async function getRestaurantLocations(
 
 export async function getRestaurantEmployees(
   orgId: string,
-): Promise<EmployeeRow[]> {
+): Promise<RestaurantEmployeesResult> {
   const db = getAdminSupabase();
+  const { column: orgFkColumn, expectedCount } = await resolveUsersOrgFkColumn(orgId);
   const [usersRows, ownerMembership] = await Promise.all([
-    fetchUsersForOrganization(orgId),
+    fetchUsersForOrganization(orgId, orgFkColumn),
     fetchOwnerMembership(orgId),
   ]);
 
@@ -231,49 +238,99 @@ export async function getRestaurantEmployees(
     });
   }
 
-  return employees;
+  return {
+    expectedEmployeesCount: expectedCount,
+    employees,
+    resolvedOrgFkColumn: orgFkColumn,
+  };
 }
 
-async function fetchUsersForOrganization(orgId: string): Promise<Record<string, unknown>[]> {
+const USERS_ORG_FK_CANDIDATES = [
+  'organization_id',
+  'organizationId',
+  'org_id',
+  'organization',
+  'restaurant_id',
+] as const;
+
+type PostgrestLikeError = {
+  message?: string;
+  details?: string | null;
+  hint?: string | null;
+  code?: string | null;
+};
+
+async function resolveUsersOrgFkColumn(
+  orgId: string,
+): Promise<{ column: string; expectedCount: number }> {
   const db = getAdminSupabase();
-  const primarySelect =
-    'id, auth_user_id, full_name, role, account_type, position, is_active, employee_number, pin_hash, real_email, email, phone, created_at';
-  const fallbackSelect =
-    'id, auth_user_id, full_name, role, account_type, is_active, employee_number, pin_hash, real_email, email, phone';
 
-  const primaryRes = await db
-    .from('users')
-    .select(primarySelect)
-    .eq('organization_id', orgId)
-    .order('created_at', { ascending: true });
-  if (!primaryRes.error) {
-    return (primaryRes.data ?? []) as Record<string, unknown>[];
-  }
+  for (const candidate of USERS_ORG_FK_CANDIDATES) {
+    const probe = await db
+      .from('users')
+      .select('id', { head: true, count: 'exact' })
+      .eq(candidate, orgId);
 
-  if (process.env.NODE_ENV !== 'production') {
-    console.warn('[admin/restaurant-detail] users primary select failed, using fallback', {
-      orgId,
-      message: primaryRes.error.message,
-    });
-  }
-  const fallbackRes = await db
-    .from('users')
-    .select(fallbackSelect)
-    .eq('organization_id', orgId)
-    .order('id', { ascending: true });
-
-  if (fallbackRes.error) {
-    throw new Error(fallbackRes.error.message || 'Unable to load restaurant employees.');
-  }
-
-  if (primaryRes.error) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn('[admin/restaurant-detail] users fallback loaded after primary failure', {
-        orgId,
-      });
+    if (!probe.error) {
+      return { column: candidate, expectedCount: probe.count ?? 0 };
     }
+
+    if (isMissingColumnError(probe.error, candidate)) {
+      continue;
+    }
+
+    throw toEmployeesQueryError(
+      `Failed probing users FK column '${candidate}'.`,
+      probe.error,
+    );
   }
-  return (fallbackRes.data ?? []) as Record<string, unknown>[];
+
+  throw toEmployeesQueryError(
+    `Could not resolve users org FK column (tried ${USERS_ORG_FK_CANDIDATES.join(', ')})`,
+    {
+      code: 'USERS_ORG_FK_NOT_FOUND',
+      details: `orgId=${orgId}`,
+    },
+  );
+}
+
+async function fetchUsersForOrganization(
+  orgId: string,
+  orgFkColumn: string,
+): Promise<Record<string, unknown>[]> {
+  const db = getAdminSupabase();
+  // Keep select list conservative for production schema compatibility.
+  const selectCandidates = [
+    'id, auth_user_id, full_name, role, position, is_active, employee_number, pin_hash, real_email, email, phone',
+    'id, auth_user_id, full_name, role, is_active, employee_number, pin_hash, real_email, email, phone',
+    'id, role, is_active, employee_number, pin_hash',
+  ];
+
+  for (const select of selectCandidates) {
+    const result = await db
+      .from('users')
+      .select(select)
+      .eq(orgFkColumn, orgId)
+      .order('id', { ascending: true });
+
+    if (!result.error) {
+      return (result.data ?? []) as unknown as Record<string, unknown>[];
+    }
+
+    if (isMissingColumnError(result.error)) {
+      continue;
+    }
+
+    throw toEmployeesQueryError(
+      `Failed loading employees from users using FK '${orgFkColumn}'.`,
+      result.error,
+    );
+  }
+
+  throw toEmployeesQueryError(
+    'Could not select required employees columns from users table.',
+    { code: 'USERS_EMPLOYEE_COLUMNS_NOT_FOUND' },
+  );
 }
 
 async function fetchOwnerMembership(
@@ -308,6 +365,28 @@ async function fetchOwnerMembership(
   }
 
   return adminRes.data ?? null;
+}
+
+function isMissingColumnError(error: PostgrestLikeError, column?: string): boolean {
+  const code = String(error.code ?? '').trim();
+  const message = `${String(error.message ?? '')} ${String(error.details ?? '')}`.toLowerCase();
+  if (code === '42703') return true;
+  if (!message.includes('does not exist') || !message.includes('column')) return false;
+  return column ? message.includes(String(column).toLowerCase()) : true;
+}
+
+function toEmployeesQueryError(message: string, error?: PostgrestLikeError): Error {
+  const out = new Error(message) as Error & {
+    code?: string;
+    hint?: string;
+    details?: string;
+    cause?: unknown;
+  };
+  if (error?.code) out.code = String(error.code);
+  if (error?.hint) out.hint = String(error.hint);
+  if (error?.details) out.details = String(error.details);
+  if (error) out.cause = error;
+  return out;
 }
 
 function normalizeNullableText(value: unknown): string | null {

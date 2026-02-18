@@ -96,10 +96,12 @@ function useTabData<T>(orgId: string, tab: string, extra = '') {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorInfo, setErrorInfo] = useState<Record<string, unknown> | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setErrorInfo(null);
     try {
       const res = await fetch(
         `/api/admin/restaurants/${orgId}?tab=${tab}${extra}`,
@@ -108,11 +110,16 @@ function useTabData<T>(orgId: string, tab: string, extra = '') {
       if (res.ok) {
         setData(await res.json());
       } else {
-        const body = await res.json().catch(() => null);
-        setError(body?.error ?? `Failed to load ${tab} data (${res.status})`);
+        const body = await res.json().catch(() => null) as Record<string, unknown> | null;
+        const message = typeof body?.error === 'string'
+          ? body.error
+          : `Failed to load ${tab} data (${res.status})`;
+        setError(message);
+        setErrorInfo({ status: res.status, ...(body ?? {}) });
       }
     } catch {
-      setError('Network error — could not reach the server.');
+      setError('Network error - could not reach the server.');
+      setErrorInfo({ error: 'Network error - could not reach the server.' });
     } finally {
       setLoading(false);
     }
@@ -122,7 +129,7 @@ function useTabData<T>(orgId: string, tab: string, extra = '') {
     fetchData();
   }, [fetchData]);
 
-  return { data, loading, error, retry: fetchData };
+  return { data, loading, error, errorInfo, retry: fetchData };
 }
 
 function TabSpinner() {
@@ -291,9 +298,50 @@ type EmployeesPayload = {
 };
 
 function EmployeesTab({ orgId }: { orgId: string }) {
-  const { data, loading, error, retry } = useTabData<EmployeesPayload>(orgId, 'employees');
+  const { data, loading, error, errorInfo, retry } = useTabData<EmployeesPayload>(orgId, 'employees');
+  const [copied, setCopied] = useState(false);
   if (loading) return <TabSpinner />;
-  if (error) return <AdminFetchError message="Failed to load employees" detail={error} onRetry={retry} />;
+  if (error) {
+    const requestId = typeof errorInfo?.requestId === 'string' ? errorInfo.requestId : null;
+    const payload = {
+      error,
+      requestId,
+      ...(errorInfo ?? {}),
+    };
+
+    const copyError = async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      } catch {
+        setCopied(false);
+      }
+    };
+
+    return (
+      <div className="space-y-3">
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+          <p className="text-sm font-medium text-red-800">Failed to load employees</p>
+          <p className="mt-1 text-sm text-red-700">{error}</p>
+          {requestId && (
+            <p className="mt-1 text-xs text-red-600">requestId: <span className="font-mono">{requestId}</span></p>
+          )}
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={copyError}
+              className="rounded border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+            >
+              Copy error
+            </button>
+            {copied && <span className="text-xs text-red-600">Copied</span>}
+          </div>
+        </div>
+        <AdminFetchError message="Failed to load employees data" detail={error} onRetry={retry} />
+      </div>
+    );
+  }
   const employees = data?.employees ?? [];
   const expectedEmployeesCount = data?.expectedEmployeesCount ?? employees.length;
   const activeCount = employees.filter((e) => e.isActive === true).length;
@@ -717,3 +765,4 @@ function IntentCard({
     </div>
   );
 }
+
