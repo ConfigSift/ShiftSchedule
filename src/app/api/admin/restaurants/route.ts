@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
   const result = await requireAdmin(request);
   if (!result.ok) return result.error;
   const { response } = result;
+  const requestId = crypto.randomUUID();
 
   try {
     const params = request.nextUrl.searchParams;
@@ -36,14 +37,21 @@ export async function GET(request: NextRequest) {
     };
 
     const data = await getRestaurantsList(filters, page, pageSize, sort);
-    const requestId = crypto.randomUUID();
+    if (process.env.NODE_ENV !== 'production') {
+      console.info('[admin/restaurants]', requestId, {
+        filters,
+        page,
+        pageSize,
+        sort,
+        returned: { total: data.total, pageCount: data.data.length },
+      });
+    }
 
     return applySupabaseCookies(
       NextResponse.json({ requestId, ...data }),
       response,
     );
   } catch (err) {
-    const requestId = crypto.randomUUID();
     console.error('[admin/restaurants]', requestId, err);
     return applySupabaseCookies(
       NextResponse.json(

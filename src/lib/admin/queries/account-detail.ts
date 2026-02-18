@@ -1,6 +1,7 @@
 import { getAdminSupabase } from '@/lib/admin/supabase';
+import { getAuthUserById } from '@/lib/admin/authUsers';
 import { ACTIVATION_THRESHOLD } from '@/lib/admin/constants';
-import type { ActivationStage } from '@/lib/admin/types';
+import type { ActivationStage, ProfileState } from '@/lib/admin/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -8,7 +9,9 @@ import type { ActivationStage } from '@/lib/admin/types';
 
 export type AccountProfile = {
   authUserId: string;
+  email: string | null;
   ownerName: string | null;
+  profileState: ProfileState;
   accountType: string | null;
 };
 
@@ -76,7 +79,7 @@ export async function getAccountDetail(
       .from('organization_memberships')
       .select('organization_id')
       .eq('auth_user_id', authUserId)
-      .eq('role', 'admin'),
+      .in('role', ['owner', 'admin']),
   ]);
 
   // If no profile and no memberships, treat as not found
@@ -84,9 +87,21 @@ export async function getAccountDetail(
     return null;
   }
 
+  const authUser = await getAuthUserById(authUserId);
+  const ownerName = normalizeNullableText(
+    (profileRes.data as Record<string, unknown> | null)?.owner_name,
+  );
+  const profileState: ProfileState = !authUser.exists
+    ? 'orphaned'
+    : ownerName
+      ? 'ok'
+      : 'missing_name';
+
   const profile: AccountProfile = {
     authUserId,
-    ownerName: (profileRes.data as Record<string, unknown> | null)?.owner_name as string | null ?? null,
+    email: authUser.email,
+    ownerName,
+    profileState,
     accountType: (profileRes.data as Record<string, unknown> | null)?.account_type as string | null ?? null,
   };
 
@@ -244,4 +259,9 @@ function computeStage(
   if (active && hasSub) return 4;
   if (active) return 3;
   return 2;
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  const trimmed = String(value ?? '').trim();
+  return trimmed ? trimmed : null;
 }

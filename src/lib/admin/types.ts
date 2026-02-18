@@ -42,7 +42,10 @@ export interface RestaurantRow {
 
 export interface AccountRow {
   authUserId: string;
+  email: string | null;
   ownerName: string | null;
+  profileState: ProfileState;
+  isOrphaned?: boolean;
   billingStatus: string | null;
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
@@ -52,6 +55,8 @@ export interface AccountRow {
   employeesCount: number;
   lastShiftCreatedAt: string | null;
 }
+
+export type ProfileState = 'ok' | 'missing_name' | 'orphaned';
 
 // ---------------------------------------------------------------------------
 // Overview KPIs — top-level platform metrics

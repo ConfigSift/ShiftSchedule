@@ -11,8 +11,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  Trash2,
 } from 'lucide-react';
-import type { AccountRow } from '@/lib/admin/types';
+import type { AccountRow, ProfileState } from '@/lib/admin/types';
 import {
   SUBSCRIPTION_STATUSES,
   SUBSCRIPTION_STATUS_LABELS,
@@ -22,22 +23,16 @@ import {
 import { AdminFetchError } from '@/components/admin/AdminFetchError';
 import { TableSkeleton } from '@/components/admin/AdminSkeletons';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 type SortDir = 'asc' | 'desc';
+type ProfileStateFilter = 'all' | ProfileState;
 
 type ApiResponse = {
   data: AccountRow[];
   total: number;
   page: number;
   pageSize: number;
+  appliedProfileState?: ProfileStateFilter;
 };
-
-// ---------------------------------------------------------------------------
-// Columns
-// ---------------------------------------------------------------------------
 
 const COLUMNS: {
   key: string;
@@ -47,16 +42,13 @@ const COLUMNS: {
 }[] = [
   { key: 'ownerName', label: 'Owner Name', sortable: true },
   { key: 'authUserId', label: 'Auth User ID', sortable: false, className: 'hidden md:table-cell' },
+  { key: 'profileState', label: 'Profile State', sortable: true },
   { key: 'billingStatus', label: 'Billing Status', sortable: true },
   { key: 'ownedOrganizationsCount', label: 'Orgs', sortable: true, className: 'text-right' },
   { key: 'locationsCount', label: 'Locations', sortable: true, className: 'text-right hidden lg:table-cell' },
   { key: 'employeesCount', label: 'Employees', sortable: true, className: 'text-right' },
   { key: 'lastShiftCreatedAt', label: 'Last Activity', sortable: true, className: 'hidden lg:table-cell' },
 ];
-
-// ---------------------------------------------------------------------------
-// Page component
-// ---------------------------------------------------------------------------
 
 export default function AdminAccountsPage() {
   const [rows, setRows] = useState<AccountRow[]>([]);
@@ -65,16 +57,16 @@ export default function AdminAccountsPage() {
   const [pageSize] = useState(25);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [deletingAuthUserId, setDeletingAuthUserId] = useState<string | null>(null);
 
-  // Filters
   const [search, setSearch] = useState('');
   const [billingStatus, setBillingStatus] = useState('');
+  const [profileState, setProfileState] = useState<ProfileStateFilter>('all');
 
-  // Sort
   const [sortColumn, setSortColumn] = useState('ownerName');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
 
-  // Debounce
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
 
   const fetchData = useCallback(
@@ -83,6 +75,7 @@ export default function AdminAccountsPage() {
       const params = new URLSearchParams();
       if (searchVal) params.set('search', searchVal);
       if (billingStatus) params.set('billingStatus', billingStatus);
+      if (profileState !== 'all') params.set('profileState', profileState);
       params.set('page', String(page));
       params.set('pageSize', String(pageSize));
       params.set('sortColumn', sortColumn);
@@ -103,34 +96,60 @@ export default function AdminAccountsPage() {
           setError(body?.error ?? `Request failed (${res.status})`);
         }
       } catch {
-        setError('Network error — could not reach the server.');
+        setError('Network error - could not reach the server.');
       } finally {
         setLoading(false);
       }
     },
-    [billingStatus, page, pageSize, sortColumn, sortDir],
+    [billingStatus, profileState, page, pageSize, sortColumn, sortDir],
   );
 
   useEffect(() => {
     fetchData(search);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchData]);
+  }, [fetchData, search]);
 
-  const handleSearch = (val: string) => {
-    setSearch(val);
+  const handleSearch = (value: string) => {
+    setSearch(value);
     setPage(1);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => fetchData(val), 300);
+    debounceRef.current = setTimeout(() => fetchData(value), 300);
   };
 
-  const handleSort = (col: string) => {
-    if (sortColumn === col) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+  const handleSort = (column: string) => {
+    if (sortColumn === column) {
+      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
     } else {
-      setSortColumn(col);
+      setSortColumn(column);
       setSortDir('asc');
     }
     setPage(1);
+  };
+
+  const handleDeleteOrphan = async (row: AccountRow) => {
+    if (!row.isOrphaned) return;
+    const confirmed = window.confirm(
+      `Delete orphaned account profile for ${row.authUserId}? This removes only public profile data, not the auth user.`,
+    );
+    if (!confirmed) return;
+
+    setActionError(null);
+    setDeletingAuthUserId(row.authUserId);
+    try {
+      const response = await fetch(`/api/admin/accounts/orphaned/${encodeURIComponent(row.authUserId)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setActionError(body?.error ?? `Delete failed (${response.status}).`);
+        return;
+      }
+      await fetchData(search);
+    } catch {
+      setActionError('Unable to delete orphaned profile right now.');
+    } finally {
+      setDeletingAuthUserId(null);
+    }
   };
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -139,24 +158,23 @@ export default function AdminAccountsPage() {
     <div className="space-y-4">
       <h2 className="text-xl font-semibold text-zinc-900">Accounts</h2>
 
-      {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative min-w-[200px] max-w-sm flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
           <input
             type="text"
             value={search}
-            onChange={(e) => handleSearch(e.target.value)}
-            placeholder="Search name or user ID…"
-            aria-label="Search accounts by name or user ID"
+            onChange={(event) => handleSearch(event.target.value)}
+            placeholder="Search name, user ID, or email..."
+            aria-label="Search accounts by name, user ID, or email"
             className="w-full rounded-md border border-zinc-300 bg-white py-2 pl-9 pr-3 text-sm text-zinc-800 placeholder:text-zinc-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
           />
         </div>
 
         <select
           value={billingStatus}
-          onChange={(e) => {
-            setBillingStatus(e.target.value);
+          onChange={(event) => {
+            setBillingStatus(event.target.value);
             setPage(1);
           }}
           aria-label="Filter by billing status"
@@ -164,15 +182,35 @@ export default function AdminAccountsPage() {
         >
           <option value="">All billing statuses</option>
           <option value="none">No billing account</option>
-          {SUBSCRIPTION_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {SUBSCRIPTION_STATUS_LABELS[s]}
+          {SUBSCRIPTION_STATUSES.map((status) => (
+            <option key={status} value={status}>
+              {SUBSCRIPTION_STATUS_LABELS[status]}
             </option>
           ))}
         </select>
+
+        <select
+          value={profileState}
+          onChange={(event) => {
+            setProfileState(event.target.value as ProfileStateFilter);
+            setPage(1);
+          }}
+          aria-label="Filter by profile state"
+          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+        >
+          <option value="all">Profile state: All</option>
+          <option value="ok">Profile state: OK</option>
+          <option value="missing_name">Profile state: Missing name</option>
+          <option value="orphaned">Profile state: Orphaned</option>
+        </select>
       </div>
 
-      {/* Error state */}
+      {actionError && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {actionError}
+        </div>
+      )}
+
       {error && !loading && (
         <AdminFetchError
           message="Failed to load accounts"
@@ -181,33 +219,29 @@ export default function AdminAccountsPage() {
         />
       )}
 
-      {/* Loading skeleton */}
       {loading && rows.length === 0 && !error && (
         <TableSkeleton rows={8} columns={COLUMNS.length} />
       )}
 
-      {/* Table */}
       {!error && !(loading && rows.length === 0) && (
         <div className="overflow-x-auto rounded-lg border border-zinc-200 bg-white shadow-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-zinc-100 bg-zinc-50">
-                {COLUMNS.map((col) => (
+                {COLUMNS.map((column) => (
                   <th
-                    key={col.key}
+                    key={column.key}
                     scope="col"
-                    className={`whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wide text-zinc-500 ${col.className ?? ''} ${col.sortable ? 'cursor-pointer select-none hover:text-zinc-700' : ''}`}
-                    onClick={col.sortable ? () => handleSort(col.key) : undefined}
+                    className={`whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wide text-zinc-500 ${column.className ?? ''} ${column.sortable ? 'cursor-pointer select-none hover:text-zinc-700' : ''}`}
+                    onClick={column.sortable ? () => handleSort(column.key) : undefined}
                   >
                     <span className="inline-flex items-center gap-1">
-                      {col.label}
-                      {col.sortable &&
-                        sortColumn === col.key &&
-                        (sortDir === 'asc' ? (
-                          <ChevronUp className="h-3 w-3" />
-                        ) : (
-                          <ChevronDown className="h-3 w-3" />
-                        ))}
+                      {column.label}
+                      {column.sortable && sortColumn === column.key && (
+                        sortDir === 'asc'
+                          ? <ChevronUp className="h-3 w-3" />
+                          : <ChevronDown className="h-3 w-3" />
+                      )}
                     </span>
                   </th>
                 ))}
@@ -217,18 +251,20 @@ export default function AdminAccountsPage() {
             <tbody className="divide-y divide-zinc-50">
               {rows.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={COLUMNS.length}
-                    className="py-12 text-center text-sm text-zinc-400"
-                  >
-                    {search || billingStatus
+                  <td colSpan={COLUMNS.length} className="py-12 text-center text-sm text-zinc-400">
+                    {search || billingStatus || profileState !== 'all'
                       ? 'No accounts match your filters.'
                       : 'No accounts have been created yet.'}
                   </td>
                 </tr>
               ) : (
                 rows.map((row) => (
-                  <AccountTableRow key={row.authUserId} row={row} />
+                  <AccountTableRow
+                    key={row.authUserId}
+                    row={row}
+                    deleting={deletingAuthUserId === row.authUserId}
+                    onDeleteOrphan={handleDeleteOrphan}
+                  />
                 ))
               )}
             </tbody>
@@ -236,30 +272,23 @@ export default function AdminAccountsPage() {
         </div>
       )}
 
-      {/* Pagination */}
       <div className="flex items-center justify-between text-sm text-zinc-500">
         <span>
           {total === 0
             ? 'No results'
-            : `Showing ${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`}
+            : `Showing ${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, total)} of ${total}`}
         </span>
         <div className="flex items-center gap-1">
           <PagBtn onClick={() => setPage(1)} disabled={page <= 1}>
             <ChevronsLeft className="h-4 w-4" />
           </PagBtn>
-          <PagBtn
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page <= 1}
-          >
+          <PagBtn onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1}>
             <ChevronLeft className="h-4 w-4" />
           </PagBtn>
           <span className="px-3 font-medium text-zinc-700">
             {page} / {totalPages}
           </span>
-          <PagBtn
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page >= totalPages}
-          >
+          <PagBtn onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page >= totalPages}>
             <ChevronRight className="h-4 w-4" />
           </PagBtn>
           <PagBtn onClick={() => setPage(totalPages)} disabled={page >= totalPages}>
@@ -271,27 +300,44 @@ export default function AdminAccountsPage() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Table row
-// ---------------------------------------------------------------------------
+function AccountTableRow({
+  row,
+  deleting,
+  onDeleteOrphan,
+}: {
+  row: AccountRow;
+  deleting: boolean;
+  onDeleteOrphan: (row: AccountRow) => void;
+}) {
+  const title = row.ownerName
+    || (row.profileState === 'orphaned' ? 'Orphaned profile' : 'Missing profile name');
 
-function AccountTableRow({ row }: { row: AccountRow }) {
   return (
     <tr className="transition-colors hover:bg-zinc-50">
       <td className="px-4 py-3">
-        <Link
-          href={`/admin/accounts/${row.authUserId}`}
-          className="font-medium text-indigo-600 hover:underline"
-        >
-          {row.ownerName || (
-            <span className="text-zinc-400">
-              {row.authUserId.slice(0, 8)}…
-            </span>
-          )}
+        <Link href={`/admin/accounts/${row.authUserId}`} className="font-medium text-indigo-600 hover:underline">
+          {title}
         </Link>
       </td>
       <td className="hidden px-4 py-3 font-mono text-xs text-zinc-400 md:table-cell">
         {row.authUserId}
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-2">
+          <ProfileStateBadge state={row.profileState} />
+          {row.isOrphaned && (
+            <button
+              type="button"
+              onClick={() => onDeleteOrphan(row)}
+              disabled={deleting}
+              className="inline-flex items-center gap-1 rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+              title="Delete orphan profile"
+            >
+              {deleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+              Delete
+            </button>
+          )}
+        </div>
       </td>
       <td className="px-4 py-3">
         <BillingBadge status={row.billingStatus} />
@@ -306,17 +352,33 @@ function AccountTableRow({ row }: { row: AccountRow }) {
         {row.employeesCount}
       </td>
       <td className="hidden px-4 py-3 text-xs text-zinc-500 lg:table-cell">
-        {row.lastShiftCreatedAt
-          ? formatRelative(row.lastShiftCreatedAt)
-          : <span className="text-zinc-300">—</span>}
+        {row.lastShiftCreatedAt ? formatRelative(row.lastShiftCreatedAt) : <span className="text-zinc-300">-</span>}
       </td>
     </tr>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Badges
-// ---------------------------------------------------------------------------
+function ProfileStateBadge({ state }: { state: ProfileState }) {
+  if (state === 'ok') {
+    return (
+      <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+        OK
+      </span>
+    );
+  }
+  if (state === 'missing_name') {
+    return (
+      <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+        Missing name
+      </span>
+    );
+  }
+  return (
+    <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+      Orphaned
+    </span>
+  );
+}
 
 function BillingBadge({ status }: { status: string | null }) {
   if (!status) {
@@ -342,10 +404,6 @@ function BillingBadge({ status }: { status: string | null }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Pagination button
-// ---------------------------------------------------------------------------
-
 function PagBtn({
   onClick,
   disabled,
@@ -367,17 +425,12 @@ function PagBtn({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function formatRelative(iso: string): string {
   const date = new Date(iso);
   if (isNaN(date.getTime())) return '';
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
   if (diffDays === 0) return 'Today';
   if (diffDays === 1) return '1d ago';
   if (diffDays < 30) return `${diffDays}d ago`;

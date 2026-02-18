@@ -56,6 +56,7 @@ export default async function AccountDetailPage({
         </h2>
         <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-zinc-500">
           <span className="font-mono text-xs text-zinc-400">{authUserId}</span>
+          {profile.email && <span>{profile.email}</span>}
           {profile.accountType && (
             <span className="rounded bg-zinc-100 px-2 py-0.5 text-xs capitalize text-zinc-600">
               {profile.accountType}
@@ -63,6 +64,12 @@ export default async function AccountDetailPage({
           )}
         </div>
       </div>
+
+      {profile.profileState === 'orphaned' && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          This account profile is orphaned: no matching auth user exists in `auth.users`.
+        </div>
+      )}
 
       {/* Billing summary card */}
       <Card title="Billing Summary">

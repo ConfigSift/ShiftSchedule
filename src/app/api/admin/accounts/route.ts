@@ -6,6 +6,7 @@ import {
   type AccountFilters,
   type AccountSort,
 } from '@/lib/admin/queries/accounts';
+import type { ProfileState } from '@/lib/admin/types';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -21,6 +22,7 @@ export async function GET(request: NextRequest) {
     const filters: AccountFilters = {
       search: params.get('search') || undefined,
       billingStatus: params.get('billingStatus') || undefined,
+      profileState: parseProfileState(params.get('profileState')),
     };
 
     const page = Math.max(1, parseInt(params.get('page') ?? '1', 10) || 1);
@@ -38,7 +40,11 @@ export async function GET(request: NextRequest) {
     const requestId = crypto.randomUUID();
 
     return applySupabaseCookies(
-      NextResponse.json({ requestId, ...data }),
+      NextResponse.json({
+        requestId,
+        appliedProfileState: filters.profileState ?? 'all',
+        ...data,
+      }),
       response,
     );
   } catch (err) {
@@ -52,4 +58,12 @@ export async function GET(request: NextRequest) {
       response,
     );
   }
+}
+
+function parseProfileState(value: string | null): ProfileState | 'all' | undefined {
+  if (!value) return undefined;
+  if (value === 'all' || value === 'ok' || value === 'missing_name' || value === 'orphaned') {
+    return value;
+  }
+  return undefined;
 }
