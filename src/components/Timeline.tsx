@@ -3,14 +3,29 @@
 
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
-import { SECTIONS } from '../types';
+import { SECTIONS, type Shift } from '../types';
 import { formatHourShort, formatHour, shiftsOverlap, getWeekRange } from '../utils/timeUtils';
 import { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Palmtree, ArrowLeftRight } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { getJobColorClasses } from '../lib/jobColors';
 import { compareJobs } from '../utils/jobOrder';
 import { ScheduleToolbar } from './ScheduleToolbar';
+import {
+  DndContext,
+  DragOverlay,
+  MeasuringStrategy,
+  PointerSensor,
+  pointerWithin,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
 
 // Compact timeline sizing - pixels per hour
 const DEFAULT_PX_PER_HOUR = 48;
@@ -22,6 +37,11 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 const GRID_BACKGROUND_SELECTOR = '[data-grid-background="true"]';
+const CELL_ID_PREFIX = 'cell:';
+const SHIFT_ID_PREFIX = 'shift:';
+const CELL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const SCHEDULE_CLIPBOARD_KEY = 'crewshyft:scheduleClipboard:v1';
+const CLIPBOARD_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const NON_GRAB_SCROLL_SELECTOR = [
   '[data-shift]',
   '.shift',
@@ -34,6 +54,153 @@ const NON_GRAB_SCROLL_SELECTOR = [
   '[role="button"]',
   '[contenteditable="true"]',
 ].join(',');
+
+type TimelineContextMenu = {
+  x: number;
+  y: number;
+  type: 'shift' | 'cell';
+  shiftId?: string;
+  cellId?: string;
+};
+
+type TimelineScheduleClipboard = {
+  copiedAt: number;
+  sourceOrgId: string;
+  template: {
+    shiftId: string;
+    startHour: number;
+    endHour: number;
+    job: string;
+    locationId?: string | null;
+    notes?: string;
+  };
+};
+
+type TimelineCellTarget = {
+  organizationId: string;
+  userId: string;
+  date: string;
+};
+
+type TimelineShiftTarget = {
+  shiftId: string;
+};
+
+function buildTimelineCellId(organizationId: string, userId: string, date: string): string {
+  return `${CELL_ID_PREFIX}${organizationId}:${userId}:${date}`;
+}
+
+function buildTimelineShiftId(shiftId: string): string {
+  return `${SHIFT_ID_PREFIX}${shiftId}`;
+}
+
+function parseTimelineCellId(rawId: unknown): TimelineCellTarget | null {
+  const value = String(rawId ?? '');
+  if (!value.startsWith(CELL_ID_PREFIX)) return null;
+  const payload = value.slice(CELL_ID_PREFIX.length);
+  const [organizationId, userId, date] = payload.split(':');
+  if (!organizationId || !userId || !date || !CELL_DATE_RE.test(date)) return null;
+  return { organizationId, userId, date };
+}
+
+function parseTimelineShiftId(rawId: unknown): TimelineShiftTarget | null {
+  const value = String(rawId ?? '');
+  if (!value.startsWith(SHIFT_ID_PREFIX)) return null;
+  const shiftId = value.slice(SHIFT_ID_PREFIX.length);
+  if (!shiftId) return null;
+  return { shiftId };
+}
+
+type TimelineDroppableSliceProps = {
+  id: string;
+  disabled?: boolean;
+  employeeId: string;
+  className?: string;
+  style?: React.CSSProperties;
+  isActiveCell?: boolean;
+  isContextMenuTarget?: boolean;
+  isDragOverCell?: boolean;
+};
+
+function TimelineDroppableSlice({
+  id,
+  disabled = false,
+  employeeId,
+  className,
+  style,
+  isActiveCell = false,
+  isContextMenuTarget = false,
+  isDragOverCell = false,
+}: TimelineDroppableSliceProps) {
+  const { setNodeRef, isOver } = useDroppable({
+    id,
+    disabled,
+  });
+  const isHighlighted = !disabled && (isOver || isDragOverCell);
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-grid-background="true"
+      data-employee-id={employeeId}
+      data-cell-id={id}
+      className={`${className ?? ''} ${isHighlighted ? 'outline outline-2 outline-sky-400/70 bg-sky-500/10' : ''} ${
+        isContextMenuTarget
+          ? 'outline outline-2 outline-amber-300/95 bg-amber-400/15'
+          : isActiveCell
+          ? 'outline outline-2 outline-amber-400/80'
+          : ''
+      }`}
+      style={style}
+    />
+  );
+}
+
+type TimelineDraggableShiftProps = {
+  shiftId: string;
+  disabled?: boolean;
+  children: (args: {
+    setNodeRef: (element: HTMLElement | null) => void;
+    attributes: Record<string, unknown>;
+    listeners: Record<string, unknown>;
+    transformStyle?: string;
+    isDragging: boolean;
+  }) => React.ReactNode;
+};
+
+function TimelineDraggableShift({ shiftId, disabled = false, children }: TimelineDraggableShiftProps) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: buildTimelineShiftId(shiftId),
+    disabled,
+  });
+  const transformStyle = transform
+    ? `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)`
+    : undefined;
+  return children({
+    setNodeRef,
+    attributes: attributes as unknown as Record<string, unknown>,
+    listeners: listeners as unknown as Record<string, unknown>,
+    transformStyle,
+    isDragging,
+  });
+}
+
+function TimelineShiftDragOverlay({ shift }: { shift: Shift }) {
+  const jobColor = getJobColorClasses(shift.job);
+  return (
+    <div
+      className="relative px-2 py-1 rounded text-[10px] truncate shadow-lg pointer-events-none border"
+      style={{
+        minWidth: '120px',
+        backgroundColor: jobColor.bgColor,
+        borderColor: jobColor.color,
+        color: jobColor.color,
+      }}
+    >
+      {formatHour(shift.startHour)}-{formatHour(shift.endHour)}
+    </div>
+  );
+}
 
 // Helper to get date string (YYYY-MM-DD) from Date using LOCAL timezone
 // Note: Using local timezone ensures consistent date comparison for now-line positioning
@@ -104,6 +271,9 @@ export function Timeline() {
     openModal,
     modalType,
     showToast,
+    addShift,
+    updateShift,
+    deleteShift,
     hasApprovedTimeOff,
     hasBlockedShiftOnDate,
     hasOrgBlackoutOnDate,
@@ -120,7 +290,6 @@ export function Timeline() {
     loadRestaurantData,
   } = useScheduleStore();
 
-  const containerRef = useRef<HTMLDivElement>(null);
   const gridScrollRef = useRef<HTMLDivElement>(null);
   const headerScrollRef = useRef<HTMLDivElement>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
@@ -140,6 +309,16 @@ export function Timeline() {
   } | null>(null);
   const [activeDragShiftId, setActiveDragShiftId] = useState<string | null>(null);
   const [activeDragMode, setActiveDragMode] = useState<'move' | 'resize-left' | 'resize-right' | null>(null);
+  const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
+  const [scheduleClipboard, setScheduleClipboard] = useState<TimelineScheduleClipboard | null>(null);
+  const [activeCellId, setActiveCellId] = useState<string | null>(null);
+  const [selectedShiftId, setSelectedShiftId] = useState<string | null>(null);
+  const [contextMenuShiftHighlightId, setContextMenuShiftHighlightId] = useState<string | null>(null);
+  const [contextMenuCellHighlightId, setContextMenuCellHighlightId] = useState<string | null>(null);
+  const [draggingShiftId, setDraggingShiftId] = useState<string | null>(null);
+  const [dragOverCellId, setDragOverCellId] = useState<string | null>(null);
+  const [isPendingRowMove, setIsPendingRowMove] = useState(false);
+  const [optimisticDeletedShiftIds, setOptimisticDeletedShiftIds] = useState<string[]>([]);
   const [dragPreview, setDragPreview] = useState<Record<string, { startHour: number; endHour: number; date?: string }>>({});
   const [commitOverridesVersion, setCommitOverridesVersion] = useState(0);
   const commitOverridesRef = useRef<Record<string, { startDate: string; startHour: number; endDate: string; endHour: number }>>({});
@@ -187,6 +366,7 @@ export function Timeline() {
   const isDragScrollingRef = useRef(false);
   const activePointerIdRef = useRef<number | null>(null);
   const scrollToDateRef = useRef<(date: Date, options?: { reanchor?: boolean }) => void>(() => {});
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Timeline range state (day vs week)
 
@@ -339,6 +519,350 @@ export function Timeline() {
   }, [scopedEmployees]);
 
   const dateString = toDateString(selectedDate);
+  const canUseCopyPaste = isManager && Boolean(activeRestaurantId);
+  const hasUsableClipboard = Boolean(
+    scheduleClipboard && Date.now() - scheduleClipboard.copiedAt <= CLIPBOARD_MAX_AGE_MS
+  );
+  const dayReassignEnabled = isManager && !continuousDays;
+  const scopedShiftIdSet = useMemo(
+    () => new Set(scopedShifts.map((shift) => shift.id)),
+    [scopedShifts]
+  );
+  const optimisticDeletedShiftIdSet = useMemo(
+    () => new Set(optimisticDeletedShiftIds),
+    [optimisticDeletedShiftIds]
+  );
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    })
+  );
+  const activeDraggedShift = useMemo(
+    () =>
+      draggingShiftId
+        ? scopedShifts.find((shift) => shift.id === draggingShiftId && !optimisticDeletedShiftIdSet.has(shift.id)) ?? null
+        : null,
+    [draggingShiftId, optimisticDeletedShiftIdSet, scopedShifts]
+  );
+
+  const updateSessionClipboard = useCallback((clipboard: TimelineScheduleClipboard | null) => {
+    setScheduleClipboard(clipboard);
+    if (typeof window === 'undefined') return;
+    if (!clipboard) {
+      window.sessionStorage.removeItem(SCHEDULE_CLIPBOARD_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(SCHEDULE_CLIPBOARD_KEY, JSON.stringify(clipboard));
+  }, []);
+
+  const handleCopyShiftToClipboard = useCallback((shiftId: string) => {
+    if (!canUseCopyPaste || !activeRestaurantId) {
+      showToast('Not permitted', 'error');
+      return;
+    }
+    const sourceShift = scopedShifts.find(
+      (shift) => shift.id === shiftId && !shift.isBlocked && !optimisticDeletedShiftIdSet.has(shift.id)
+    );
+    if (!sourceShift) {
+      showToast('Select a shift first', 'error');
+      return;
+    }
+    const job = String(sourceShift.job ?? '').trim();
+    if (!job) {
+      showToast('Copy failed: shift is missing a job', 'error');
+      return;
+    }
+
+    const clipboard: TimelineScheduleClipboard = {
+      copiedAt: Date.now(),
+      sourceOrgId: activeRestaurantId,
+      template: {
+        shiftId: sourceShift.id,
+        startHour: sourceShift.startHour,
+        endHour: sourceShift.endHour,
+        job,
+        locationId: sourceShift.locationId ?? null,
+        notes: sourceShift.notes ?? '',
+      },
+    };
+    updateSessionClipboard(clipboard);
+    if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+      const savedRaw = window.sessionStorage.getItem(SCHEDULE_CLIPBOARD_KEY);
+      let savedClipboard: unknown = null;
+      try {
+        savedClipboard = savedRaw ? JSON.parse(savedRaw) : null;
+      } catch {
+        savedClipboard = savedRaw;
+      }
+      console.debug('[timeline-copy] clipboard-saved', { shiftId, clipboard, savedClipboard });
+    }
+    showToast(`Copied shift ${sourceShift.id}`, 'success');
+  }, [activeRestaurantId, canUseCopyPaste, optimisticDeletedShiftIdSet, scopedShifts, showToast, updateSessionClipboard]);
+
+  const handlePasteShiftFromClipboard = useCallback(async (targetCellId?: string | null) => {
+    const effectiveCellId = targetCellId ?? activeCellId;
+    if (!canUseCopyPaste || !activeRestaurantId) {
+      showToast('Paste failed: Not permitted', 'error');
+      return;
+    }
+    if (!effectiveCellId) {
+      showToast('Paste failed: Click a cell to choose where to paste', 'error');
+      return;
+    }
+    const targetCell = parseTimelineCellId(effectiveCellId);
+    if (!targetCell) {
+      showToast('Paste failed: invalid target cell', 'error');
+      return;
+    }
+    if (targetCell.organizationId !== activeRestaurantId) {
+      showToast('Paste failed: Not permitted', 'error');
+      return;
+    }
+    if (!isEditableDate(targetCell.date)) {
+      showToast("Paste failed: Past schedules can't be edited.", 'error');
+      return;
+    }
+    if (!scheduleClipboard) {
+      showToast('Nothing to paste', 'error');
+      return;
+    }
+
+    const clipboardAgeMs = Date.now() - scheduleClipboard.copiedAt;
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[timeline-paste] before-paste', {
+        activeCellId,
+        targetCellId: effectiveCellId,
+        parsedTargetCell: targetCell,
+        clipboardAgeMs,
+        clipboard: scheduleClipboard,
+      });
+    }
+    if (clipboardAgeMs > CLIPBOARD_MAX_AGE_MS) {
+      updateSessionClipboard(null);
+      showToast('Nothing to paste', 'error');
+      return;
+    }
+    if (scheduleClipboard.sourceOrgId !== activeRestaurantId) {
+      showToast('Paste failed: Not permitted', 'error');
+      return;
+    }
+    const template = scheduleClipboard.template;
+    if (
+      !template
+      || !String(template.job ?? '').trim()
+      || !Number.isFinite(template.startHour)
+      || !Number.isFinite(template.endHour)
+      || template.startHour >= template.endHour
+    ) {
+      showToast('Paste failed: clipboard template is incomplete', 'error');
+      return;
+    }
+
+    try {
+      const result = await addShift({
+        employeeId: targetCell.userId,
+        restaurantId: activeRestaurantId,
+        date: targetCell.date,
+        startHour: template.startHour,
+        endHour: template.endHour,
+        notes: template.notes,
+        isBlocked: false,
+        job: template.job,
+        locationId: template.locationId ?? null,
+        scheduleState: scheduleMode,
+      });
+      if (!result.success) {
+        showToast(`Paste failed: ${result.error ?? 'Unknown error'}`, 'error');
+        return;
+      }
+      showToast('Shift pasted', 'success');
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+        ? error
+        : JSON.stringify(error);
+      showToast(`Paste failed: ${message}`, 'error');
+    }
+  }, [
+    activeCellId,
+    activeRestaurantId,
+    addShift,
+    canUseCopyPaste,
+    isEditableDate,
+    scheduleClipboard,
+    scheduleMode,
+    showToast,
+    updateSessionClipboard,
+  ]);
+
+  const openShiftContextMenu = useCallback((x: number, y: number, shiftId: string) => {
+    setSelectedShiftId(shiftId);
+    setContextMenuShiftHighlightId(shiftId);
+    setContextMenuCellHighlightId(null);
+    setContextMenu({ x, y, type: 'shift', shiftId });
+  }, []);
+
+  const openCellContextMenu = useCallback((x: number, y: number, cellId: string) => {
+    setActiveCellId(cellId);
+    setContextMenuCellHighlightId(cellId);
+    setContextMenuShiftHighlightId(null);
+    setContextMenu({ x, y, type: 'cell', cellId });
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+    setContextMenuShiftHighlightId(null);
+    setContextMenuCellHighlightId(null);
+  }, []);
+
+  const handleContextCopyShift = useCallback(() => {
+    if (!contextMenu || contextMenu.type !== 'shift' || !contextMenu.shiftId) return;
+    handleCopyShiftToClipboard(contextMenu.shiftId);
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, handleCopyShiftToClipboard]);
+
+  const handleContextPasteShift = useCallback(async () => {
+    if (!contextMenu || contextMenu.type !== 'cell' || !contextMenu.cellId) return;
+    setActiveCellId(contextMenu.cellId);
+    await handlePasteShiftFromClipboard(contextMenu.cellId);
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, handlePasteShiftFromClipboard]);
+
+  const handleContextDeleteShift = useCallback(async () => {
+    if (!contextMenu || contextMenu.type !== 'shift' || !contextMenu.shiftId) return;
+    const shiftId = contextMenu.shiftId;
+    if (!isManager) {
+      showToast('Not permitted', 'error');
+      closeContextMenu();
+      return;
+    }
+    const confirmed = window.confirm("Delete this shift? This can't be undone.");
+    if (!confirmed) {
+      closeContextMenu();
+      return;
+    }
+
+    closeContextMenu();
+    setOptimisticDeletedShiftIds((prev) => (prev.includes(shiftId) ? prev : [...prev, shiftId]));
+    try {
+      const result = await deleteShift(shiftId);
+      if (!result.success) {
+        setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
+        showToast(`Delete failed: ${result.error ?? 'Unknown error'}`, 'error');
+        return;
+      }
+      setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
+      showToast('Shift deleted', 'success');
+    } catch (error) {
+      setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
+      const message = error instanceof Error ? error.message : String(error);
+      showToast(`Delete failed: ${message}`, 'error');
+    }
+  }, [closeContextMenu, contextMenu, deleteShift, isManager, showToast]);
+
+  const clearDayReassignState = useCallback(() => {
+    setDraggingShiftId(null);
+    setDragOverCellId(null);
+  }, []);
+
+  const handleDayDragStart = useCallback((event: DragStartEvent) => {
+    if (!dayReassignEnabled) return;
+    const dragTarget = parseTimelineShiftId(event.active.id);
+    if (!dragTarget) return;
+    setDraggingShiftId(dragTarget.shiftId);
+  }, [dayReassignEnabled]);
+
+  const handleDayDragOver = useCallback((event: DragOverEvent) => {
+    if (!dayReassignEnabled) return;
+    const overRawId = event.over?.id;
+    if (!overRawId) {
+      setDragOverCellId(null);
+      return;
+    }
+    const parsedTarget = parseTimelineCellId(overRawId);
+    setDragOverCellId(parsedTarget ? buildTimelineCellId(parsedTarget.organizationId, parsedTarget.userId, parsedTarget.date) : null);
+  }, [dayReassignEnabled]);
+
+  const handleDayDragEnd = useCallback(async (event: DragEndEvent) => {
+    const dragTarget = parseTimelineShiftId(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    const parsedTarget = overId ? parseTimelineCellId(overId) : null;
+
+    if (!dayReassignEnabled || !dragTarget) {
+      clearDayReassignState();
+      return;
+    }
+
+    const sourceShift = scopedShifts.find(
+      (shift) => shift.id === dragTarget.shiftId && !shift.isBlocked && !optimisticDeletedShiftIdSet.has(shift.id)
+    );
+    if (!sourceShift) {
+      clearDayReassignState();
+      return;
+    }
+
+    if (!overId || !parsedTarget) {
+      if (process.env.NODE_ENV !== 'production') {
+        showToast('No drop target detected', 'error');
+      }
+      clearDayReassignState();
+      return;
+    }
+
+    if (parsedTarget.userId === 'unassigned') {
+      if (process.env.NODE_ENV !== 'production') {
+        showToast('Drop target invalid (unassigned)', 'error');
+      }
+      clearDayReassignState();
+      return;
+    }
+
+    if (!activeRestaurantId || parsedTarget.organizationId !== activeRestaurantId || !isEditableDate(parsedTarget.date)) {
+      if (process.env.NODE_ENV !== 'production') {
+        showToast('Drop blocked (permissions/date/etc.)', 'error');
+      }
+      clearDayReassignState();
+      return;
+    }
+
+    const employeeChanged = sourceShift.employeeId !== parsedTarget.userId;
+    const dateChanged = sourceShift.date !== parsedTarget.date;
+    if (!employeeChanged && !dateChanged) {
+      clearDayReassignState();
+      return;
+    }
+
+    setIsPendingRowMove(true);
+    try {
+      const result = await updateShift(sourceShift.id, {
+        employeeId: parsedTarget.userId,
+        date: parsedTarget.date,
+        startHour: sourceShift.startHour,
+        endHour: sourceShift.endHour,
+      });
+      if (!result.success) {
+        showToast(result.error ?? 'Failed to move shift', 'error');
+      } else {
+        showToast('Shift moved', 'success');
+      }
+    } finally {
+      setIsPendingRowMove(false);
+      clearDayReassignState();
+    }
+  }, [
+    activeRestaurantId,
+    clearDayReassignState,
+    dayReassignEnabled,
+    isEditableDate,
+    scopedShifts,
+    showToast,
+    updateShift,
+  ]);
+
+  const handleDayDragCancel = useCallback(() => {
+    clearDayReassignState();
+  }, [clearDayReassignState]);
 
   const groupedRows = useMemo(() => {
     if (filteredEmployees.length === 0) return [];
@@ -502,8 +1026,10 @@ export function Timeline() {
   const continuousShifts = useMemo(() => {
     if (!continuousDays) return [];
     const dateStrings = continuousDaysData.map((d) => d.dateString);
-    return scopedShifts.filter((s) => dateStrings.includes(s.date) && !s.isBlocked);
-  }, [continuousDays, continuousDaysData, scopedShifts]);
+    return scopedShifts.filter(
+      (s) => dateStrings.includes(s.date) && !s.isBlocked && !optimisticDeletedShiftIdSet.has(s.id)
+    );
+  }, [continuousDays, continuousDaysData, optimisticDeletedShiftIdSet, scopedShifts]);
 
   const getDayIndexForDateString = useCallback(
     (targetDate: string) => continuousDaysData.findIndex((d) => d.dateString === targetDate),
@@ -775,18 +1301,18 @@ export function Timeline() {
 
   const showTooltipFn = (shiftId: string, target: HTMLElement) => {
     const shift = scopedShifts.find((s) => s.id === shiftId);
-    if (!shift || !containerRef.current) return;
+    if (!shift) return;
     const employee = filteredEmployees.find((emp) => emp.id === shift.employeeId);
     const locationName = shift.locationId ? locationMap.get(shift.locationId) : undefined;
     const rect = target.getBoundingClientRect();
-    const containerRect = containerRef.current.getBoundingClientRect();
     const tooltipWidth = 200;
     const tooltipHeight = locationName ? 88 : 72;
-    let left = rect.left - containerRect.left + rect.width / 2 - tooltipWidth / 2;
-    left = Math.max(12, Math.min(containerRect.width - tooltipWidth - 12, left));
-    let top = rect.top - containerRect.top - tooltipHeight - 8;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0;
+    let left = rect.left + rect.width / 2 - tooltipWidth / 2;
+    left = Math.max(12, Math.min(viewportWidth - tooltipWidth - 12, left));
+    let top = rect.top - tooltipHeight - 8;
     if (top < 8) {
-      top = rect.bottom - containerRect.top + 8;
+      top = rect.bottom + 8;
     }
     setTooltip({
       shiftId,
@@ -1215,6 +1741,10 @@ export function Timeline() {
     const rootEl = (handleEl ?? bodyEl ?? target)?.closest('[data-shift-root="true"]') as HTMLElement | null;
 
     if ((handleEl || bodyEl || rootEl) && isManager) {
+      if (!continuousDays && !handleEl) {
+        // In day mode, shift-body drag is handled by dnd-kit for cross-employee reassignment.
+        return;
+      }
       const shiftIdRaw = rootEl?.getAttribute('data-shift-id');
       const shift = shiftIdRaw ? scopedShifts.find((s) => String(s.id) === String(shiftIdRaw)) : null;
       if (!shift) return;
@@ -1311,6 +1841,10 @@ export function Timeline() {
   ]);
 
   const handleGridPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (draggingShiftId) {
+      clearHoverAddSlot();
+      return;
+    }
     const drag = activeDragRef.current;
     if (drag) {
       if (drag.pointerId !== e.pointerId) return;
@@ -1401,6 +1935,7 @@ export function Timeline() {
   }, [
     clearHoverAddSlot,
     continuousDays,
+    draggingShiftId,
     getContinuousMinutesFromClientX,
     getDayMinutesFromClientX,
     getGridBackgroundContext,
@@ -1409,6 +1944,9 @@ export function Timeline() {
   ]);
 
   const handleGridPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (draggingShiftId) {
+      return;
+    }
     const drag = activeDragRef.current;
     if (drag && drag.pointerId === e.pointerId) {
       const dx = e.clientX - drag.startClientX;
@@ -1524,6 +2062,7 @@ export function Timeline() {
   }, [
     clearActiveDrag,
     continuousDays,
+    draggingShiftId,
     getGridBackgroundContext,
     getHourAndDateFromClientX,
     handleGridDragEnd,
@@ -1586,6 +2125,133 @@ export function Timeline() {
     const timeout = setTimeout(() => setIsSliding(false), 220);
     return () => clearTimeout(timeout);
   }, [dateNavKey, dateNavDirection, continuousDays]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const rawClipboard = window.sessionStorage.getItem(SCHEDULE_CLIPBOARD_KEY);
+    if (!rawClipboard) return;
+    try {
+      const parsed = JSON.parse(rawClipboard) as TimelineScheduleClipboard;
+      const hasValidTemplate = Boolean(parsed?.template?.job)
+        && Number.isFinite(parsed?.template?.startHour)
+        && Number.isFinite(parsed?.template?.endHour)
+        && typeof parsed?.template?.shiftId === 'string';
+      const copiedAt = Number(parsed?.copiedAt);
+      if (!hasValidTemplate || !Number.isFinite(copiedAt)) {
+        window.sessionStorage.removeItem(SCHEDULE_CLIPBOARD_KEY);
+        return;
+      }
+      if (Date.now() - copiedAt > CLIPBOARD_MAX_AGE_MS) {
+        window.sessionStorage.removeItem(SCHEDULE_CLIPBOARD_KEY);
+        return;
+      }
+      setScheduleClipboard(parsed);
+    } catch {
+      window.sessionStorage.removeItem(SCHEDULE_CLIPBOARD_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    const root = timelineScrollRef.current;
+    if (!root) return;
+
+    const handleContextMenuCapture = (event: MouseEvent) => {
+      event.preventDefault();
+      const target = event.target as HTMLElement | null;
+      if (!target) {
+        closeContextMenu();
+        return;
+      }
+      const shiftEl = target.closest('[data-shift-id]') as HTMLElement | null;
+      if (shiftEl) {
+        const shiftId = shiftEl.getAttribute('data-shift-id');
+        if (shiftId) {
+          openShiftContextMenu(event.clientX, event.clientY, shiftId);
+          return;
+        }
+      }
+      const cellEl = target.closest('[data-cell-id]') as HTMLElement | null;
+      if (cellEl) {
+        const cellId = cellEl.getAttribute('data-cell-id');
+        if (cellId) {
+          openCellContextMenu(event.clientX, event.clientY, cellId);
+          return;
+        }
+      }
+      closeContextMenu();
+    };
+
+    root.addEventListener('contextmenu', handleContextMenuCapture, true);
+    return () => {
+      root.removeEventListener('contextmenu', handleContextMenuCapture, true);
+    };
+  }, [closeContextMenu, openCellContextMenu, openShiftContextMenu]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handleDocumentMouseDown = (event: MouseEvent) => {
+      if (!contextMenuRef.current) return;
+      if (contextMenuRef.current.contains(event.target as Node)) return;
+      closeContextMenu();
+    };
+    const handleDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeContextMenu();
+      }
+    };
+    const handleAnyScroll = () => {
+      closeContextMenu();
+    };
+
+    document.addEventListener('mousedown', handleDocumentMouseDown);
+    window.addEventListener('keydown', handleDocumentKeyDown);
+    window.addEventListener('scroll', handleAnyScroll, true);
+    return () => {
+      document.removeEventListener('mousedown', handleDocumentMouseDown);
+      window.removeEventListener('keydown', handleDocumentKeyDown);
+      window.removeEventListener('scroll', handleAnyScroll, true);
+    };
+  }, [closeContextMenu, contextMenu]);
+
+  useEffect(() => {
+    if (!tooltip) return;
+    const handleAnyScroll = () => {
+      setTooltip(null);
+    };
+    const handleResize = () => {
+      setTooltip(null);
+    };
+    window.addEventListener('scroll', handleAnyScroll, true);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('scroll', handleAnyScroll, true);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [tooltip]);
+
+  useEffect(() => {
+    setOptimisticDeletedShiftIds((prev) => {
+      const next = prev.filter((shiftId) => scopedShiftIdSet.has(shiftId));
+      if (next.length === prev.length) {
+        let same = true;
+        for (let i = 0; i < next.length; i += 1) {
+          if (next[i] !== prev[i]) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return prev;
+      }
+      return next;
+    });
+    setSelectedShiftId((prev) => {
+      if (!prev) return prev;
+      if (optimisticDeletedShiftIdSet.has(prev)) return null;
+      if (!scopedShiftIdSet.has(prev)) return null;
+      return prev;
+    });
+  }, [optimisticDeletedShiftIdSet, scopedShiftIdSet]);
 
 
   // Determine if we should show every-other-hour labels for very compact views
@@ -1664,11 +2330,16 @@ export function Timeline() {
             }
             const employee = row.employee;
             const employeeShifts = scopedShifts.filter(
-              s => s.employeeId === employee.id && s.date === dateString && !s.isBlocked
+              s =>
+                s.employeeId === employee.id
+                && s.date === dateString
+                && !s.isBlocked
+                && !optimisticDeletedShiftIdSet.has(s.id)
             );
             const hasTimeOff = hasApprovedTimeOff(employee.id, dateString);
             const hasBlocked = hasBlockedShiftOnDate(employee.id, dateString);
             const hasOrgBlackout = hasOrgBlackoutOnDate(dateString);
+            const rowCellId = buildTimelineCellId(activeRestaurantId ?? 'none', employee.id, dateString);
             const rowBackground = hasTimeOff
               ? 'bg-emerald-500/5'
               : hasBlocked
@@ -1677,6 +2348,7 @@ export function Timeline() {
               ? 'bg-amber-500/5'
               : '';
             const allowHover = !hasTimeOff && !hasBlocked && !hasOrgBlackout;
+            const canDropIntoRow = dayReassignEnabled && canEditSelectedDate && allowHover && !isPendingRowMove;
 
             return (
               <div
@@ -1740,9 +2412,13 @@ export function Timeline() {
 
                   {/* INTERACTIVE LAYER */}
                   <div data-row-interactive className="relative z-20 pointer-events-auto h-full">
-                    <div
-                      data-grid-background="true"
-                      data-employee-id={employee.id}
+                    <TimelineDroppableSlice
+                      id={rowCellId}
+                      employeeId={employee.id}
+                      disabled={!canDropIntoRow}
+                      isActiveCell={activeCellId === rowCellId}
+                      isContextMenuTarget={contextMenuCellHighlightId === rowCellId}
+                      isDragOverCell={dragOverCellId === rowCellId}
                       className="absolute inset-0 z-0 pointer-events-auto"
                     />
 
@@ -1782,6 +2458,8 @@ export function Timeline() {
                       const isDraggingShift = activeDragShiftId === String(shift.id);
                       const isStartDrag = isDraggingShift && activeDragMode === 'resize-left';
                       const isEndDrag = isDraggingShift && activeDragMode === 'resize-right';
+                      const isSelectedShift = selectedShiftId === shift.id;
+                      const isContextMenuTarget = contextMenuShiftHighlightId === shift.id;
                       const jobColor = getJobColorClasses(shift.job);
                       const shiftDuration = endHour - startHour;
                       const shiftWidth = shiftDuration * pxPerHour;
@@ -1790,120 +2468,147 @@ export function Timeline() {
                       const shiftNotes = typeof shift.notes === 'string' ? shift.notes.trim() : '';
                       const isDraftShift = isManager && shift.scheduleState === 'draft';
                       const isBaselinePublished = isDraftMode && shift.scheduleState !== 'draft';
+                      const dragEnabled = dayReassignEnabled && !isPendingRowMove && isEditableDate(shift.date);
 
                       return (
-                        <div
-                          key={shift.id}
-                          data-shift="true"
-                          data-shift-root="true"
-                          data-shift-id={shift.id}
-                          data-employee-id={employee.id}
-                          className={`absolute top-1 bottom-1 rounded transition-all pointer-events-auto z-30 ${
-                            isDraggingShift ? 'z-40 shadow-xl cursor-grabbing' : isHovered ? 'shadow-lg cursor-pointer' : 'cursor-pointer'
-                          }`}
-                          style={{
-                            left: position.left,
-                            width: position.width,
-                            backgroundColor: isHovered || isDraggingShift ? jobColor.hoverBgColor : jobColor.bgColor,
-                            borderWidth: '1px',
-                            borderColor: jobColor.color,
-                            borderStyle: isDraftShift ? 'dashed' : 'solid',
-                            transform: isHovered && !isDraggingShift ? 'scale(1.02)' : 'scale(1)',
-                          }}
-                          onMouseEnter={(e) => {
-                            setHoveredShift(shift.id);
-                            showTooltipFn(shift.id, e.currentTarget);
-                          }}
-                          onMouseLeave={() => {
-                            setHoveredShift(null);
-                            setTooltip(null);
-                          }}
-                        >
-                          {isDraftShift && (
-                            <span className="absolute top-0.5 right-1 px-1 rounded bg-amber-500/30 text-[8px] font-semibold text-amber-100/90">
-                              DRAFT
-                            </span>
-                          )}
-                          {isBaselinePublished && !isDraftShift && (
-                            <span className="absolute top-0.5 right-1 px-1 rounded bg-emerald-500/20 text-[8px] font-semibold text-emerald-100/90">
-                              PUBLISHED
-                            </span>
-                          )}
-                          <div
-                            data-shift-body="true"
-                            className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none overflow-hidden pointer-events-auto"
-                          >
-                            <div className="h-full flex items-center px-0.5 overflow-hidden min-w-0">
-                              {showTimeText ? (
-                                <span
-                                  className={`text-[10px] font-medium truncate shrink-0 ${
-                                    isHovered || isDraggingShift ? 'text-white' : ''
-                                  }`}
-                                  style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
-                                >
-                                  {formatHour(startHour)}-{formatHour(endHour)}
-                                </span>
-                            ) : (
-                                <span
-                                  className={`text-[9px] font-medium truncate shrink-0 ${
-                                    isHovered || isDraggingShift ? 'text-white' : ''
-                                  }`}
-                                  style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
-                                >
-                                  {Math.round(shiftDuration)}h
-                                </span>
-                              )}
-                              {shiftNotes && (
-                                <span
-                                  className={`ml-2 text-[9px] truncate text-right flex-1 min-w-0 ${
-                                    isHovered || isDraggingShift ? 'text-white/80' : ''
-                                  }`}
-                                  style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
-                                  title={shiftNotes}
-                                >
-                                  {shiftNotes}
-                                </span>
-                              )}
-                            </div>
-                            {showJobText && shift.job && (
-                              <span
-                                className={`absolute left-0.5 bottom-0 text-[9px] truncate max-w-full ${
-                                  isHovered || isDraggingShift ? 'text-white/90' : ''
-                                }`}
-                                style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
-                              >
-                                {shift.job}
-                              </span>
-                            )}
-                          </div>
+                        <TimelineDraggableShift key={shift.id} shiftId={shift.id} disabled={!dragEnabled}>
+                          {({ setNodeRef, attributes, listeners, transformStyle, isDragging: isDndDragging }) => {
+                            const isReassignDragging = isDndDragging || draggingShiftId === String(shift.id);
+                            const isAnyDragging = isDraggingShift || isReassignDragging;
+                            const hoverScale = isHovered && !isAnyDragging ? 'scale(1.02)' : 'scale(1)';
+                            const computedTransform = isReassignDragging
+                              ? transformStyle
+                              : transformStyle
+                              ? `${transformStyle} ${hoverScale}`
+                              : hoverScale;
 
-                          <div
-                            data-resize-handle="true"
-                          data-edge="right"
-                            className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r flex items-center justify-center touch-none group/edge transition-colors z-40 ${
-                              isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
-                            }`}
-                          >
-                            <span
-                              className={`w-0.5 h-4 rounded-full transition-colors ${
-                                isEndDrag ? 'bg-amber-200' : 'bg-white/50'
-                              } group-hover/edge:bg-white/80`}
-                            />
-                          </div>
-                          <div
-                            data-resize-handle="true"
-                          data-edge="left"
-                            className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l flex items-center justify-center touch-none group/edge transition-colors z-40 ${
-                              isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
-                            }`}
-                          >
-                            <span
-                              className={`w-0.5 h-4 rounded-full transition-colors ${
-                                isStartDrag ? 'bg-amber-200' : 'bg-white/50'
-                              } group-hover/edge:bg-white/80`}
-                            />
-                          </div>
-                        </div>
+                            return (
+                              <div
+                                ref={setNodeRef}
+                                data-shift="true"
+                                data-shift-root="true"
+                                data-shift-id={shift.id}
+                                data-employee-id={employee.id}
+                                className={`absolute top-1 bottom-1 rounded transition-all z-30 ${
+                                  isAnyDragging ? 'z-40 shadow-xl cursor-grabbing pointer-events-none opacity-35' : isHovered ? 'shadow-lg cursor-grab' : 'cursor-grab'
+                                } ${
+                                  isContextMenuTarget
+                                    ? 'ring-2 ring-amber-300/95 ring-offset-2 ring-offset-theme-timeline'
+                                    : isSelectedShift
+                                    ? 'ring-2 ring-sky-400/90 ring-offset-1 ring-offset-theme-timeline'
+                                    : ''
+                                }`}
+                                style={{
+                                  left: position.left,
+                                  width: position.width,
+                                  backgroundColor: isHovered || isAnyDragging ? jobColor.hoverBgColor : jobColor.bgColor,
+                                  borderWidth: '1px',
+                                  borderColor: jobColor.color,
+                                  borderStyle: isDraftShift ? 'dashed' : 'solid',
+                                  transform: computedTransform,
+                                }}
+                                onMouseEnter={(e) => {
+                                  setHoveredShift(shift.id);
+                                  showTooltipFn(shift.id, e.currentTarget);
+                                }}
+                                onMouseLeave={() => {
+                                  setHoveredShift(null);
+                                  setTooltip(null);
+                                }}
+                                onDoubleClick={() => {
+                                  openShiftEditor(shift);
+                                }}
+                                {...(dragEnabled ? attributes : {})}
+                                {...(dragEnabled ? listeners : {})}
+                              >
+                                {isDraftShift && (
+                                  <span className="absolute top-0.5 right-1 px-1 rounded bg-amber-500/30 text-[8px] font-semibold text-amber-100/90">
+                                    DRAFT
+                                  </span>
+                                )}
+                                {isBaselinePublished && !isDraftShift && (
+                                  <span className="absolute top-0.5 right-1 px-1 rounded bg-emerald-500/20 text-[8px] font-semibold text-emerald-100/90">
+                                    PUBLISHED
+                                  </span>
+                                )}
+                                <div
+                                  data-shift-body="true"
+                                  className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none overflow-hidden pointer-events-auto"
+                                >
+                                  <div className="h-full flex items-center px-0.5 overflow-hidden min-w-0">
+                                    {showTimeText ? (
+                                      <span
+                                        className={`text-[10px] font-medium truncate shrink-0 ${
+                                          isHovered || isAnyDragging ? 'text-white' : ''
+                                        }`}
+                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                      >
+                                        {formatHour(startHour)}-{formatHour(endHour)}
+                                      </span>
+                                  ) : (
+                                      <span
+                                        className={`text-[9px] font-medium truncate shrink-0 ${
+                                          isHovered || isAnyDragging ? 'text-white' : ''
+                                        }`}
+                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                      >
+                                        {Math.round(shiftDuration)}h
+                                      </span>
+                                    )}
+                                    {shiftNotes && (
+                                      <span
+                                        className={`ml-2 text-[9px] truncate text-right flex-1 min-w-0 ${
+                                          isHovered || isAnyDragging ? 'text-white/80' : ''
+                                        }`}
+                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                        title={shiftNotes}
+                                      >
+                                        {shiftNotes}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {showJobText && shift.job && (
+                                    <span
+                                      className={`absolute left-0.5 bottom-0 text-[9px] truncate max-w-full ${
+                                        isHovered || isAnyDragging ? 'text-white/90' : ''
+                                      }`}
+                                      style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                    >
+                                      {shift.job}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div
+                                  data-resize-handle="true"
+                                data-edge="right"
+                                  className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r flex items-center justify-center touch-none group/edge transition-colors z-40 ${
+                                    isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                                  }`}
+                                >
+                                  <span
+                                    className={`w-0.5 h-4 rounded-full transition-colors ${
+                                      isEndDrag ? 'bg-amber-200' : 'bg-white/50'
+                                    } group-hover/edge:bg-white/80`}
+                                  />
+                                </div>
+                                <div
+                                  data-resize-handle="true"
+                                data-edge="left"
+                                  className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l flex items-center justify-center touch-none group/edge transition-colors z-40 ${
+                                    isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                                  }`}
+                                >
+                                  <span
+                                    className={`w-0.5 h-4 rounded-full transition-colors ${
+                                      isStartDrag ? 'bg-amber-200' : 'bg-white/50'
+                                    } group-hover/edge:bg-white/80`}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          }}
+                        </TimelineDraggableShift>
                       );
                     })}
                   </div>
@@ -1997,6 +2702,7 @@ export function Timeline() {
               );
             }
             const employee = row.employee;
+            const rowOrgId = activeRestaurantId ?? 'none';
             // Get shifts for this employee across all 3 days
             const employeeShifts = continuousShifts.filter(s => s.employeeId === employee.id);
 
@@ -2103,11 +2809,21 @@ export function Timeline() {
 
                   {/* INTERACTIVE LAYER */}
                   <div data-row-interactive className="relative z-20 pointer-events-auto h-full">
-                    <div
-                      data-grid-background="true"
-                      data-employee-id={employee.id}
-                      className="absolute inset-0 z-0 pointer-events-auto"
-                    />
+                    {continuousDaysData.map((dayData, dayIdx) => (
+                      <TimelineDroppableSlice
+                        key={`bg-${employee.id}-${dayData.dateString}`}
+                        id={buildTimelineCellId(rowOrgId, employee.id, dayData.dateString)}
+                        employeeId={employee.id}
+                        disabled
+                        isActiveCell={activeCellId === buildTimelineCellId(rowOrgId, employee.id, dayData.dateString)}
+                        isContextMenuTarget={contextMenuCellHighlightId === buildTimelineCellId(rowOrgId, employee.id, dayData.dateString)}
+                        className="absolute top-0 bottom-0 z-0 pointer-events-auto"
+                        style={{
+                          left: `${dayIdx * 24 * pxPerHour}px`,
+                          width: `${24 * pxPerHour}px`,
+                        }}
+                      />
+                    ))}
                     {/* Hover add ghost */}
                     {isManager && hoveredAddSlot?.employeeId === employee.id && (() => {
                       // Don't show ghost on days with time-off or blocked status
@@ -2153,6 +2869,8 @@ export function Timeline() {
                     const isDraggingShift = activeDragShiftId === String(shift.id);
                     const isStartDrag = isDraggingShift && activeDragMode === 'resize-left';
                     const isEndDrag = isDraggingShift && activeDragMode === 'resize-right';
+                    const isSelectedShift = selectedShiftId === shift.id;
+                    const isContextMenuTarget = contextMenuShiftHighlightId === shift.id;
                     const jobColor = getJobColorClasses(shift.job);
                     const shiftDuration = endHour - startHour;
                     const showTimeText = pos.widthPx > 60;
@@ -2170,6 +2888,12 @@ export function Timeline() {
                         data-employee-id={employee.id}
                         className={`absolute top-1 bottom-1 rounded transition-all pointer-events-auto z-30 ${
                           isDraggingShift ? 'z-40 shadow-xl cursor-grabbing' : isHovered ? 'shadow-lg cursor-pointer' : 'cursor-pointer'
+                        } ${
+                          isContextMenuTarget
+                            ? 'ring-2 ring-amber-300/95 ring-offset-2 ring-offset-theme-timeline'
+                            : isSelectedShift
+                            ? 'ring-2 ring-sky-400/90 ring-offset-1 ring-offset-theme-timeline'
+                            : ''
                         }`}
                         style={{
                           left: `${pos.leftPx}px`,
@@ -2290,6 +3014,14 @@ export function Timeline() {
   // Main render
   // ─────────────────────────────────────────────────────────────────
   const publishDisabledReason = isManager ? undefined : 'Only managers can publish.';
+  const isPasteMenuDisabled = !canUseCopyPaste || !hasUsableClipboard;
+  const pasteMenuTitle = !hasUsableClipboard ? 'Nothing to paste' : !canUseCopyPaste ? 'Not permitted' : undefined;
+  const contextMenuCellTarget = contextMenu?.type === 'cell' && contextMenu.cellId
+    ? parseTimelineCellId(contextMenu.cellId)
+    : null;
+  const contextMenuTargetUserShort = contextMenuCellTarget?.userId
+    ? contextMenuCellTarget.userId.slice(0, 8)
+    : null;
   const showContinuousToggle = viewMode === 'day';
   const rightActions = showContinuousToggle ? (
     <div className="w-[220px] h-9 rounded-lg border border-theme-primary bg-theme-secondary/80 p-1 grid grid-cols-2 gap-1">
@@ -2319,10 +3051,25 @@ export function Timeline() {
   ) : undefined;
 
   return (
-    <div
-      ref={containerRef}
-      className="h-full flex flex-col min-h-0 bg-theme-timeline overflow-hidden relative transition-theme"
+    <DndContext
+      sensors={dndSensors}
+      collisionDetection={pointerWithin}
+      measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+      onDragStart={handleDayDragStart}
+      onDragOver={handleDayDragOver}
+      onDragEnd={(event) => {
+        void handleDayDragEnd(event);
+      }}
+      onDragCancel={handleDayDragCancel}
     >
+      <div
+        className="h-full flex flex-col min-h-0 bg-theme-timeline overflow-hidden relative transition-theme"
+      >
+      {process.env.NODE_ENV !== 'production' && (
+        <div className="fixed top-2 left-2 z-[9999] rounded bg-zinc-900/90 px-2 py-1 text-[10px] font-semibold text-zinc-100">
+          DEV VIEW: DayView
+        </div>
+      )}
       <ScheduleToolbar
         viewMode={viewMode}
         selectedDate={selectedDate}
@@ -2477,19 +3224,77 @@ export function Timeline() {
         </div>
       </div>
 
-      {tooltip && (
+      {contextMenu && (
         <div
-          className="absolute z-40 bg-theme-secondary border border-theme-primary rounded-lg px-2.5 py-1.5 text-xs text-theme-primary shadow-lg pointer-events-none"
-          style={{ left: tooltip.left, top: tooltip.top, width: 200 }}
+          ref={contextMenuRef}
+          className="fixed z-[80] min-w-[180px] rounded-md border border-zinc-200 bg-white py-1.5 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          role="menu"
         >
-          <div className="font-semibold text-xs">{tooltip.employeeName}</div>
-          {tooltip.job && <div className="text-theme-tertiary text-[11px]">{tooltip.job}</div>}
-          {tooltip.location && <div className="text-theme-tertiary text-[11px]">{tooltip.location}</div>}
-          <div className="text-theme-muted text-[11px]">{tooltip.time}</div>
+          {contextMenu.type === 'shift' && (
+            <div className="px-1">
+              <button
+                type="button"
+                className="w-full rounded px-3 py-2 text-left text-sm text-zinc-800 hover:bg-zinc-100"
+                onClick={handleContextCopyShift}
+              >
+                Copy shift
+              </button>
+              <button
+                type="button"
+                className="mt-0.5 w-full rounded px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                onClick={() => {
+                  void handleContextDeleteShift();
+                }}
+              >
+                Delete shift
+              </button>
+            </div>
+          )}
+          {contextMenu.type === 'cell' && (
+            <div className="px-1">
+              {process.env.NODE_ENV !== 'production' && contextMenuCellTarget && (
+                <p className="px-2 py-1 text-[10px] text-zinc-500">
+                  Paste to: {contextMenuTargetUserShort ?? '-'} {contextMenuCellTarget.date}
+                </p>
+              )}
+              <button
+                type="button"
+                className={`w-full rounded px-3 py-2 text-left text-sm ${
+                  isPasteMenuDisabled ? 'text-zinc-400' : 'text-zinc-800 hover:bg-zinc-100'
+                }`}
+                title={pasteMenuTitle}
+                onClick={() => {
+                  void handleContextPasteShift();
+                }}
+              >
+                Paste shift
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-    </div>
+      {tooltip && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              className="fixed z-[9999] bg-theme-secondary border border-theme-primary rounded-lg px-2.5 py-1.5 text-xs text-theme-primary shadow-lg pointer-events-none"
+              style={{ left: tooltip.left, top: tooltip.top, width: 200 }}
+            >
+              <div className="font-semibold text-xs">{tooltip.employeeName}</div>
+              {tooltip.job && <div className="text-theme-tertiary text-[11px]">{tooltip.job}</div>}
+              {tooltip.location && <div className="text-theme-tertiary text-[11px]">{tooltip.location}</div>}
+              <div className="text-theme-muted text-[11px]">{tooltip.time}</div>
+            </div>,
+            document.body
+          )
+        : null}
+
+      </div>
+      <DragOverlay zIndex={90}>
+        {activeDraggedShift ? <TimelineShiftDragOverlay shift={activeDraggedShift} /> : null}
+      </DragOverlay>
+    </DndContext>
   );
 }
 

@@ -2,7 +2,7 @@
 
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
-import { SECTIONS } from '../types';
+import { SECTIONS, type Shift } from '../types';
 import { getWeekDates, getWeekStart, dateToString, isSameDay, formatHour, shiftsOverlap } from '../utils/timeUtils';
 import { Palmtree, ArrowLeftRight } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
@@ -10,9 +10,99 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
 import { ScheduleToolbar } from './ScheduleToolbar';
 import { apiFetch } from '../lib/apiClient';
+import {
+  DndContext,
+  DragOverlay,
+  MeasuringStrategy,
+  PointerSensor,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import { SortableContext } from '@dnd-kit/sortable';
 
 // Compact sizing - pixels per day column
 const PX_PER_DAY = 100;
+const SHIFT_DND_PREFIX = 'shift:';
+const CELL_DND_PREFIX = 'cell:';
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const SCHEDULE_CLIPBOARD_KEY = 'crewshyft:scheduleClipboard:v1';
+const CLIPBOARD_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+type ShiftDragTarget = {
+  shiftId: string;
+};
+
+type CellDropTarget = {
+  organizationId: string;
+  userId: string;
+  date: string;
+};
+
+type OptimisticShiftMove = {
+  employeeId: string;
+  date: string;
+};
+
+type ScheduleClipboard = {
+  copiedAt: number;
+  sourceOrgId: string;
+  template: {
+    shiftId: string;
+    startHour: number;
+    endHour: number;
+    job: string;
+    locationId?: string | null;
+    notes?: string;
+  };
+};
+
+type OptimisticCreatedShift = Shift;
+type ScheduleContextMenu = {
+  x: number;
+  y: number;
+  type: 'shift' | 'cell';
+  shiftId?: string;
+  cellId?: string;
+};
+
+function isKeyboardInputTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest('[contenteditable="true"]'));
+}
+
+function buildShiftDragId(shiftId: string): string {
+  return `${SHIFT_DND_PREFIX}${shiftId}`;
+}
+
+function parseShiftDragId(rawId: unknown): ShiftDragTarget | null {
+  const value = String(rawId ?? '');
+  if (!value.startsWith(SHIFT_DND_PREFIX)) return null;
+  const shiftId = value.slice(SHIFT_DND_PREFIX.length);
+  if (!shiftId) return null;
+  return { shiftId };
+}
+
+function buildCellDropId(organizationId: string, userId: string, date: string): string {
+  return `${CELL_DND_PREFIX}${organizationId}:${userId}:${date}`;
+}
+
+function parseCellDropId(rawId: unknown): CellDropTarget | null {
+  const value = String(rawId ?? '');
+  if (!value.startsWith(CELL_DND_PREFIX)) return null;
+  const payload = value.slice(CELL_DND_PREFIX.length);
+  const [organizationId, userId, date] = payload.split(':');
+  if (!organizationId || !userId || !date || !DATE_RE.test(date)) return null;
+  return { organizationId, userId, date };
+}
 
 function formatPublishWeekLabel(start: Date, end: Date): string {
   const startMonthDay = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -23,6 +113,162 @@ function formatPublishWeekLabel(start: Date, end: Date): string {
     return `${startMonthDay}, ${startYear} – ${endMonthDay}, ${endYear}`;
   }
   return `${startMonthDay} – ${endMonthDay}, ${startYear}`;
+}
+
+type WeekShiftCardProps = {
+  shift: Shift;
+  isDraftShift: boolean;
+  isBaselinePublished: boolean;
+  isDraggingShiftId: boolean;
+  isSelected: boolean;
+  isContextMenuTarget: boolean;
+  isPendingMove: boolean;
+  dragEnabled: boolean;
+  onClick: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onDoubleClick: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+};
+
+function WeekShiftCard({
+  shift,
+  isDraftShift,
+  isBaselinePublished,
+  isDraggingShiftId,
+  isSelected,
+  isContextMenuTarget,
+  isPendingMove,
+  dragEnabled,
+  onClick,
+  onDoubleClick,
+  onMouseEnter,
+  onMouseLeave,
+}: WeekShiftCardProps) {
+  const jobColor = getJobColorClasses(shift.job);
+  const shiftDuration = shift.endHour - shift.startHour;
+  const draggableId = buildShiftDragId(shift.id);
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: draggableId,
+    disabled: !dragEnabled,
+  });
+  const dragTransform = transform
+    ? `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)`
+    : undefined;
+  const isActiveDragCard = isDragging || isDraggingShiftId;
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-shift="true"
+      data-shift-id={shift.id}
+      onClick={onClick}
+      onDoubleClick={onDoubleClick}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      className={`relative px-1 py-0.5 rounded text-[9px] truncate transition-transform ${
+        dragEnabled ? 'cursor-grab hover:scale-[1.02]' : 'cursor-pointer'
+      } ${
+        isDraftShift ? 'border border-amber-400/60 border-dashed' : ''
+      } ${isBaselinePublished ? 'ring-1 ring-emerald-400/40' : ''} ${
+        isActiveDragCard ? 'opacity-0 pointer-events-none cursor-grabbing' : ''
+      } ${isPendingMove ? 'opacity-60' : ''} ${
+        isContextMenuTarget
+          ? 'ring-2 ring-amber-300/95 ring-offset-2 ring-offset-theme-timeline shadow-[0_0_0_1px_rgba(251,191,36,0.4)]'
+          : isSelected
+          ? 'ring-2 ring-sky-400/90 ring-offset-1 ring-offset-theme-timeline'
+          : ''
+      }`}
+      style={{
+        backgroundColor: jobColor.bgColor,
+        borderLeft: `2px solid ${jobColor.color}`,
+        color: jobColor.color,
+        transform: isActiveDragCard ? undefined : dragTransform,
+      }}
+      title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
+      {...(dragEnabled ? attributes : {})}
+      {...(dragEnabled ? listeners : {})}
+    >
+      {isDraftShift && (
+        <span className="absolute top-0 right-0 px-1 rounded bg-amber-500/30 text-[7px] font-semibold text-amber-100/90">
+          DRAFT
+        </span>
+      )}
+      {Math.round(shiftDuration)}h
+    </div>
+  );
+}
+
+type WeekGridCellProps = {
+  droppableId: string;
+  disabledDrop: boolean;
+  className: string;
+  style: React.CSSProperties;
+  onClick: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onMouseUp: (event: React.MouseEvent<HTMLDivElement>) => void;
+  isActiveCell: boolean;
+  isContextMenuTarget: boolean;
+  isDragOverCell: boolean;
+  children: React.ReactNode;
+};
+
+function WeekGridCell({
+  droppableId,
+  disabledDrop,
+  className,
+  style,
+  onClick,
+  onMouseDown,
+  onMouseUp,
+  isActiveCell,
+  isContextMenuTarget,
+  isDragOverCell,
+  children,
+}: WeekGridCellProps) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: droppableId,
+    disabled: disabledDrop,
+  });
+  const showDropHighlight = (isOver || isDragOverCell) && !disabledDrop;
+
+  return (
+    <div
+      data-cell-id={droppableId}
+      className={`${className} ${showDropHighlight ? 'outline outline-2 outline-sky-400/70 bg-sky-500/10' : ''} ${
+        isContextMenuTarget
+          ? 'outline outline-2 outline-amber-300/95 bg-amber-400/15'
+          : isActiveCell
+          ? 'outline outline-2 outline-amber-400/80'
+          : ''
+      } h-full relative`}
+      style={style}
+      onClick={onClick}
+      onMouseDown={onMouseDown}
+      onMouseUp={onMouseUp}
+    >
+      <div ref={setNodeRef} className="absolute inset-0 pointer-events-none" />
+      <div className="relative h-full">{children}</div>
+    </div>
+  );
+}
+
+function WeekShiftDragOverlay({ shift }: { shift: Shift }) {
+  const jobColor = getJobColorClasses(shift.job);
+  const shiftDuration = shift.endHour - shift.startHour;
+  return (
+    <div
+      className="relative px-1 py-0.5 rounded text-[9px] truncate shadow-lg pointer-events-none"
+      style={{
+        minWidth: '76px',
+        backgroundColor: jobColor.bgColor,
+        borderLeft: `2px solid ${jobColor.color}`,
+        color: jobColor.color,
+      }}
+      title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
+    >
+      {Math.round(shiftDuration)}h
+    </div>
+  );
 }
 
 export function WeekView() {
@@ -36,6 +282,9 @@ export function WeekView() {
     setViewMode,
     openModal,
     showToast,
+    addShift,
+    updateShift,
+    deleteShift,
     loadRestaurantData,
     selectAllEmployeesForRestaurant,
     publishDraftRange,
@@ -100,6 +349,7 @@ export function WeekView() {
   // Refs for scroll syncing
   const gridScrollRef = useRef<HTMLDivElement>(null);
   const namesScrollRef = useRef<HTMLDivElement>(null);
+  const weekGridRootRef = useRef<HTMLDivElement | null>(null);
 
   // Drag-to-scroll state
   const [isDragScrolling, setIsDragScrolling] = useState(false);
@@ -112,6 +362,48 @@ export function WeekView() {
   const [isSliding, setIsSliding] = useState(false);
   const [slideDirection, setSlideDirection] = useState<'prev' | 'next' | null>(null);
   const [hoveredShiftId, setHoveredShiftId] = useState<string | null>(null);
+  const [draggingShiftId, setDraggingShiftId] = useState<string | null>(null);
+  const [dragOverCellId, setDragOverCellId] = useState<string | null>(null);
+  const [selectedShiftId, setSelectedShiftId] = useState<string | null>(null);
+  const [activeCellId, setActiveCellId] = useState<string | null>(null);
+  const [scheduleClipboard, setScheduleClipboard] = useState<ScheduleClipboard | null>(null);
+  const [contextMenu, setContextMenu] = useState<ScheduleContextMenu | null>(null);
+  const [contextMenuShiftHighlightId, setContextMenuShiftHighlightId] = useState<string | null>(null);
+  const [contextMenuCellHighlightId, setContextMenuCellHighlightId] = useState<string | null>(null);
+  const [optimisticShiftMoves, setOptimisticShiftMoves] = useState<Record<string, OptimisticShiftMove>>({});
+  const [optimisticCreatedShifts, setOptimisticCreatedShifts] = useState<OptimisticCreatedShift[]>([]);
+  const [optimisticDeletedShiftIds, setOptimisticDeletedShiftIds] = useState<string[]>([]);
+  const [pendingMoveShiftIds, setPendingMoveShiftIds] = useState<string[]>([]);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    })
+  );
+  const sortableShiftIds = useMemo(
+    () => scopedShifts.map((shift) => buildShiftDragId(shift.id)),
+    [scopedShifts]
+  );
+  const displayShifts = useMemo(() => {
+    const movedShifts = scopedShifts.map((shift) => {
+      const move = optimisticShiftMoves[shift.id];
+      if (!move) return shift;
+      return {
+        ...shift,
+        employeeId: move.employeeId,
+        date: move.date,
+      };
+    });
+    const merged = [...movedShifts, ...optimisticCreatedShifts];
+    if (optimisticDeletedShiftIds.length === 0) return merged;
+    const hiddenIds = new Set(optimisticDeletedShiftIds);
+    return merged.filter((shift) => !hiddenIds.has(shift.id));
+  }, [optimisticCreatedShifts, optimisticDeletedShiftIds, optimisticShiftMoves, scopedShifts]);
+  const activeDraggedShift = useMemo(
+    () => (draggingShiftId ? displayShifts.find((shift) => shift.id === draggingShiftId) ?? null : null),
+    [displayShifts, draggingShiftId]
+  );
 
   // Calculate grid width based on days
   const gridWidth = 7 * PX_PER_DAY;
@@ -188,16 +480,444 @@ export function WeekView() {
   }, [activeRestaurantId, loadRestaurantData, selectAllEmployeesForRestaurant, showToast, weekEndYmd, weekStartYmd]);
 
   const publishDisabledReason = isManager ? undefined : 'Only managers can publish.';
+  const canUseCopyPaste = isManager && Boolean(activeRestaurantId);
+  const hasUsableClipboard = Boolean(
+    scheduleClipboard && Date.now() - scheduleClipboard.copiedAt <= CLIPBOARD_MAX_AGE_MS
+  );
 
-  const handleShiftClick = (shift: typeof scopedShifts[0], e: React.MouseEvent) => {
-    e.stopPropagation();
+  const updateSessionClipboard = useCallback((clipboard: ScheduleClipboard | null) => {
+    setScheduleClipboard(clipboard);
+    if (typeof window === 'undefined') return;
+    if (!clipboard) {
+      window.sessionStorage.removeItem(SCHEDULE_CLIPBOARD_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(SCHEDULE_CLIPBOARD_KEY, JSON.stringify(clipboard));
+  }, []);
+
+  const handleShiftEdit = useCallback((shift: Shift) => {
     if (shift.isBlocked) return;
     if (!canEditDate(shift.date)) {
       showToast("Past schedules can't be edited.", 'error');
       return;
     }
     openModal('editShift', shift);
-  };
+  }, [canEditDate, openModal, showToast]);
+
+  const handleShiftCardClick = useCallback((shift: Shift, e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (shift.isBlocked) return;
+    setContextMenu(null);
+    setContextMenuShiftHighlightId(null);
+    setContextMenuCellHighlightId(null);
+    setSelectedShiftId(shift.id);
+  }, []);
+
+  const handleCopyShiftToClipboard = useCallback((sourceShiftId?: string | null) => {
+    if (!canUseCopyPaste || !activeRestaurantId) {
+      showToast('Not permitted', 'error');
+      return;
+    }
+    const effectiveShiftId = sourceShiftId ?? selectedShiftId;
+    if (!effectiveShiftId) {
+      showToast('Select a shift first', 'error');
+      return;
+    }
+    const sourceShift = displayShifts.find((shift) => shift.id === effectiveShiftId);
+    if (!sourceShift) {
+      showToast('Select a shift first', 'error');
+      return;
+    }
+    const job = String(sourceShift.job ?? '').trim();
+    if (!job) {
+      showToast('Shift is missing a job', 'error');
+      return;
+    }
+
+    const clipboard: ScheduleClipboard = {
+      copiedAt: Date.now(),
+      sourceOrgId: activeRestaurantId,
+      template: {
+        shiftId: sourceShift.id,
+        startHour: sourceShift.startHour,
+        endHour: sourceShift.endHour,
+        job,
+        locationId: sourceShift.locationId ?? null,
+        notes: sourceShift.notes ?? '',
+      },
+    };
+
+    updateSessionClipboard(clipboard);
+    if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+      const savedRaw = window.sessionStorage.getItem(SCHEDULE_CLIPBOARD_KEY);
+      let savedClipboard: unknown = null;
+      try {
+        savedClipboard = savedRaw ? JSON.parse(savedRaw) : null;
+      } catch {
+        savedClipboard = savedRaw;
+      }
+      console.debug('[week-copy] clipboard-saved', {
+        sourceShiftId: sourceShift.id,
+        clipboard,
+        savedClipboard,
+      });
+    }
+    showToast(`Copied shift ${sourceShift.id}`, 'success');
+  }, [activeRestaurantId, canUseCopyPaste, displayShifts, selectedShiftId, showToast, updateSessionClipboard]);
+
+  const handlePasteShiftFromClipboard = useCallback(async (targetCellId?: string | null) => {
+    if (!canUseCopyPaste || !activeRestaurantId) {
+      showToast('Not permitted', 'error');
+      return;
+    }
+    const effectiveCellId = targetCellId ?? activeCellId;
+    if (!effectiveCellId) {
+      showToast('Paste failed: Click a cell to choose where to paste', 'error');
+      return;
+    }
+    const targetCell = parseCellDropId(effectiveCellId);
+    if (!targetCell || targetCell.userId === 'unassigned') {
+      showToast('Paste failed: invalid target cell', 'error');
+      return;
+    }
+    if (!canEditDate(targetCell.date)) {
+      showToast("Paste failed: Past schedules can't be edited.", 'error');
+      return;
+    }
+    if (targetCell.organizationId !== activeRestaurantId) {
+      showToast('Paste failed: Not permitted', 'error');
+      return;
+    }
+
+    if (!scheduleClipboard) {
+      showToast('Nothing to paste', 'error');
+      return;
+    }
+    const clipboardAgeMs = Date.now() - scheduleClipboard.copiedAt;
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[week-paste] before-paste', {
+        activeCellId,
+        targetCellId: effectiveCellId,
+        parsedTargetCell: targetCell,
+        clipboardAgeMs,
+        clipboard: scheduleClipboard,
+      });
+    }
+    if (Date.now() - scheduleClipboard.copiedAt > CLIPBOARD_MAX_AGE_MS) {
+      updateSessionClipboard(null);
+      showToast('Nothing to paste', 'error');
+      return;
+    }
+    if (scheduleClipboard.sourceOrgId !== activeRestaurantId) {
+      showToast('Not permitted', 'error');
+      return;
+    }
+
+    const template = scheduleClipboard.template;
+    if (
+      !template
+      || !String(template.job ?? '').trim()
+      || !Number.isFinite(template.startHour)
+      || !Number.isFinite(template.endHour)
+      || template.startHour >= template.endHour
+    ) {
+      showToast('Paste failed: clipboard template is incomplete', 'error');
+      return;
+    }
+    const tempId = `optimistic-paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const optimisticShift: Shift = {
+      id: tempId,
+      employeeId: targetCell.userId,
+      restaurantId: activeRestaurantId,
+      date: targetCell.date,
+      startHour: template.startHour,
+      endHour: template.endHour,
+      notes: template.notes,
+      job: template.job,
+      locationId: template.locationId ?? null,
+      isBlocked: false,
+      scheduleState: scheduleMode,
+    };
+
+    setOptimisticCreatedShifts((prev) => [...prev, optimisticShift]);
+
+    try {
+      const result = await addShift({
+        employeeId: targetCell.userId,
+        restaurantId: activeRestaurantId,
+        date: targetCell.date,
+        startHour: template.startHour,
+        endHour: template.endHour,
+        notes: template.notes,
+        isBlocked: false,
+        job: template.job,
+        locationId: template.locationId ?? null,
+        scheduleState: scheduleMode,
+      });
+
+      setOptimisticCreatedShifts((prev) => prev.filter((shift) => shift.id !== tempId));
+
+      if (!result.success) {
+        showToast(`Paste failed: ${result.error ?? 'Unknown error'}`, 'error');
+        return;
+      }
+      showToast('Shift pasted', 'success');
+    } catch (error) {
+      setOptimisticCreatedShifts((prev) => prev.filter((shift) => shift.id !== tempId));
+      const message = error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+        ? error
+        : JSON.stringify(error);
+      showToast(`Paste failed: ${message}`, 'error');
+    }
+  }, [
+    activeCellId,
+    activeRestaurantId,
+    addShift,
+    canEditDate,
+    canUseCopyPaste,
+    scheduleClipboard,
+    scheduleMode,
+    showToast,
+    updateSessionClipboard,
+  ]);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+    setContextMenuShiftHighlightId(null);
+    setContextMenuCellHighlightId(null);
+  }, []);
+
+  const openShiftContextMenu = useCallback((x: number, y: number, shiftId: string) => {
+    setSelectedShiftId(shiftId);
+    setContextMenuShiftHighlightId(shiftId);
+    setContextMenuCellHighlightId(null);
+    setContextMenu({
+      x,
+      y,
+      type: 'shift',
+      shiftId,
+    });
+  }, []);
+
+  const openCellContextMenu = useCallback((x: number, y: number, cellId: string) => {
+    setActiveCellId(cellId);
+    setContextMenuCellHighlightId(cellId);
+    setContextMenuShiftHighlightId(null);
+    setContextMenu({
+      x,
+      y,
+      type: 'cell',
+      cellId,
+    });
+  }, []);
+
+  const handleContextCopyShift = useCallback(() => {
+    if (!contextMenu || contextMenu.type !== 'shift' || !contextMenu.shiftId) return;
+    handleCopyShiftToClipboard(contextMenu.shiftId);
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, handleCopyShiftToClipboard]);
+
+  const handleContextPasteShift = useCallback(async () => {
+    if (!contextMenu || contextMenu.type !== 'cell' || !contextMenu.cellId) return;
+    setActiveCellId(contextMenu.cellId);
+    await handlePasteShiftFromClipboard(contextMenu.cellId);
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, handlePasteShiftFromClipboard]);
+
+  const handleContextDeleteShift = useCallback(async () => {
+    if (!contextMenu || contextMenu.type !== 'shift' || !contextMenu.shiftId) return;
+    const shiftId = contextMenu.shiftId;
+    if (!isManager) {
+      showToast('Not permitted', 'error');
+      closeContextMenu();
+      return;
+    }
+    const confirmed = window.confirm("Delete this shift? This can't be undone.");
+    if (!confirmed) {
+      closeContextMenu();
+      return;
+    }
+
+    closeContextMenu();
+    setOptimisticDeletedShiftIds((prev) => (prev.includes(shiftId) ? prev : [...prev, shiftId]));
+
+    try {
+      const result = await deleteShift(shiftId);
+      if (!result.success) {
+        setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
+        showToast(`Delete failed: ${result.error ?? 'Unknown error'}`, 'error');
+        return;
+      }
+      setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
+      showToast('Shift deleted', 'success');
+    } catch (error) {
+      setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
+      const message = error instanceof Error ? error.message : String(error);
+      showToast(`Delete failed: ${message}`, 'error');
+    }
+  }, [closeContextMenu, contextMenu, deleteShift, isManager, showToast]);
+
+  const showDevDropToast = useCallback((message: string) => {
+    if (process.env.NODE_ENV !== 'production') {
+      showToast(message, 'error');
+    }
+  }, [showToast]);
+
+  const markShiftMovePending = useCallback((shiftId: string, pending: boolean) => {
+    setPendingMoveShiftIds((prev) => {
+      if (pending) {
+        if (prev.includes(shiftId)) return prev;
+        return [...prev, shiftId];
+      }
+      return prev.filter((id) => id !== shiftId);
+    });
+  }, []);
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const dragTarget = parseShiftDragId(event.active.id);
+    if (!dragTarget) return;
+    setDraggingShiftId(dragTarget.shiftId);
+  }, []);
+
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    const dropTarget = parseCellDropId(event.over?.id);
+    if (!dropTarget) {
+      setDragOverCellId(null);
+      return;
+    }
+    setDragOverCellId(buildCellDropId(dropTarget.organizationId, dropTarget.userId, dropTarget.date));
+  }, []);
+
+  const clearDragIndicators = useCallback(() => {
+    setDraggingShiftId(null);
+    setDragOverCellId(null);
+  }, []);
+
+  const handleDragCancel = useCallback(() => {
+    clearDragIndicators();
+  }, [clearDragIndicators]);
+
+  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    const dragTarget = parseShiftDragId(event.active.id);
+    const dropTarget = parseCellDropId(event.over?.id);
+    clearDragIndicators();
+    if (!dragTarget) {
+      showDevDropToast('No drop target detected');
+      return;
+    }
+    if (!event.over || !dropTarget) {
+      showDevDropToast('No drop target detected');
+      return;
+    }
+    if (dropTarget.userId === 'unassigned') {
+      showDevDropToast('Drop target invalid (unassigned)');
+      return;
+    }
+    if (!isManager || !activeRestaurantId) {
+      showDevDropToast('Drop blocked (permissions/date/etc.)');
+      return;
+    }
+    if (dropTarget.organizationId !== activeRestaurantId) {
+      showDevDropToast('Drop blocked (permissions/date/etc.)');
+      return;
+    }
+
+    const sourceShift = scopedShifts.find((shift) => shift.id === dragTarget.shiftId);
+    if (!sourceShift) {
+      showDevDropToast('Drop blocked (permissions/date/etc.)');
+      return;
+    }
+    if (!canEditDate(sourceShift.date) || !canEditDate(dropTarget.date)) {
+      showDevDropToast('Drop blocked (permissions/date/etc.)');
+      showToast("Past schedules can't be edited.", 'error');
+      return;
+    }
+    if (pendingMoveShiftIds.includes(sourceShift.id)) {
+      showDevDropToast('Drop blocked (permissions/date/etc.)');
+      return;
+    }
+
+    const targetHasTimeOff = hasApprovedTimeOff(dropTarget.userId, dropTarget.date);
+    if (targetHasTimeOff) {
+      showDevDropToast('Drop blocked (permissions/date/etc.)');
+      showToast('Employee has approved time off on this date', 'error');
+      return;
+    }
+    const targetHasBlockedShift = hasBlockedShiftOnDate(dropTarget.userId, dropTarget.date);
+    if (targetHasBlockedShift) {
+      showDevDropToast('Drop blocked (permissions/date/etc.)');
+      showToast('This employee is blocked out on that date', 'error');
+      return;
+    }
+    if (hasOrgBlackoutOnDate(dropTarget.date)) {
+      showDevDropToast('Drop blocked (permissions/date/etc.)');
+      showToast('Organization blackout day cannot receive shifts.', 'error');
+      return;
+    }
+
+    const sameCell = sourceShift.employeeId === dropTarget.userId && sourceShift.date === dropTarget.date;
+    if (sameCell) return;
+
+    const previousMove = optimisticShiftMoves[sourceShift.id];
+    const duration = sourceShift.endHour - sourceShift.startHour;
+    const nextStartHour = sourceShift.startHour;
+    const nextEndHour = nextStartHour + duration;
+
+    setOptimisticShiftMoves((prev) => ({
+      ...prev,
+      [sourceShift.id]: {
+        employeeId: dropTarget.userId,
+        date: dropTarget.date,
+      },
+    }));
+    markShiftMovePending(sourceShift.id, true);
+
+    const result = await updateShift(sourceShift.id, {
+      employeeId: dropTarget.userId,
+      date: dropTarget.date,
+      startHour: nextStartHour,
+      endHour: nextEndHour,
+    });
+
+    markShiftMovePending(sourceShift.id, false);
+
+    if (!result.success) {
+      setOptimisticShiftMoves((prev) => {
+        const next = { ...prev };
+        if (previousMove) {
+          next[sourceShift.id] = previousMove;
+        } else {
+          delete next[sourceShift.id];
+        }
+        return next;
+      });
+      showToast(result.error || 'Unable to move shift.', 'error');
+      return;
+    }
+
+    setOptimisticShiftMoves((prev) => {
+      const next = { ...prev };
+      delete next[sourceShift.id];
+      return next;
+    });
+  }, [
+    activeRestaurantId,
+    canEditDate,
+    clearDragIndicators,
+    hasApprovedTimeOff,
+    hasBlockedShiftOnDate,
+    hasOrgBlackoutOnDate,
+    isManager,
+    markShiftMovePending,
+    optimisticShiftMoves,
+    pendingMoveShiftIds,
+    scopedShifts,
+    showDevDropToast,
+    showToast,
+    updateShift,
+  ]);
 
   // Drag-to-scroll handlers
   const handleGridDragStart = useCallback((clientX: number) => {
@@ -267,13 +987,19 @@ export function WeekView() {
     if (namesScrollRef.current && gridScrollRef.current) {
       namesScrollRef.current.scrollTop = gridScrollRef.current.scrollTop;
     }
-  }, []);
+    if (contextMenu) {
+      closeContextMenu();
+    }
+  }, [closeContextMenu, contextMenu]);
 
   const handleNamesScroll = useCallback(() => {
     if (namesScrollRef.current && gridScrollRef.current) {
       gridScrollRef.current.scrollTop = namesScrollRef.current.scrollTop;
     }
-  }, []);
+    if (contextMenu) {
+      closeContextMenu();
+    }
+  }, [closeContextMenu, contextMenu]);
 
   useEffect(() => {
     if (!dateNavDirection) return;
@@ -288,10 +1014,149 @@ export function WeekView() {
     };
   }, [dateNavKey, dateNavDirection]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const rawClipboard = window.sessionStorage.getItem(SCHEDULE_CLIPBOARD_KEY);
+    if (!rawClipboard) return;
+    try {
+      const parsed = JSON.parse(rawClipboard) as ScheduleClipboard;
+      const hasValidTemplate = Boolean(parsed?.template?.job)
+        && Number.isFinite(parsed?.template?.startHour)
+        && Number.isFinite(parsed?.template?.endHour);
+      const copiedAt = Number(parsed?.copiedAt);
+      if (!hasValidTemplate || !Number.isFinite(copiedAt)) {
+        window.sessionStorage.removeItem(SCHEDULE_CLIPBOARD_KEY);
+        return;
+      }
+      if (Date.now() - copiedAt > CLIPBOARD_MAX_AGE_MS) {
+        window.sessionStorage.removeItem(SCHEDULE_CLIPBOARD_KEY);
+        return;
+      }
+      setScheduleClipboard(parsed);
+    } catch {
+      window.sessionStorage.removeItem(SCHEDULE_CLIPBOARD_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (isKeyboardInputTarget(event.target)) return;
+      const hasShortcutModifier = event.ctrlKey || event.metaKey;
+      if (!hasShortcutModifier) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'c' && key !== 'v') return;
+
+      event.preventDefault();
+      if (!canUseCopyPaste) {
+        showToast('Not permitted', 'error');
+        return;
+      }
+      if (key === 'c') {
+        handleCopyShiftToClipboard();
+        return;
+      }
+      void handlePasteShiftFromClipboard();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [canUseCopyPaste, handleCopyShiftToClipboard, handlePasteShiftFromClipboard, showToast]);
+
+  useEffect(() => {
+    const root = weekGridRootRef.current;
+    if (!root) return;
+
+    const handleContextMenuCapture = (event: MouseEvent) => {
+      event.preventDefault();
+      const target = event.target as HTMLElement | null;
+      if (!target) {
+        closeContextMenu();
+        return;
+      }
+      const shiftEl = target.closest('[data-shift-id]') as HTMLElement | null;
+      if (shiftEl) {
+        const shiftId = shiftEl.getAttribute('data-shift-id');
+        if (shiftId) {
+          openShiftContextMenu(event.clientX, event.clientY, shiftId);
+          return;
+        }
+      }
+      const cellEl = target.closest('[data-cell-id]') as HTMLElement | null;
+      if (cellEl) {
+        const cellId = cellEl.getAttribute('data-cell-id');
+        if (cellId) {
+          openCellContextMenu(event.clientX, event.clientY, cellId);
+          return;
+        }
+      }
+      closeContextMenu();
+    };
+
+    root.addEventListener('contextmenu', handleContextMenuCapture, true);
+    return () => {
+      root.removeEventListener('contextmenu', handleContextMenuCapture, true);
+    };
+  }, [closeContextMenu, openCellContextMenu, openShiftContextMenu]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handleDocumentMouseDown = (event: MouseEvent) => {
+      if (!contextMenuRef.current) return;
+      if (contextMenuRef.current.contains(event.target as Node)) return;
+      closeContextMenu();
+    };
+    const handleDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeContextMenu();
+      }
+    };
+    const handleAnyScroll = () => {
+      closeContextMenu();
+    };
+
+    document.addEventListener('mousedown', handleDocumentMouseDown);
+    window.addEventListener('keydown', handleDocumentKeyDown);
+    window.addEventListener('scroll', handleAnyScroll, true);
+    return () => {
+      document.removeEventListener('mousedown', handleDocumentMouseDown);
+      window.removeEventListener('keydown', handleDocumentKeyDown);
+      window.removeEventListener('scroll', handleAnyScroll, true);
+    };
+  }, [closeContextMenu, contextMenu]);
+
+  useEffect(() => {
+    setOptimisticShiftMoves((prev) => {
+      const validIds = new Set(scopedShifts.map((shift) => shift.id));
+      const entries = Object.entries(prev).filter(([shiftId]) => validIds.has(shiftId));
+      if (entries.length === Object.keys(prev).length) return prev;
+      return Object.fromEntries(entries);
+    });
+    setOptimisticDeletedShiftIds((prev) => prev.filter((shiftId) => scopedShifts.some((shift) => shift.id === shiftId)));
+    setPendingMoveShiftIds((prev) => prev.filter((shiftId) => scopedShifts.some((shift) => shift.id === shiftId)));
+    setSelectedShiftId((prev) => {
+      if (!prev) return prev;
+      return displayShifts.some((shift) => shift.id === prev) ? prev : null;
+    });
+  }, [displayShifts, scopedShifts]);
+
+  const handleCellClick = useCallback((employeeId: string, date: string, e: React.MouseEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('[data-shift]')) return;
+    if (!activeRestaurantId) return;
+    setContextMenu(null);
+    setContextMenuShiftHighlightId(null);
+    setContextMenuCellHighlightId(null);
+    setActiveCellId(buildCellDropId(activeRestaurantId, employeeId, date));
+  }, [activeRestaurantId]);
+
   const handleCellMouseDown = (employeeId: string, date: string, e: React.MouseEvent<HTMLDivElement>) => {
     if (!canEditDate(date)) return;
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('[data-shift]')) return;
+    if (selectedShiftId && !scheduleClipboard) {
+      setSelectedShiftId(null);
+    }
     cellPointerRef.current = { x: e.clientX, y: e.clientY, employeeId, date };
   };
 
@@ -310,6 +1175,7 @@ export function WeekView() {
     const distance = Math.hypot(dx, dy);
     cellPointerRef.current = null;
     if (distance > 6) return;
+    if (selectedShiftId && Boolean(scheduleClipboard)) return;
 
     // Get effective hour range for this day
     const clickDate = new Date(date);
@@ -321,7 +1187,7 @@ export function WeekView() {
     const rawHour = HOURS_START + percentage * TOTAL_HOURS;
     const startHour = Math.max(HOURS_START, Math.min(HOURS_END, Math.round(rawHour * 4) / 4));
     const endHour = Math.min(HOURS_END, Math.round((startHour + 2) * 4) / 4);
-    const hasOverlap = scopedShifts.some(
+    const hasOverlap = displayShifts.some(
       (shift) =>
         shift.employeeId === employeeId &&
         shift.date === date &&
@@ -341,8 +1207,22 @@ export function WeekView() {
     });
   };
 
+  const isPasteMenuDisabled = !canUseCopyPaste || !hasUsableClipboard;
+  const pasteMenuTitle = !hasUsableClipboard ? 'Nothing to paste' : !canUseCopyPaste ? 'Not permitted' : undefined;
+  const contextMenuCellTarget = contextMenu?.type === 'cell' && contextMenu.cellId
+    ? parseCellDropId(contextMenu.cellId)
+    : null;
+  const contextMenuTargetUserShort = contextMenuCellTarget?.userId
+    ? contextMenuCellTarget.userId.slice(0, 8)
+    : null;
+
   return (
     <div className="flex-1 flex flex-col bg-theme-timeline overflow-hidden transition-theme">
+      {process.env.NODE_ENV !== 'production' && (
+        <div className="fixed top-2 left-2 z-[9999] rounded bg-zinc-900/90 px-2 py-1 text-[10px] font-semibold text-zinc-100">
+          DEV VIEW: WeekView
+        </div>
+      )}
       <ScheduleToolbar
         viewMode="week"
         selectedDate={selectedDate}
@@ -360,33 +1240,46 @@ export function WeekView() {
         publishWeekDisabledReason={publishWeekDisabledReason}
       />
 
-      {isDraftMode && (
-        <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
-          <div className="flex items-center justify-between gap-4 min-w-max">
-            <div className="flex items-center gap-2">
-              {draftBadge}
-              <span className="text-[11px] text-theme-muted whitespace-nowrap">{draftHelperText}</span>
-            </div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={pointerWithin}
+        measuring={{
+          droppable: {
+            strategy: MeasuringStrategy.Always,
+          },
+        }}
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDragEnd={handleDragEnd}
+        onDragCancel={handleDragCancel}
+      >
+        {isDraftMode && (
+          <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
+            <div className="flex items-center justify-between gap-4 min-w-max">
+              <div className="flex items-center gap-2">
+                {draftBadge}
+                <span className="text-[11px] text-theme-muted whitespace-nowrap">{draftHelperText}</span>
+              </div>
 
-            <div className="w-[300px] flex items-center justify-end">
-              {showCopyDraftWeek ? (
-                <button
-                  type="button"
-                  onClick={handleCreateDraft}
-                  className="w-[300px] h-[40px] flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs sm:text-sm font-medium"
-                >
-                  <ArrowLeftRight className="w-4 h-4" />
-                  <span className="truncate">Copy last published week into draft</span>
-                </button>
-              ) : (
-                <div className="w-[300px] h-[40px] invisible" />
-              )}
+              <div className="w-[300px] flex items-center justify-end">
+                {showCopyDraftWeek ? (
+                  <button
+                    type="button"
+                    onClick={handleCreateDraft}
+                    className="w-[300px] h-[40px] flex items-center gap-1.5 px-3 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors text-xs sm:text-sm font-medium"
+                  >
+                    <ArrowLeftRight className="w-4 h-4" />
+                    <span className="truncate">Copy last published week into draft</span>
+                  </button>
+                ) : (
+                  <div className="w-[300px] h-[40px] invisible" />
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <div className="flex-1 flex overflow-hidden">
+        <div ref={weekGridRootRef} className="flex-1 flex overflow-hidden relative">
         {/* Fixed Employee Names Column - compact */}
         <div className="w-36 shrink-0 flex flex-col bg-theme-timeline z-20 border-r border-theme-primary">
           {/* Header spacer */}
@@ -493,7 +1386,8 @@ export function WeekView() {
             </div>
 
             {/* Week Grid Rows */}
-            <div className="flex-1">
+            <SortableContext items={sortableShiftIds}>
+              <div className="flex-1">
               {filteredEmployees.length === 0 ? (
                 <div className="flex items-center justify-center h-full text-theme-muted">
                   <div className="text-center">
@@ -510,28 +1404,45 @@ export function WeekView() {
                     >
                       {weekDates.map((date) => {
                         const dateStr = dateToString(date);
-                        const dayShifts = scopedShifts.filter(
+                        const dayShifts = displayShifts.filter(
                           s => s.employeeId === employee.id && s.date === dateStr && !s.isBlocked
                         );
                         const isToday = isSameDay(date, today);
                         const hasTimeOff = hasApprovedTimeOff(employee.id, dateStr);
                         const hasBlocked = hasBlockedShiftOnDate(employee.id, dateStr);
                         const hasOrgBlackout = hasOrgBlackoutOnDate(dateStr);
+                        const orgId = activeRestaurantId ?? 'none';
+                        const droppableId = buildCellDropId(orgId, employee.id, dateStr);
+                        const canReceiveDrop =
+                          Boolean(activeRestaurantId)
+                          && isManager
+                          && canEditDate(dateStr)
+                          && !hasTimeOff
+                          && !hasBlocked
+                          && !hasOrgBlackout;
 
                         return (
-                          <div
+                          <WeekGridCell
                             key={date.toISOString()}
+                            droppableId={droppableId}
+                            disabledDrop={!canReceiveDrop}
+                            isActiveCell={activeCellId === droppableId}
+                            isContextMenuTarget={contextMenuCellHighlightId === droppableId}
+                            isDragOverCell={dragOverCellId === droppableId}
                             className={`border-r border-theme-primary/30 p-0.5 group relative overflow-hidden ${
                               isToday ? 'bg-amber-500/5' : ''
-                            } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''} ${hasOrgBlackout ? 'bg-amber-500/5' : ''}`}
+                            } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''} ${hasOrgBlackout ? 'bg-amber-500/5' : ''} ${
+                              canReceiveDrop ? 'hover:outline hover:outline-1 hover:outline-sky-300/50' : ''
+                            }`}
                             style={{ width: `${PX_PER_DAY}px`, minWidth: `${PX_PER_DAY}px` }}
+                            onClick={(e) => handleCellClick(employee.id, dateStr, e)}
                             onMouseDown={(e) => handleCellMouseDown(employee.id, dateStr, e)}
                             onMouseUp={(e) => handleCellMouseUp(employee.id, dateStr, e)}
                           >
                             {!hasTimeOff && !hasBlocked && !hasOrgBlackout && canEditDate(dateStr) && (
                               <div
                                 className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity ${
-                                  hoveredShiftId ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'
+                                  hoveredShiftId || draggingShiftId ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'
                                 }`}
                               >
                                 <span className="text-[9px] text-theme-muted">+</span>
@@ -559,35 +1470,30 @@ export function WeekView() {
                             ) : (
                               <div className="flex flex-col gap-0.5 overflow-hidden h-full">
                                 {dayShifts.slice(0, 2).map((shift) => {
-                                  const jobColor = getJobColorClasses(shift.job);
-                                  const shiftDuration = shift.endHour - shift.startHour;
                                   const isDraftShift = isManager && shift.scheduleState === 'draft';
                                   const isBaselinePublished = scheduleMode === 'draft' && shift.scheduleState !== 'draft';
+                                  const isPendingMove = pendingMoveShiftIds.includes(shift.id);
+                                  const dragEnabled = canEditDate(shift.date) && isManager && !isPendingMove;
 
                                   return (
-                                    <div
+                                    <WeekShiftCard
                                       key={shift.id}
-                                      data-shift="true"
-                                      onClick={(e) => handleShiftClick(shift, e)}
+                                      shift={shift}
+                                      isDraftShift={isDraftShift}
+                                      isBaselinePublished={isBaselinePublished}
+                                      isDraggingShiftId={draggingShiftId === shift.id}
+                                      isSelected={selectedShiftId === shift.id}
+                                      isContextMenuTarget={contextMenuShiftHighlightId === shift.id}
+                                      isPendingMove={isPendingMove}
+                                      dragEnabled={dragEnabled}
+                                      onClick={(e) => handleShiftCardClick(shift, e)}
+                                      onDoubleClick={(e) => {
+                                        e.stopPropagation();
+                                        handleShiftEdit(shift);
+                                      }}
                                       onMouseEnter={() => setHoveredShiftId(shift.id)}
                                       onMouseLeave={() => setHoveredShiftId(null)}
-                                      className={`relative px-1 py-0.5 rounded text-[9px] truncate cursor-pointer hover:scale-[1.02] transition-transform ${
-                                        isDraftShift ? 'border border-amber-400/60 border-dashed' : ''
-                                      } ${isBaselinePublished ? 'ring-1 ring-emerald-400/40' : ''}`}
-                                      style={{
-                                        backgroundColor: jobColor.bgColor,
-                                        borderLeft: `2px solid ${jobColor.color}`,
-                                        color: jobColor.color,
-                                      }}
-                                      title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
-                                    >
-                                      {isDraftShift && (
-                                        <span className="absolute top-0 right-0 px-1 rounded bg-amber-500/30 text-[7px] font-semibold text-amber-100/90">
-                                          DRAFT
-                                        </span>
-                                      )}
-                                      {Math.round(shiftDuration)}h
-                                    </div>
+                                    />
                                   );
                                 })}
                                 {dayShifts.length > 2 && (
@@ -597,17 +1503,72 @@ export function WeekView() {
                                 )}
                               </div>
                             )}
-                          </div>
+                          </WeekGridCell>
                         );
                       })}
                     </div>
                   );
                 })
               )}
-            </div>
+              </div>
+            </SortableContext>
           </div>
         </div>
       </div>
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="fixed z-[80] min-w-[180px] rounded-md border border-zinc-200 bg-white py-1.5 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          role="menu"
+        >
+          {contextMenu.type === 'shift' && (
+            <div className="px-1">
+              <button
+                type="button"
+                className="w-full rounded px-3 py-2 text-left text-sm text-zinc-800 hover:bg-zinc-100"
+                onClick={handleContextCopyShift}
+              >
+                Copy shift
+              </button>
+              <button
+                type="button"
+                className="mt-0.5 w-full rounded px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                onClick={() => {
+                  void handleContextDeleteShift();
+                }}
+              >
+                Delete shift
+              </button>
+            </div>
+          )}
+          {contextMenu.type === 'cell' && (
+            <div className="px-1">
+              {process.env.NODE_ENV !== 'production' && contextMenuCellTarget && (
+                <p className="px-2 py-1 text-[10px] text-zinc-500">
+                  Paste to: {contextMenuTargetUserShort ?? '-'} {contextMenuCellTarget.date}
+                </p>
+              )}
+              <button
+                type="button"
+                className={`w-full rounded px-3 py-2 text-left text-sm ${
+                  isPasteMenuDisabled ? 'text-zinc-400' : 'text-zinc-800 hover:bg-zinc-100'
+                }`}
+                title={pasteMenuTitle}
+                onClick={() => {
+                  void handleContextPasteShift();
+                }}
+              >
+                Paste shift
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      <DragOverlay zIndex={70}>
+        {activeDraggedShift ? <WeekShiftDragOverlay shift={activeDraggedShift} /> : null}
+      </DragOverlay>
+      </DndContext>
     </div>
   );
 }
