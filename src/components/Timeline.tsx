@@ -12,15 +12,17 @@ import { getUserRole, isManagerRole } from '../utils/role';
 import { getJobColorClasses } from '../lib/jobColors';
 import { compareJobs } from '../utils/jobOrder';
 import { ScheduleToolbar } from './ScheduleToolbar';
+import { ConfirmDialog } from './ui/ConfirmDialog';
 import {
   DndContext,
-  DragOverlay,
   MeasuringStrategy,
   PointerSensor,
   pointerWithin,
   type DragEndEvent,
+  type DragMoveEvent,
   type DragOverEvent,
   type DragStartEvent,
+  type Modifier,
   useDraggable,
   useDroppable,
   useSensor,
@@ -40,6 +42,8 @@ const GRID_BACKGROUND_SELECTOR = '[data-grid-background="true"]';
 const CELL_ID_PREFIX = 'cell:';
 const SHIFT_ID_PREFIX = 'shift:';
 const CELL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const CROSS_EMPLOYEE_Y_THRESHOLD_PX = 20;
+const DAY_MOVE_SNAP_MINUTES = 30;
 const SCHEDULE_CLIPBOARD_KEY = 'crewshyft:scheduleClipboard:v1';
 const CLIPBOARD_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const NON_GRAB_SCROLL_SELECTOR = [
@@ -109,6 +113,54 @@ function parseTimelineShiftId(rawId: unknown): TimelineShiftTarget | null {
   const shiftId = value.slice(SHIFT_ID_PREFIX.length);
   if (!shiftId) return null;
   return { shiftId };
+}
+
+function getClientPointFromEvent(event: Event | null | undefined): { x: number; y: number } | null {
+  if (!event) return null;
+  if ('clientX' in event && 'clientY' in event) {
+    const mouseLike = event as MouseEvent;
+    return { x: mouseLike.clientX, y: mouseLike.clientY };
+  }
+  if ('touches' in event) {
+    const touchEvent = event as TouchEvent;
+    const firstTouch = touchEvent.touches[0] ?? touchEvent.changedTouches[0];
+    if (!firstTouch) return null;
+    return { x: firstTouch.clientX, y: firstTouch.clientY };
+  }
+  return null;
+}
+
+function getSnappedDayMoveResult(shift: Shift, deltaX: number, pxPerHour: number) {
+  const deltaHours = pxPerHour > 0 ? deltaX / pxPerHour : 0;
+  const snappedDeltaMinutes = Math.round((deltaHours * 60) / DAY_MOVE_SNAP_MINUTES) * DAY_MOVE_SNAP_MINUTES;
+  const minDurationMinutes = 15;
+  const durationMinutes = Math.max(minDurationMinutes, Math.round((shift.endHour - shift.startHour) * 60));
+  let nextStartMinutes = shift.startHour * 60 + snappedDeltaMinutes;
+  let nextEndMinutes = shift.endHour * 60 + snappedDeltaMinutes;
+
+  if (nextStartMinutes < 0) {
+    nextStartMinutes = 0;
+    nextEndMinutes = durationMinutes;
+  }
+  if (nextEndMinutes > 24 * 60) {
+    nextEndMinutes = 24 * 60;
+    nextStartMinutes = nextEndMinutes - durationMinutes;
+  }
+  if (nextEndMinutes - nextStartMinutes < minDurationMinutes) {
+    nextEndMinutes = Math.min(24 * 60, nextStartMinutes + minDurationMinutes);
+    nextStartMinutes = Math.max(0, nextEndMinutes - minDurationMinutes);
+  }
+
+  const startHour = Math.round((nextStartMinutes / 60) * 1000) / 1000;
+  const endHour = Math.round((nextEndMinutes / 60) * 1000) / 1000;
+  const changed = Math.abs(startHour - shift.startHour) >= 0.001 || Math.abs(endHour - shift.endHour) >= 0.001;
+
+  return {
+    startHour,
+    endHour,
+    changed,
+    snappedDeltaMinutes,
+  };
 }
 
 type TimelineDroppableSliceProps = {
@@ -183,23 +235,6 @@ function TimelineDraggableShift({ shiftId, disabled = false, children }: Timelin
     transformStyle,
     isDragging,
   });
-}
-
-function TimelineShiftDragOverlay({ shift }: { shift: Shift }) {
-  const jobColor = getJobColorClasses(shift.job);
-  return (
-    <div
-      className="relative px-2 py-1 rounded text-[10px] truncate shadow-lg pointer-events-none border"
-      style={{
-        minWidth: '120px',
-        backgroundColor: jobColor.bgColor,
-        borderColor: jobColor.color,
-        color: jobColor.color,
-      }}
-    >
-      {formatHour(shift.startHour)}-{formatHour(shift.endHour)}
-    </div>
-  );
 }
 
 // Helper to get date string (YYYY-MM-DD) from Date using LOCAL timezone
@@ -315,10 +350,19 @@ export function Timeline() {
   const [selectedShiftId, setSelectedShiftId] = useState<string | null>(null);
   const [contextMenuShiftHighlightId, setContextMenuShiftHighlightId] = useState<string | null>(null);
   const [contextMenuCellHighlightId, setContextMenuCellHighlightId] = useState<string | null>(null);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [confirmDeleteShiftId, setConfirmDeleteShiftId] = useState<string | null>(null);
+  const [confirmDeleteLoading, setConfirmDeleteLoading] = useState(false);
   const [draggingShiftId, setDraggingShiftId] = useState<string | null>(null);
   const [dragOverCellId, setDragOverCellId] = useState<string | null>(null);
+  const [dayMoveTimeTooltip, setDayMoveTimeTooltip] = useState<{
+    left: number;
+    top: number;
+    label: string;
+  } | null>(null);
   const [isPendingRowMove, setIsPendingRowMove] = useState(false);
   const [optimisticDeletedShiftIds, setOptimisticDeletedShiftIds] = useState<string[]>([]);
+  const dragStartRef = useRef<{ startX: number; startY: number; originUserId: string } | null>(null);
   const [dragPreview, setDragPreview] = useState<Record<string, { startHour: number; endHour: number; date?: string }>>({});
   const [commitOverridesVersion, setCommitOverridesVersion] = useState(0);
   const commitOverridesRef = useRef<Record<string, { startDate: string; startHour: number; endDate: string; endHour: number }>>({});
@@ -363,6 +407,7 @@ export function Timeline() {
     scrollLeft: number;
     currentX: number;
   } | null>(null);
+  const pxPerHourRef = useRef(0);
   const isDragScrollingRef = useRef(false);
   const activePointerIdRef = useRef<number | null>(null);
   const scrollToDateRef = useRef<(date: Date, options?: { reanchor?: boolean }) => void>(() => {});
@@ -537,13 +582,35 @@ export function Timeline() {
       activationConstraint: { distance: 6 },
     })
   );
-  const activeDraggedShift = useMemo(
-    () =>
-      draggingShiftId
-        ? scopedShifts.find((shift) => shift.id === draggingShiftId && !optimisticDeletedShiftIdSet.has(shift.id)) ?? null
-        : null,
-    [draggingShiftId, optimisticDeletedShiftIdSet, scopedShifts]
+  const collisionDetectionStrategy = useCallback((args: Parameters<typeof pointerWithin>[0]) => {
+    const dragStart = dragStartRef.current;
+    if (!dragStart || !dayReassignEnabled || !args.pointerCoordinates) return pointerWithin(args);
+    const pointerY = args.pointerCoordinates.y;
+    const deltaY = Math.abs(pointerY - dragStart.startY);
+    if (deltaY >= CROSS_EMPLOYEE_Y_THRESHOLD_PX) {
+      return pointerWithin(args);
+    }
+    const lockedContainers = args.droppableContainers.filter((container) => {
+      const target = parseTimelineCellId(container.id);
+      if (!target) return true;
+      return target.userId === dragStart.originUserId;
+    });
+    if (lockedContainers.length === 0) {
+      return pointerWithin(args);
+    }
+    return pointerWithin({
+      ...args,
+      droppableContainers: lockedContainers,
+    });
+  }, [dayReassignEnabled]);
+  const confirmDeleteShift = useMemo(
+    () => (confirmDeleteShiftId ? scopedShifts.find((shift) => shift.id === confirmDeleteShiftId) ?? null : null),
+    [confirmDeleteShiftId, scopedShifts]
   );
+  const confirmDeleteEmployeeName = useMemo(() => {
+    if (!confirmDeleteShift) return 'Unknown';
+    return filteredEmployees.find((employee) => employee.id === confirmDeleteShift.employeeId)?.name ?? 'Unknown';
+  }, [confirmDeleteShift, filteredEmployees]);
 
   const updateSessionClipboard = useCallback((clipboard: TimelineScheduleClipboard | null) => {
     setScheduleClipboard(clipboard);
@@ -729,21 +796,28 @@ export function Timeline() {
     closeContextMenu();
   }, [closeContextMenu, contextMenu, handlePasteShiftFromClipboard]);
 
-  const handleContextDeleteShift = useCallback(async () => {
+  const handleContextDeleteShift = useCallback(() => {
     if (!contextMenu || contextMenu.type !== 'shift' || !contextMenu.shiftId) return;
-    const shiftId = contextMenu.shiftId;
+    closeContextMenu();
+    setConfirmDeleteShiftId(contextMenu.shiftId);
+    setConfirmDeleteOpen(true);
+    setConfirmDeleteLoading(false);
+  }, [closeContextMenu, contextMenu]);
+
+  const closeConfirmDelete = useCallback(() => {
+    if (confirmDeleteLoading) return;
+    setConfirmDeleteOpen(false);
+    setConfirmDeleteShiftId(null);
+  }, [confirmDeleteLoading]);
+
+  const handleConfirmDeleteShift = useCallback(async () => {
+    const shiftId = confirmDeleteShiftId;
+    if (!shiftId) return;
     if (!isManager) {
       showToast('Not permitted', 'error');
-      closeContextMenu();
       return;
     }
-    const confirmed = window.confirm("Delete this shift? This can't be undone.");
-    if (!confirmed) {
-      closeContextMenu();
-      return;
-    }
-
-    closeContextMenu();
+    setConfirmDeleteLoading(true);
     setOptimisticDeletedShiftIds((prev) => (prev.includes(shiftId) ? prev : [...prev, shiftId]));
     try {
       const result = await deleteShift(shiftId);
@@ -754,16 +828,22 @@ export function Timeline() {
       }
       setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
       showToast('Shift deleted', 'success');
+      setConfirmDeleteOpen(false);
+      setConfirmDeleteShiftId(null);
     } catch (error) {
       setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
       const message = error instanceof Error ? error.message : String(error);
       showToast(`Delete failed: ${message}`, 'error');
+    } finally {
+      setConfirmDeleteLoading(false);
     }
-  }, [closeContextMenu, contextMenu, deleteShift, isManager, showToast]);
+  }, [confirmDeleteShiftId, deleteShift, isManager, showToast]);
 
   const clearDayReassignState = useCallback(() => {
     setDraggingShiftId(null);
     setDragOverCellId(null);
+    setDayMoveTimeTooltip(null);
+    dragStartRef.current = null;
   }, []);
 
   const handleDayDragStart = useCallback((event: DragStartEvent) => {
@@ -771,7 +851,60 @@ export function Timeline() {
     const dragTarget = parseTimelineShiftId(event.active.id);
     if (!dragTarget) return;
     setDraggingShiftId(dragTarget.shiftId);
-  }, [dayReassignEnabled]);
+    if (process.env.NODE_ENV !== 'production') {
+      showToast(`Drag start: ${dragTarget.shiftId}`, 'success');
+    }
+    const sourceShift = scopedShifts.find((shift) => shift.id === dragTarget.shiftId && !shift.isBlocked);
+    const point = getClientPointFromEvent(event.activatorEvent);
+    dragStartRef.current = {
+      startX: point?.x ?? 0,
+      startY: point?.y ?? 0,
+      originUserId: sourceShift?.employeeId ?? '',
+    };
+    if (sourceShift && point) {
+      setDayMoveTimeTooltip({
+        left: point.x + 12,
+        top: point.y - 28,
+        label: `${formatHour(sourceShift.startHour)}-${formatHour(sourceShift.endHour)}`,
+      });
+    }
+  }, [dayReassignEnabled, scopedShifts, showToast]);
+
+  const handleDayDragMove = useCallback((event: DragMoveEvent) => {
+    if (!dayReassignEnabled) return;
+    const dragTarget = parseTimelineShiftId(event.active.id);
+    if (!dragTarget) return;
+    const sourceShift = scopedShifts.find(
+      (shift) => shift.id === dragTarget.shiftId && !shift.isBlocked && !optimisticDeletedShiftIdSet.has(shift.id)
+    );
+    if (!sourceShift) {
+      setDayMoveTimeTooltip(null);
+      return;
+    }
+    const startPoint = dragStartRef.current;
+    if (!startPoint) return;
+
+    const overId = event.over ? String(event.over.id) : null;
+    const parsedTarget = overId ? parseTimelineCellId(overId) : null;
+    const allowCrossEmployee = Math.abs(event.delta.y) >= CROSS_EMPLOYEE_Y_THRESHOLD_PX;
+    const targetUserId = allowCrossEmployee && parsedTarget ? parsedTarget.userId : sourceShift.employeeId;
+    const employeeChanged = sourceShift.employeeId !== targetUserId;
+    const dateChanged = Boolean(parsedTarget && sourceShift.date !== parsedTarget.date);
+    const preview = !employeeChanged && !dateChanged
+      ? getSnappedDayMoveResult(sourceShift, event.delta.x, pxPerHourRef.current)
+      : {
+          startHour: sourceShift.startHour,
+          endHour: sourceShift.endHour,
+          changed: false,
+          snappedDeltaMinutes: 0,
+        };
+
+    setDayMoveTimeTooltip({
+      left: startPoint.startX + event.delta.x + 12,
+      top: startPoint.startY + event.delta.y - 28,
+      label: `${formatHour(preview.startHour)}-${formatHour(preview.endHour)}`,
+    });
+  }, [dayReassignEnabled, optimisticDeletedShiftIdSet, scopedShifts]);
 
   const handleDayDragOver = useCallback((event: DragOverEvent) => {
     if (!dayReassignEnabled) return;
@@ -826,17 +959,41 @@ export function Timeline() {
       return;
     }
 
-    const employeeChanged = sourceShift.employeeId !== parsedTarget.userId;
+    const allowCrossEmployee = Math.abs(event.delta.y) >= CROSS_EMPLOYEE_Y_THRESHOLD_PX;
+    const targetUserId = allowCrossEmployee ? parsedTarget.userId : sourceShift.employeeId;
+
+    const employeeChanged = sourceShift.employeeId !== targetUserId;
     const dateChanged = sourceShift.date !== parsedTarget.date;
     if (!employeeChanged && !dateChanged) {
-      clearDayReassignState();
+      const snappedMove = getSnappedDayMoveResult(sourceShift, event.delta.x, pxPerHourRef.current);
+      if (!snappedMove.changed || snappedMove.snappedDeltaMinutes === 0) {
+        clearDayReassignState();
+        return;
+      }
+      setIsPendingRowMove(true);
+      try {
+        const result = await updateShift(sourceShift.id, {
+          employeeId: sourceShift.employeeId,
+          date: sourceShift.date,
+          startHour: snappedMove.startHour,
+          endHour: snappedMove.endHour,
+        });
+        if (!result.success) {
+          showToast(result.error ?? 'Failed to move shift', 'error');
+        } else {
+          showToast('Shift moved', 'success');
+        }
+      } finally {
+        setIsPendingRowMove(false);
+        clearDayReassignState();
+      }
       return;
     }
 
     setIsPendingRowMove(true);
     try {
       const result = await updateShift(sourceShift.id, {
-        employeeId: parsedTarget.userId,
+        employeeId: targetUserId,
         date: parsedTarget.date,
         startHour: sourceShift.startHour,
         endHour: sourceShift.endHour,
@@ -855,6 +1012,7 @@ export function Timeline() {
     clearDayReassignState,
     dayReassignEnabled,
     isEditableDate,
+    optimisticDeletedShiftIdSet,
     scopedShifts,
     showToast,
     updateShift,
@@ -1005,6 +1163,24 @@ export function Timeline() {
   const totalHoursForScale = Math.max(1, TOTAL_HOURS);
   const gridViewportWidth = timelineWidthPx > 0 ? timelineWidthPx : totalHoursForScale * DEFAULT_PX_PER_HOUR;
   const pxPerHour = continuousDays ? DEFAULT_PX_PER_HOUR : gridViewportWidth / totalHoursForScale;
+  useEffect(() => {
+    pxPerHourRef.current = pxPerHour;
+  }, [pxPerHour]);
+  const pixelsPerMinute = pxPerHour / 60;
+  const MOVE_SNAP_PX = pixelsPerMinute * DAY_MOVE_SNAP_MINUTES;
+  const snapPx = useCallback((value: number) => {
+    if (!Number.isFinite(value) || MOVE_SNAP_PX <= 0) return value;
+    return Math.round(value / MOVE_SNAP_PX) * MOVE_SNAP_PX;
+  }, [MOVE_SNAP_PX]);
+  const snapToHalfHourModifier = useMemo<Modifier>(() => {
+    return ({ transform }) => {
+      if (!dayReassignEnabled) return transform;
+      return {
+        ...transform,
+        x: snapPx(transform.x),
+      };
+    };
+  }, [dayReassignEnabled, snapPx]);
   const singleDayHours = Array.from({ length: TOTAL_HOURS }, (_, i) => HOURS_START + i);
   const singleDayGridWidth = TOTAL_HOURS * pxPerHour;
   // Continuous mode values
@@ -1736,7 +1912,7 @@ export function Timeline() {
     if (activeDragRef.current) return;
 
     const target = e.target as HTMLElement | null;
-    const handleEl = target?.closest('[data-resize-handle="true"]') as HTMLElement | null;
+    const handleEl = target?.closest('[data-resize-handle]') as HTMLElement | null;
     const bodyEl = target?.closest('[data-shift-body="true"]') as HTMLElement | null;
     const rootEl = (handleEl ?? bodyEl ?? target)?.closest('[data-shift-root="true"]') as HTMLElement | null;
 
@@ -1753,9 +1929,9 @@ export function Timeline() {
         return;
       }
 
-      const edge = handleEl?.getAttribute('data-edge');
+      const edge = handleEl?.getAttribute('data-resize-handle') ?? handleEl?.getAttribute('data-edge');
       const mode: 'move' | 'resize-left' | 'resize-right' = handleEl
-        ? edge === 'left'
+        ? edge === 'left' || edge === 'start'
           ? 'resize-left'
           : 'resize-right'
         : 'move';
@@ -2468,7 +2644,17 @@ export function Timeline() {
                       const shiftNotes = typeof shift.notes === 'string' ? shift.notes.trim() : '';
                       const isDraftShift = isManager && shift.scheduleState === 'draft';
                       const isBaselinePublished = isDraftMode && shift.scheduleState !== 'draft';
-                      const dragEnabled = dayReassignEnabled && !isPendingRowMove && isEditableDate(shift.date);
+                      const isResizeActive = isDraggingShift && (activeDragMode === 'resize-left' || activeDragMode === 'resize-right');
+                      const dragEnabled = dayReassignEnabled && !isPendingRowMove && isEditableDate(shift.date) && !isResizeActive;
+                      const dragDisabledReason = !dayReassignEnabled
+                        ? 'day-reassign-disabled'
+                        : isPendingRowMove
+                        ? 'pending-row-move'
+                        : !isEditableDate(shift.date)
+                        ? 'date-locked'
+                        : isResizeActive
+                        ? 'active-resize'
+                        : undefined;
 
                       return (
                         <TimelineDraggableShift key={shift.id} shiftId={shift.id} disabled={!dragEnabled}>
@@ -2490,7 +2676,7 @@ export function Timeline() {
                                 data-shift-id={shift.id}
                                 data-employee-id={employee.id}
                                 className={`absolute top-1 bottom-1 rounded transition-all z-30 ${
-                                  isAnyDragging ? 'z-40 shadow-xl cursor-grabbing pointer-events-none opacity-35' : isHovered ? 'shadow-lg cursor-grab' : 'cursor-grab'
+                                  isAnyDragging ? 'z-40 shadow-xl cursor-grabbing pointer-events-none opacity-45 ring-1 ring-sky-300/80' : isHovered ? 'shadow-lg cursor-pointer' : 'cursor-pointer'
                                 } ${
                                   isContextMenuTarget
                                     ? 'ring-2 ring-amber-300/95 ring-offset-2 ring-offset-theme-timeline'
@@ -2504,7 +2690,7 @@ export function Timeline() {
                                   backgroundColor: isHovered || isAnyDragging ? jobColor.hoverBgColor : jobColor.bgColor,
                                   borderWidth: '1px',
                                   borderColor: jobColor.color,
-                                  borderStyle: isDraftShift ? 'dashed' : 'solid',
+                                  borderStyle: isAnyDragging || isDraftShift ? 'dashed' : 'solid',
                                   transform: computedTransform,
                                 }}
                                 onMouseEnter={(e) => {
@@ -2517,6 +2703,11 @@ export function Timeline() {
                                 }}
                                 onDoubleClick={() => {
                                   openShiftEditor(shift);
+                                }}
+                                onPointerDown={() => {
+                                  if (!dragEnabled && process.env.NODE_ENV !== 'production') {
+                                    console.debug('[Timeline] drag disabled', { shiftId: shift.id, reason: dragDisabledReason ?? 'unknown' });
+                                  }
                                 }}
                                 {...(dragEnabled ? attributes : {})}
                                 {...(dragEnabled ? listeners : {})}
@@ -2533,7 +2724,9 @@ export function Timeline() {
                                 )}
                                 <div
                                   data-shift-body="true"
-                                  className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none overflow-hidden pointer-events-auto"
+                                  className={`absolute left-2 right-2 top-0 bottom-0 touch-none overflow-hidden pointer-events-auto ${
+                                    dragEnabled ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
+                                  }`}
                                 >
                                   <div className="h-full flex items-center px-0.5 overflow-hidden min-w-0">
                                     {showTimeText ? (
@@ -2580,11 +2773,15 @@ export function Timeline() {
                                 </div>
 
                                 <div
-                                  data-resize-handle="true"
+                                  data-resize-handle="end"
                                 data-edge="right"
                                   className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r flex items-center justify-center touch-none group/edge transition-colors z-40 ${
                                     isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
                                   }`}
+                                  onPointerDown={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                  }}
                                 >
                                   <span
                                     className={`w-0.5 h-4 rounded-full transition-colors ${
@@ -2593,11 +2790,15 @@ export function Timeline() {
                                   />
                                 </div>
                                 <div
-                                  data-resize-handle="true"
+                                  data-resize-handle="start"
                                 data-edge="left"
                                   className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l flex items-center justify-center touch-none group/edge transition-colors z-40 ${
                                     isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
                                   }`}
+                                  onPointerDown={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                  }}
                                 >
                                   <span
                                     className={`w-0.5 h-4 rounded-full transition-colors ${
@@ -2972,11 +3173,15 @@ export function Timeline() {
                         </div>
 
                         <div
-                          data-resize-handle="true"
+                          data-resize-handle="end"
                           data-edge="right"
                           className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r flex items-center justify-center touch-none group/edge transition-colors z-40 ${
                             isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
                           }`}
+                          onPointerDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
                         >
                           <span
                             className={`w-0.5 h-4 rounded-full transition-colors ${
@@ -2985,11 +3190,15 @@ export function Timeline() {
                           />
                         </div>
                         <div
-                          data-resize-handle="true"
+                          data-resize-handle="start"
                           data-edge="left"
                           className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l flex items-center justify-center touch-none group/edge transition-colors z-40 ${
                             isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
                           }`}
+                          onPointerDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
                         >
                           <span
                             className={`w-0.5 h-4 rounded-full transition-colors ${
@@ -3053,9 +3262,11 @@ export function Timeline() {
   return (
     <DndContext
       sensors={dndSensors}
-      collisionDetection={pointerWithin}
+      modifiers={dayReassignEnabled ? [snapToHalfHourModifier] : undefined}
+      collisionDetection={collisionDetectionStrategy}
       measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
       onDragStart={handleDayDragStart}
+      onDragMove={handleDayDragMove}
       onDragOver={handleDayDragOver}
       onDragEnd={(event) => {
         void handleDayDragEnd(event);
@@ -3207,7 +3418,7 @@ export function Timeline() {
               ref={gridScrollRef}
               className={`w-full overflow-x-auto overflow-y-hidden ${isDragScrolling ? 'cursor-grabbing' : 'cursor-grab'}`}
               style={{ scrollBehavior: isDragScrolling ? 'auto' : 'smooth', touchAction: 'pan-y' }}
-              onPointerDown={handleGridPointerDown}
+              onPointerDownCapture={handleGridPointerDown}
               onPointerMove={handleGridPointerMove}
               onPointerUp={handleGridPointerUp}
               onPointerCancel={handleGridPointerCancel}
@@ -3274,6 +3485,25 @@ export function Timeline() {
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        title="Delete shift?"
+        description="This can’t be undone."
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
+        isLoading={confirmDeleteLoading}
+        onCancel={closeConfirmDelete}
+        onConfirm={handleConfirmDeleteShift}
+      >
+        {confirmDeleteShift ? (
+          <div className="rounded-md border border-theme-primary/60 bg-theme-timeline/60 px-3 py-2 text-xs text-theme-secondary">
+            <div className="font-semibold text-theme-primary">{confirmDeleteEmployeeName}</div>
+            <div>{formatHour(confirmDeleteShift.startHour)} - {formatHour(confirmDeleteShift.endHour)}</div>
+            {confirmDeleteShift.job ? <div className="text-theme-muted">{confirmDeleteShift.job}</div> : null}
+          </div>
+        ) : null}
+      </ConfirmDialog>
 
       {tooltip && typeof document !== 'undefined'
         ? createPortal(
@@ -3289,11 +3519,19 @@ export function Timeline() {
             document.body
           )
         : null}
+      {dayMoveTimeTooltip && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              className="fixed z-[10000] rounded-md border border-sky-300/70 bg-theme-secondary/95 px-2 py-1 text-[11px] font-semibold text-theme-primary shadow-lg pointer-events-none"
+              style={{ left: dayMoveTimeTooltip.left, top: dayMoveTimeTooltip.top }}
+            >
+              {dayMoveTimeTooltip.label}
+            </div>,
+            document.body
+          )
+        : null}
 
       </div>
-      <DragOverlay zIndex={90}>
-        {activeDraggedShift ? <TimelineShiftDragOverlay shift={activeDraggedShift} /> : null}
-      </DragOverlay>
     </DndContext>
   );
 }

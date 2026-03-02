@@ -9,10 +9,10 @@ import { getUserRole, isManagerRole } from '../utils/role';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
 import { ScheduleToolbar } from './ScheduleToolbar';
+import { ConfirmDialog } from './ui/ConfirmDialog';
 import { apiFetch } from '../lib/apiClient';
 import {
   DndContext,
-  DragOverlay,
   MeasuringStrategy,
   PointerSensor,
   type DragEndEvent,
@@ -31,6 +31,7 @@ const PX_PER_DAY = 100;
 const SHIFT_DND_PREFIX = 'shift:';
 const CELL_DND_PREFIX = 'cell:';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const CROSS_EMPLOYEE_Y_THRESHOLD_PX = 20;
 const SCHEDULE_CLIPBOARD_KEY = 'crewshyft:scheduleClipboard:v1';
 const CLIPBOARD_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
@@ -104,6 +105,21 @@ function parseCellDropId(rawId: unknown): CellDropTarget | null {
   return { organizationId, userId, date };
 }
 
+function getClientPointFromEvent(event: Event | null | undefined): { x: number; y: number } | null {
+  if (!event) return null;
+  if ('clientX' in event && 'clientY' in event) {
+    const mouseLike = event as MouseEvent;
+    return { x: mouseLike.clientX, y: mouseLike.clientY };
+  }
+  if ('touches' in event) {
+    const touchEvent = event as TouchEvent;
+    const firstTouch = touchEvent.touches[0] ?? touchEvent.changedTouches[0];
+    if (!firstTouch) return null;
+    return { x: firstTouch.clientX, y: firstTouch.clientY };
+  }
+  return null;
+}
+
 function formatPublishWeekLabel(start: Date, end: Date): string {
   const startMonthDay = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const endMonthDay = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -124,6 +140,7 @@ type WeekShiftCardProps = {
   isContextMenuTarget: boolean;
   isPendingMove: boolean;
   dragEnabled: boolean;
+  dragDisabledReason?: string;
   onClick: (event: React.MouseEvent<HTMLDivElement>) => void;
   onDoubleClick: (event: React.MouseEvent<HTMLDivElement>) => void;
   onMouseEnter: () => void;
@@ -139,6 +156,7 @@ function WeekShiftCard({
   isContextMenuTarget,
   isPendingMove,
   dragEnabled,
+  dragDisabledReason,
   onClick,
   onDoubleClick,
   onMouseEnter,
@@ -165,12 +183,17 @@ function WeekShiftCard({
       onDoubleClick={onDoubleClick}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
+      onPointerDown={() => {
+        if (!dragEnabled && process.env.NODE_ENV !== 'production') {
+          console.debug('[WeekView] drag disabled', { shiftId: shift.id, reason: dragDisabledReason ?? 'unknown' });
+        }
+      }}
       className={`relative px-1 py-0.5 rounded text-[9px] truncate transition-transform ${
         dragEnabled ? 'cursor-grab hover:scale-[1.02]' : 'cursor-pointer'
       } ${
         isDraftShift ? 'border border-amber-400/60 border-dashed' : ''
       } ${isBaselinePublished ? 'ring-1 ring-emerald-400/40' : ''} ${
-        isActiveDragCard ? 'opacity-0 pointer-events-none cursor-grabbing' : ''
+        isActiveDragCard ? 'opacity-85 pointer-events-none cursor-grabbing shadow-lg ring-1 ring-sky-300/70' : ''
       } ${isPendingMove ? 'opacity-60' : ''} ${
         isContextMenuTarget
           ? 'ring-2 ring-amber-300/95 ring-offset-2 ring-offset-theme-timeline shadow-[0_0_0_1px_rgba(251,191,36,0.4)]'
@@ -182,12 +205,28 @@ function WeekShiftCard({
         backgroundColor: jobColor.bgColor,
         borderLeft: `2px solid ${jobColor.color}`,
         color: jobColor.color,
-        transform: isActiveDragCard ? undefined : dragTransform,
+        transform: dragTransform,
       }}
       title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
       {...(dragEnabled ? attributes : {})}
       {...(dragEnabled ? listeners : {})}
     >
+      <div
+        data-resize-handle="start"
+        className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize opacity-60"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+      />
+      <div
+        data-resize-handle="end"
+        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize opacity-60"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+      />
       {isDraftShift && (
         <span className="absolute top-0 right-0 px-1 rounded bg-amber-500/30 text-[7px] font-semibold text-amber-100/90">
           DRAFT
@@ -248,25 +287,6 @@ function WeekGridCell({
     >
       <div ref={setNodeRef} className="absolute inset-0 pointer-events-none" />
       <div className="relative h-full">{children}</div>
-    </div>
-  );
-}
-
-function WeekShiftDragOverlay({ shift }: { shift: Shift }) {
-  const jobColor = getJobColorClasses(shift.job);
-  const shiftDuration = shift.endHour - shift.startHour;
-  return (
-    <div
-      className="relative px-1 py-0.5 rounded text-[9px] truncate shadow-lg pointer-events-none"
-      style={{
-        minWidth: '76px',
-        backgroundColor: jobColor.bgColor,
-        borderLeft: `2px solid ${jobColor.color}`,
-        color: jobColor.color,
-      }}
-      title={`${formatHour(shift.startHour)} - ${formatHour(shift.endHour)}`}
-    >
-      {Math.round(shiftDuration)}h
     </div>
   );
 }
@@ -370,10 +390,14 @@ export function WeekView() {
   const [contextMenu, setContextMenu] = useState<ScheduleContextMenu | null>(null);
   const [contextMenuShiftHighlightId, setContextMenuShiftHighlightId] = useState<string | null>(null);
   const [contextMenuCellHighlightId, setContextMenuCellHighlightId] = useState<string | null>(null);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [confirmDeleteShiftId, setConfirmDeleteShiftId] = useState<string | null>(null);
+  const [confirmDeleteLoading, setConfirmDeleteLoading] = useState(false);
   const [optimisticShiftMoves, setOptimisticShiftMoves] = useState<Record<string, OptimisticShiftMove>>({});
   const [optimisticCreatedShifts, setOptimisticCreatedShifts] = useState<OptimisticCreatedShift[]>([]);
   const [optimisticDeletedShiftIds, setOptimisticDeletedShiftIds] = useState<string[]>([]);
   const [pendingMoveShiftIds, setPendingMoveShiftIds] = useState<string[]>([]);
+  const dragStartRef = useRef<{ startX: number; startY: number; originUserId: string } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
   const sensors = useSensors(
@@ -381,6 +405,27 @@ export function WeekView() {
       activationConstraint: { distance: 6 },
     })
   );
+  const collisionDetectionStrategy = useCallback((args: Parameters<typeof pointerWithin>[0]) => {
+    const dragStart = dragStartRef.current;
+    if (!dragStart || !args.pointerCoordinates) return pointerWithin(args);
+    const pointerY = args.pointerCoordinates.y;
+    const deltaY = Math.abs(pointerY - dragStart.startY);
+    if (deltaY >= CROSS_EMPLOYEE_Y_THRESHOLD_PX) {
+      return pointerWithin(args);
+    }
+    const lockedContainers = args.droppableContainers.filter((container) => {
+      const target = parseCellDropId(container.id);
+      if (!target) return true;
+      return target.userId === dragStart.originUserId;
+    });
+    if (lockedContainers.length === 0) {
+      return pointerWithin(args);
+    }
+    return pointerWithin({
+      ...args,
+      droppableContainers: lockedContainers,
+    });
+  }, []);
   const sortableShiftIds = useMemo(
     () => scopedShifts.map((shift) => buildShiftDragId(shift.id)),
     [scopedShifts]
@@ -400,10 +445,14 @@ export function WeekView() {
     const hiddenIds = new Set(optimisticDeletedShiftIds);
     return merged.filter((shift) => !hiddenIds.has(shift.id));
   }, [optimisticCreatedShifts, optimisticDeletedShiftIds, optimisticShiftMoves, scopedShifts]);
-  const activeDraggedShift = useMemo(
-    () => (draggingShiftId ? displayShifts.find((shift) => shift.id === draggingShiftId) ?? null : null),
-    [displayShifts, draggingShiftId]
+  const confirmDeleteShift = useMemo(
+    () => (confirmDeleteShiftId ? scopedShifts.find((shift) => shift.id === confirmDeleteShiftId) ?? null : null),
+    [confirmDeleteShiftId, scopedShifts]
   );
+  const confirmDeleteEmployeeName = useMemo(() => {
+    if (!confirmDeleteShift) return 'Unknown';
+    return filteredEmployees.find((employee) => employee.id === confirmDeleteShift.employeeId)?.name ?? 'Unknown';
+  }, [confirmDeleteShift, filteredEmployees]);
 
   // Calculate grid width based on days
   const gridWidth = 7 * PX_PER_DAY;
@@ -726,21 +775,28 @@ export function WeekView() {
     closeContextMenu();
   }, [closeContextMenu, contextMenu, handlePasteShiftFromClipboard]);
 
-  const handleContextDeleteShift = useCallback(async () => {
+  const handleContextDeleteShift = useCallback(() => {
     if (!contextMenu || contextMenu.type !== 'shift' || !contextMenu.shiftId) return;
-    const shiftId = contextMenu.shiftId;
+    closeContextMenu();
+    setConfirmDeleteShiftId(contextMenu.shiftId);
+    setConfirmDeleteOpen(true);
+    setConfirmDeleteLoading(false);
+  }, [closeContextMenu, contextMenu]);
+
+  const closeConfirmDelete = useCallback(() => {
+    if (confirmDeleteLoading) return;
+    setConfirmDeleteOpen(false);
+    setConfirmDeleteShiftId(null);
+  }, [confirmDeleteLoading]);
+
+  const handleConfirmDeleteShift = useCallback(async () => {
+    const shiftId = confirmDeleteShiftId;
+    if (!shiftId) return;
     if (!isManager) {
       showToast('Not permitted', 'error');
-      closeContextMenu();
       return;
     }
-    const confirmed = window.confirm("Delete this shift? This can't be undone.");
-    if (!confirmed) {
-      closeContextMenu();
-      return;
-    }
-
-    closeContextMenu();
+    setConfirmDeleteLoading(true);
     setOptimisticDeletedShiftIds((prev) => (prev.includes(shiftId) ? prev : [...prev, shiftId]));
 
     try {
@@ -752,12 +808,16 @@ export function WeekView() {
       }
       setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
       showToast('Shift deleted', 'success');
+      setConfirmDeleteOpen(false);
+      setConfirmDeleteShiftId(null);
     } catch (error) {
       setOptimisticDeletedShiftIds((prev) => prev.filter((id) => id !== shiftId));
       const message = error instanceof Error ? error.message : String(error);
       showToast(`Delete failed: ${message}`, 'error');
+    } finally {
+      setConfirmDeleteLoading(false);
     }
-  }, [closeContextMenu, contextMenu, deleteShift, isManager, showToast]);
+  }, [confirmDeleteShiftId, deleteShift, isManager, showToast]);
 
   const showDevDropToast = useCallback((message: string) => {
     if (process.env.NODE_ENV !== 'production') {
@@ -779,7 +839,17 @@ export function WeekView() {
     const dragTarget = parseShiftDragId(event.active.id);
     if (!dragTarget) return;
     setDraggingShiftId(dragTarget.shiftId);
-  }, []);
+    if (process.env.NODE_ENV !== 'production') {
+      showToast(`Drag start: ${dragTarget.shiftId}`, 'success');
+    }
+    const sourceShift = scopedShifts.find((shift) => shift.id === dragTarget.shiftId);
+    const point = getClientPointFromEvent(event.activatorEvent);
+    dragStartRef.current = {
+      startX: point?.x ?? 0,
+      startY: point?.y ?? 0,
+      originUserId: sourceShift?.employeeId ?? '',
+    };
+  }, [scopedShifts, showToast]);
 
   const handleDragOver = useCallback((event: DragOverEvent) => {
     const dropTarget = parseCellDropId(event.over?.id);
@@ -793,6 +863,7 @@ export function WeekView() {
   const clearDragIndicators = useCallback(() => {
     setDraggingShiftId(null);
     setDragOverCellId(null);
+    dragStartRef.current = null;
   }, []);
 
   const handleDragCancel = useCallback(() => {
@@ -829,6 +900,8 @@ export function WeekView() {
       showDevDropToast('Drop blocked (permissions/date/etc.)');
       return;
     }
+    const allowCrossEmployee = Math.abs(event.delta.y) >= CROSS_EMPLOYEE_Y_THRESHOLD_PX;
+    const targetUserId = allowCrossEmployee ? dropTarget.userId : sourceShift.employeeId;
     if (!canEditDate(sourceShift.date) || !canEditDate(dropTarget.date)) {
       showDevDropToast('Drop blocked (permissions/date/etc.)');
       showToast("Past schedules can't be edited.", 'error');
@@ -839,13 +912,13 @@ export function WeekView() {
       return;
     }
 
-    const targetHasTimeOff = hasApprovedTimeOff(dropTarget.userId, dropTarget.date);
+    const targetHasTimeOff = hasApprovedTimeOff(targetUserId, dropTarget.date);
     if (targetHasTimeOff) {
       showDevDropToast('Drop blocked (permissions/date/etc.)');
       showToast('Employee has approved time off on this date', 'error');
       return;
     }
-    const targetHasBlockedShift = hasBlockedShiftOnDate(dropTarget.userId, dropTarget.date);
+    const targetHasBlockedShift = hasBlockedShiftOnDate(targetUserId, dropTarget.date);
     if (targetHasBlockedShift) {
       showDevDropToast('Drop blocked (permissions/date/etc.)');
       showToast('This employee is blocked out on that date', 'error');
@@ -857,7 +930,7 @@ export function WeekView() {
       return;
     }
 
-    const sameCell = sourceShift.employeeId === dropTarget.userId && sourceShift.date === dropTarget.date;
+    const sameCell = sourceShift.employeeId === targetUserId && sourceShift.date === dropTarget.date;
     if (sameCell) return;
 
     const previousMove = optimisticShiftMoves[sourceShift.id];
@@ -868,14 +941,14 @@ export function WeekView() {
     setOptimisticShiftMoves((prev) => ({
       ...prev,
       [sourceShift.id]: {
-        employeeId: dropTarget.userId,
+        employeeId: targetUserId,
         date: dropTarget.date,
       },
     }));
     markShiftMovePending(sourceShift.id, true);
 
     const result = await updateShift(sourceShift.id, {
-      employeeId: dropTarget.userId,
+      employeeId: targetUserId,
       date: dropTarget.date,
       startHour: nextStartHour,
       endHour: nextEndHour,
@@ -1242,7 +1315,7 @@ export function WeekView() {
 
       <DndContext
         sensors={sensors}
-        collisionDetection={pointerWithin}
+        collisionDetection={collisionDetectionStrategy}
         measuring={{
           droppable: {
             strategy: MeasuringStrategy.Always,
@@ -1474,6 +1547,13 @@ export function WeekView() {
                                   const isBaselinePublished = scheduleMode === 'draft' && shift.scheduleState !== 'draft';
                                   const isPendingMove = pendingMoveShiftIds.includes(shift.id);
                                   const dragEnabled = canEditDate(shift.date) && isManager && !isPendingMove;
+                                  const dragDisabledReason = !isManager
+                                    ? 'not-manager'
+                                    : !canEditDate(shift.date)
+                                    ? 'date-locked'
+                                    : isPendingMove
+                                    ? 'pending-move'
+                                    : undefined;
 
                                   return (
                                     <WeekShiftCard
@@ -1486,6 +1566,7 @@ export function WeekView() {
                                       isContextMenuTarget={contextMenuShiftHighlightId === shift.id}
                                       isPendingMove={isPendingMove}
                                       dragEnabled={dragEnabled}
+                                      dragDisabledReason={dragDisabledReason}
                                       onClick={(e) => handleShiftCardClick(shift, e)}
                                       onDoubleClick={(e) => {
                                         e.stopPropagation();
@@ -1565,9 +1646,25 @@ export function WeekView() {
           )}
         </div>
       )}
-      <DragOverlay zIndex={70}>
-        {activeDraggedShift ? <WeekShiftDragOverlay shift={activeDraggedShift} /> : null}
-      </DragOverlay>
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        title="Delete shift?"
+        description="This can’t be undone."
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
+        isLoading={confirmDeleteLoading}
+        onCancel={closeConfirmDelete}
+        onConfirm={handleConfirmDeleteShift}
+      >
+        {confirmDeleteShift ? (
+          <div className="rounded-md border border-theme-primary/60 bg-theme-timeline/60 px-3 py-2 text-xs text-theme-secondary">
+            <div className="font-semibold text-theme-primary">{confirmDeleteEmployeeName}</div>
+            <div>{formatHour(confirmDeleteShift.startHour)} - {formatHour(confirmDeleteShift.endHour)}</div>
+            {confirmDeleteShift.job ? <div className="text-theme-muted">{confirmDeleteShift.job}</div> : null}
+          </div>
+        ) : null}
+      </ConfirmDialog>
       </DndContext>
     </div>
   );
