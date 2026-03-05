@@ -196,12 +196,20 @@ export function ScheduleToolbar({
                         if (publishDayDisabled || isPublishing) return;
                         void handlePublish('day');
                       }}
-                      className={`w-full text-left px-3 py-2 transition-colors ${
+                      className={`group/menuitem relative w-full text-left pl-5 pr-3 py-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/80 focus-visible:ring-inset ${
                         publishDayDisabled || isPublishing
                           ? 'text-theme-muted cursor-not-allowed'
-                          : 'text-theme-primary hover:bg-theme-hover'
+                          : 'text-theme-primary hover:bg-theme-hover focus-visible:bg-theme-hover'
                       }`}
                     >
+                      <span
+                        aria-hidden="true"
+                        className={`absolute left-1.5 top-2 bottom-2 w-0.5 rounded-full transition-colors ${
+                          publishDayDisabled || isPublishing
+                            ? 'bg-transparent'
+                            : 'bg-transparent group-hover/menuitem:bg-amber-400/90 group-focus-visible/menuitem:bg-amber-400/90'
+                        }`}
+                      />
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-start gap-2">
                           <CloudUpload className="w-4 h-4 mt-0.5" />
@@ -222,12 +230,20 @@ export function ScheduleToolbar({
                         if (publishWeekDisabled || isPublishing) return;
                         void handlePublish('week');
                       }}
-                      className={`w-full text-left px-3 py-2 transition-colors ${
+                      className={`group/menuitem relative w-full text-left pl-5 pr-3 py-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/80 focus-visible:ring-inset ${
                         publishWeekDisabled || isPublishing
                           ? 'text-theme-muted cursor-not-allowed'
-                          : 'text-theme-primary hover:bg-theme-hover'
+                          : 'text-theme-primary hover:bg-theme-hover focus-visible:bg-theme-hover'
                       }`}
                     >
+                      <span
+                        aria-hidden="true"
+                        className={`absolute left-1.5 top-2 bottom-2 w-0.5 rounded-full transition-colors ${
+                          publishWeekDisabled || isPublishing
+                            ? 'bg-transparent'
+                            : 'bg-transparent group-hover/menuitem:bg-amber-400/90 group-focus-visible/menuitem:bg-amber-400/90'
+                        }`}
+                      />
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-start gap-2">
                           <CloudUpload className="w-4 h-4 mt-0.5" />

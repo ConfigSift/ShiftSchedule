@@ -6,7 +6,8 @@ import { jsonError } from '@/lib/apiResponses';
 import {
   STRIPE_MONTHLY_PRICE_ID,
   STRIPE_ANNUAL_PRICE_ID,
-  STRIPE_INTRO_COUPON_ID,
+  STRIPE_INTRO_PROMO_CODE_MONTHLY,
+  STRIPE_INTRO_PROMO_CODE_YEARLY,
   BILLING_ENABLED,
 } from '@/lib/stripe/config';
 import { getOrCreateStripeCustomer } from '@/lib/stripe/helpers';
@@ -30,6 +31,61 @@ type CheckoutPayload = {
 
 function logCheckoutEvent(event: string, payload: Record<string, unknown>) {
   console.error(`[billing:create-checkout-session] ${event}`, payload);
+}
+
+async function resolveIntroDiscount(
+  stripeClient: Stripe,
+  introCodeOrCouponId: string,
+  stripeRequestOptions?: Stripe.RequestOptions,
+): Promise<Stripe.Checkout.SessionCreateParams.Discount[] | null> {
+  const normalized = String(introCodeOrCouponId ?? '').trim();
+  if (!normalized) return null;
+
+  if (normalized.startsWith('coupon_')) {
+    try {
+      const coupon = await stripeClient.coupons.retrieve(normalized, stripeRequestOptions);
+      if (!('deleted' in coupon) || !coupon.deleted) {
+        return [{ coupon: coupon.id }];
+      }
+    } catch (error) {
+      console.warn('[billing:create-checkout-session] intro_coupon_lookup_failed', {
+        couponId: normalized,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return null;
+  }
+
+  try {
+    const promotionCodes = await stripeClient.promotionCodes.list(
+      { code: normalized, active: true, limit: 1 },
+      stripeRequestOptions,
+    );
+    const promotionCodeId = promotionCodes.data[0]?.id;
+    if (promotionCodeId) {
+      return [{ promotion_code: promotionCodeId }];
+    }
+  } catch (error) {
+    console.warn('[billing:create-checkout-session] intro_promo_lookup_failed', {
+      code: normalized,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  // Backward compatibility if a coupon ID-like value is provided without coupon_ prefix handling above.
+  try {
+    const coupon = await stripeClient.coupons.retrieve(normalized, stripeRequestOptions);
+    if (!('deleted' in coupon) || !coupon.deleted) {
+      return [{ coupon: coupon.id }];
+    }
+  } catch (error) {
+    console.warn('[billing:create-checkout-session] intro_coupon_lookup_failed', {
+      couponId: normalized,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  return null;
 }
 
 type PublishablePrefix = 'pk_test' | 'pk_live' | 'missing';
@@ -101,7 +157,8 @@ export async function POST(request: NextRequest) {
   const hasStripePublishableKey = Boolean(stripePublishableKey);
   const hasMonthlyPriceId = Boolean(String(STRIPE_MONTHLY_PRICE_ID ?? '').trim());
   const hasAnnualPriceId = Boolean(String(STRIPE_ANNUAL_PRICE_ID ?? '').trim());
-  const hasIntroCoupon = Boolean(String(STRIPE_INTRO_COUPON_ID ?? '').trim());
+  const hasMonthlyIntroCode = Boolean(String(STRIPE_INTRO_PROMO_CODE_MONTHLY ?? '').trim());
+  const hasYearlyIntroCode = Boolean(String(STRIPE_INTRO_PROMO_CODE_YEARLY ?? '').trim());
 
   let payload: CheckoutPayload;
   try {
@@ -131,7 +188,8 @@ export async function POST(request: NextRequest) {
     keyMode,
     hasMonthlyPriceId,
     hasAnnualPriceId,
-    hasIntroCoupon,
+    hasMonthlyIntroCode,
+    hasYearlyIntroCode,
     origin: requestOrigin,
     appBaseUrl,
     loginBaseUrl,
@@ -367,6 +425,34 @@ export async function POST(request: NextRequest) {
     subscriptionMetadata.organization_id = effectiveOrganizationId;
     checkoutMetadata.organization_id = effectiveOrganizationId;
   }
+  const stripeRequestOptions = stripeAccountForRequest
+    ? { stripeAccount: stripeAccountForRequest }
+    : undefined;
+
+  const monthlyIntroCode = String(STRIPE_INTRO_PROMO_CODE_MONTHLY ?? '').trim();
+  const yearlyIntroCode = String(STRIPE_INTRO_PROMO_CODE_YEARLY ?? '').trim();
+  const selectedIntroCode =
+    priceId === STRIPE_ANNUAL_PRICE_ID
+      ? yearlyIntroCode
+      : priceId === STRIPE_MONTHLY_PRICE_ID
+      ? monthlyIntroCode
+      : '';
+  const selectedIntroCodeType =
+    priceId === STRIPE_ANNUAL_PRICE_ID
+      ? 'yearly'
+      : priceId === STRIPE_MONTHLY_PRICE_ID
+      ? 'monthly'
+      : 'none';
+  const resolvedIntroDiscount = selectedIntroCode
+    ? await resolveIntroDiscount(stripeClient, selectedIntroCode, stripeRequestOptions)
+    : null;
+  if (selectedIntroCode && !resolvedIntroDiscount) {
+    console.warn('[billing:create-checkout-session] intro_discount_unavailable', {
+      selectedIntroCodeType,
+      code: selectedIntroCode,
+      priceIdPrefix: priceId.slice(0, 8),
+    });
+  }
 
   const params: Stripe.Checkout.SessionCreateParams = uiMode === 'embedded'
     ? {
@@ -392,8 +478,8 @@ export async function POST(request: NextRequest) {
       metadata: checkoutMetadata,
     };
 
-  if (STRIPE_INTRO_COUPON_ID) {
-    params.discounts = [{ coupon: STRIPE_INTRO_COUPON_ID }];
+  if (resolvedIntroDiscount) {
+    params.discounts = resolvedIntroDiscount;
   } else {
     params.allow_promotion_codes = true;
   }
@@ -413,8 +499,11 @@ export async function POST(request: NextRequest) {
     desiredQuantity,
     mode: params.mode,
     lineItemsCount: params.line_items?.length ?? 0,
+    paymentMethodTypes: params.payment_method_types ?? null,
     hasDiscounts: Boolean(params.discounts && params.discounts.length > 0),
     allowPromotionCodes: Boolean(params.allow_promotion_codes),
+    selectedIntroCodeType,
+    hasSelectedIntroCode: Boolean(selectedIntroCode),
     priceIdPrefix: priceId.slice(0, 8),
     successUrl: normalizedSuccessUrl,
     cancelUrl: normalizedCancelUrl,
@@ -449,9 +538,6 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const stripeRequestOptions = stripeAccountForRequest
-      ? { stripeAccount: stripeAccountForRequest }
-      : undefined;
     const session = await stripeClient.checkout.sessions.create(params, stripeRequestOptions);
     const stripeRequestId = session.lastResponse?.requestId ?? null;
     const checkoutUrl = String(session.url ?? '').trim();

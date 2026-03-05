@@ -28,12 +28,11 @@ function isActive(pathname: string, href: string) {
 
 export function AdminSidebar({ email }: { email: string }) {
   const pathname = usePathname();
-  const [mobileOpen, setMobileOpen] = useState(false);
+  return <AdminSidebarInner key={pathname} email={email} pathname={pathname} />;
+}
 
-  // Close mobile menu on route change
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [pathname]);
+function AdminSidebarInner({ email, pathname }: { email: string; pathname: string }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   // Close mobile menu on resize above breakpoint
   useEffect(() => {

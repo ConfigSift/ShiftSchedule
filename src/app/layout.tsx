@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "../components/ThemeProvider";
 import { AppShell } from "../components/AppShell";
+import { QueryProvider } from "../components/QueryProvider";
 
 export const metadata: Metadata = {
   title: "CrewShyft - Restaurant Scheduling",
@@ -16,9 +17,11 @@ export default function RootLayout({
   return (
     <html lang="en" className="light">
       <body className="font-sans">
-        <ThemeProvider>
-          <AppShell>{children}</AppShell>
-        </ThemeProvider>
+        <QueryProvider>
+          <ThemeProvider>
+            <AppShell>{children}</AppShell>
+          </ThemeProvider>
+        </QueryProvider>
       </body>
     </html>
   );

@@ -33,7 +33,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
     pathname.startsWith('/subscribe') ||
     pathname.startsWith('/demo');
   const isChatPage = pathname === '/chat' || pathname.startsWith('/chat/');
-  const isDashboardPage = pathname === '/dashboard';
+  const isDashboardPage = pathname === '/dashboard' || pathname === '/schedule/builder';
   const isRestaurantsPage = pathname === '/restaurants';
   const isEmployeeNavPage =
     pathname === '/dashboard' ||
@@ -44,7 +44,7 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
     pathname.startsWith('/chat/');
 
   const { currentUser, activeRestaurantId, refreshProfile } = useAuthStore();
-  const { showToast } = useScheduleStore();
+  const { showToast, loadRestaurantData } = useScheduleStore();
   const { isProfileModalOpen, closeProfileModal } = useUIStore();
   const role = getUserRole(currentUser?.role);
   const isAdmin = role === 'ADMIN';
@@ -171,6 +171,9 @@ export function AppShell({ children, showFooter = true }: AppShellProps) {
         onClose={closeProfileModal}
         onSaved={async () => {
           await refreshProfile();
+          if (activeRestaurantId) {
+            await loadRestaurantData(activeRestaurantId);
+          }
           showToast('Profile updated', 'success');
         }}
         onSuccess={(message) => showToast(message, 'success')}

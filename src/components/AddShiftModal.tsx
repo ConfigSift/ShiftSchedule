@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { Modal } from './Modal';
-import { JOB_OPTIONS, SECTIONS, Section } from '../types';
-import { formatHour, timeRangesOverlap } from '../utils/timeUtils';
+import { timeRangesOverlap } from '../utils/timeUtils';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { useDemoContext } from '../demo/DemoProvider';
+import { useRestaurantEmployees } from '../hooks/useRestaurantEmployees';
 
 type ShiftModalData = {
   id?: string;
@@ -25,12 +25,40 @@ type ShiftModalData = {
   restaurantId?: string | null;
 };
 
+type TimeOption = {
+  value: number;
+  label: string;
+};
+
+type EmployeeOption = {
+  id: string;
+  label: string;
+  jobs: string[];
+  isActive: boolean;
+};
+
+function formatTimeOptionLabel(hourValue: number): string {
+  if (hourValue === 24) return '12am';
+  const wholeHour = Math.floor(hourValue);
+  const minutes = Math.round((hourValue - wholeHour) * 60);
+  const meridiem = wholeHour >= 12 ? 'pm' : 'am';
+  const hour12 = wholeHour % 12 === 0 ? 12 : wholeHour % 12;
+  return minutes === 30 ? `${hour12}:30${meridiem}` : `${hour12}${meridiem}`;
+}
+
+const TIME_OPTIONS: TimeOption[] = [
+  ...Array.from({ length: 46 }, (_, i) => {
+    const value = (i + 2) / 2; // 1.0 through 23.5 in 30-minute increments
+    return { value, label: formatTimeOptionLabel(value) };
+  }),
+  { value: 24, label: '12am' },
+];
+
 export function AddShiftModal() {
   const { 
     modalType, 
     modalData, 
     closeModal, 
-    getEmployeesForRestaurant,
     locations,
     addShift, 
     updateShift,
@@ -65,14 +93,61 @@ export function AddShiftModal() {
   const [notes, setNotes] = useState('');
   const [job, setJob] = useState('');
   const [locationId, setLocationId] = useState('');
-  const [showAllJobs, setShowAllJobs] = useState(false);
+
+  const scopedRestaurantId = shiftModalData?.restaurantId ?? activeRestaurantId;
+  const {
+    data: employees = [],
+    isLoading,
+  } = useRestaurantEmployees(scopedRestaurantId);
+  const schedulerEmployees = useMemo(
+    () => employees,
+    [employees],
+  );
+  const employeeOptions = useMemo<EmployeeOption[]>(
+    () => {
+      const all = schedulerEmployees
+        .map((employee) => {
+          const id = String(employee.id ?? '').trim();
+          const label = String(employee.full_name ?? employee.name ?? '').trim();
+          const jobs = Array.from(new Set((employee.jobs ?? [])
+            .map((jobLabel) => String(jobLabel ?? '').trim())
+            .filter((jobLabel) => jobLabel.length > 0)));
+          return { id, label, jobs, isActive: Boolean(employee.isActive) };
+        })
+        .filter((option) => option.id.length > 0 && option.label.length > 0);
+      const activeOnly = all.filter((option) => option.isActive);
+      const source = activeOnly.length > 0 ? activeOnly : all;
+      return source.sort((a, b) => a.label.localeCompare(b.label));
+    },
+    [schedulerEmployees],
+  );
+  const employeeById = useMemo(
+    () => new Map(employeeOptions.map((option) => [option.id, option])),
+    [employeeOptions],
+  );
+  const effectiveEmployeeId = employeeById.has(employeeId) ? employeeId : '';
+  const selectedEmployeeOption = effectiveEmployeeId ? employeeById.get(effectiveEmployeeId) ?? null : null;
+  const selectedEmployee: EmployeeOption | null = selectedEmployeeOption;
+  const jobsForEmployee = selectedEmployee?.jobs ?? [];
+  const effectiveJob = job && jobsForEmployee.includes(job)
+    ? job
+    : jobsForEmployee.length === 1
+      ? jobsForEmployee[0]
+      : '';
+  const hasEligibleJobs = jobsForEmployee.length > 0;
+  const isJobEligible = effectiveJob ? jobsForEmployee.includes(effectiveJob) : false;
+  const isEmployeeListEmpty = !isLoading && employeeOptions.length === 0;
+  const openDropRequestForShift =
+    isEditing && shiftModalData?.id
+      ? dropRequests.find((request) => request.shiftId === shiftModalData.id && request.status === 'open')
+      : undefined;
 
   const overlapWarning = (() => {
-    if (!employeeId || !date || startHour >= endHour) return null;
+    if (!effectiveEmployeeId || !date || startHour >= endHour) return null;
     const excludeId = isEditing && shiftModalData?.id ? String(shiftModalData.id) : undefined;
     const conflicts = shifts.filter(
       (shift) =>
-        shift.employeeId === employeeId &&
+        shift.employeeId === effectiveEmployeeId &&
         shift.date === date &&
         !shift.isBlocked
     );
@@ -99,7 +174,6 @@ export function AddShiftModal() {
         setNotes(shiftModalData.notes || '');
         setJob(shiftModalData.job || '');
         setLocationId(shiftModalData.locationId || '');
-        setShowAllJobs(false);
       } else {
         setEmployeeId(shiftModalData?.employeeId || '');
         setDate(shiftModalData?.date || selectedDate.toISOString().split('T')[0]);
@@ -108,11 +182,20 @@ export function AddShiftModal() {
         setNotes('');
         setJob('');
         setLocationId('');
-        setShowAllJobs(false);
       }
     }, 0);
     return () => clearTimeout(timer);
   }, [isOpen, isEditing, selectedDate, shiftModalData]);
+
+  const handleEmployeeChange = (nextEmployeeId: string) => {
+    setEmployeeId(nextEmployeeId);
+    const nextJobs = employeeById.get(nextEmployeeId)?.jobs ?? [];
+    setJob((prevJob) => {
+      if (nextJobs.length === 1) return nextJobs[0];
+      if (prevJob && nextJobs.includes(prevJob)) return prevJob;
+      return '';
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,12 +205,12 @@ export function AddShiftModal() {
       return;
     }
 
-    if (!employeeId || !date || startHour >= endHour) {
+    if (!effectiveEmployeeId || !date || startHour >= endHour) {
       showToast('Please fill in all fields correctly', 'error');
       return;
     }
 
-    if (!job) {
+    if (!effectiveJob) {
       showToast('Please select a job', 'error');
       return;
     }
@@ -150,7 +233,7 @@ export function AddShiftModal() {
     }
 
     let allowTimeOffOverride = false;
-    if (hasApprovedTimeOff(employeeId, date)) {
+    if (hasApprovedTimeOff(effectiveEmployeeId, date)) {
       const confirmed = window.confirm(
         'Employee has approved time off on this date. Assign anyway?'
       );
@@ -159,7 +242,7 @@ export function AddShiftModal() {
     }
 
     let allowBlockedOverride = false;
-    if (hasBlockedShiftOnDate(employeeId, date)) {
+    if (hasBlockedShiftOnDate(effectiveEmployeeId, date)) {
       const confirmed = window.confirm(
         'This employee is blocked out on that date. Assign anyway?'
       );
@@ -173,12 +256,12 @@ export function AddShiftModal() {
       const result = await updateShift(
         shiftModalData.id,
         {
-        employeeId,
+        employeeId: effectiveEmployeeId,
         date,
         startHour,
         endHour,
         notes: notes || undefined,
-        job,
+        job: effectiveJob,
         locationId: normalizedLocationId,
         restaurantId: shiftModalData.restaurantId ?? activeRestaurantId ?? '',
         },
@@ -192,12 +275,12 @@ export function AddShiftModal() {
     } else {
       const result = await addShift(
         {
-          employeeId,
+          employeeId: effectiveEmployeeId,
           date,
           startHour,
           endHour,
           notes: notes || undefined,
-          job,
+          job: effectiveJob,
           locationId: normalizedLocationId,
           restaurantId: activeRestaurantId ?? '',
         },
@@ -225,24 +308,6 @@ export function AddShiftModal() {
     }
   };
 
-  const activeEmployees = getEmployeesForRestaurant(activeRestaurantId).filter(e => e.isActive);
-  const employeesBySection = activeEmployees.reduce((acc, emp) => {
-    if (!acc[emp.section]) acc[emp.section] = [];
-    acc[emp.section].push(emp);
-    return acc;
-  }, {} as Record<Section, typeof activeEmployees>);
-
-  const selectedEmployee = activeEmployees.find((emp) => emp.id === employeeId);
-  const eligibleJobs = selectedEmployee?.jobs ?? [];
-  const hasEligibleJobs = eligibleJobs.length > 0;
-  const isJobEligible = job ? eligibleJobs.includes(job) : false;
-  const openDropRequestForShift =
-    isEditing && shiftModalData?.id
-      ? dropRequests.find((request) => request.shiftId === shiftModalData.id && request.status === 'open')
-      : undefined;
-
-  const hourOptions = Array.from({ length: 19 }, (_, i) => i + 6);
-
   const handleOfferShift = () => {
     if (!isEditing || !shiftModalData?.id) return;
     if (openDropRequestForShift) {
@@ -253,6 +318,20 @@ export function AddShiftModal() {
     createDropRequest(shiftModalData.id, shiftModalData.employeeId ?? '');
     showToast('Shift offered in demo exchange', 'success');
   };
+
+  if (isOpen && isLoading && employeeOptions.length === 0) {
+    return (
+      <Modal
+        key={modalKey}
+        isOpen={isOpen}
+        onClose={closeModal}
+        title={isEditing ? 'Edit Shift' : 'Add Shift'}
+        size="md"
+      >
+        <div className="p-4 text-sm text-theme-secondary">Loading staff...</div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
@@ -271,21 +350,26 @@ export function AddShiftModal() {
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">Employee</label>
           <select
-            value={employeeId}
-            onChange={(e) => setEmployeeId(e.target.value)}
+            value={effectiveEmployeeId}
+            onChange={(e) => handleEmployeeChange(e.target.value)}
             className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
             required
-            disabled={!isManager}
+            disabled={!isManager || isLoading}
           >
-            <option value="">Select employee...</option>
-            {(Object.keys(SECTIONS) as Section[]).map(section => (
-              <optgroup key={section} label={SECTIONS[section].label}>
-                {employeesBySection[section]?.map(emp => (
-                  <option key={emp.id} value={emp.id}>{emp.name}</option>
-                ))}
-              </optgroup>
+            <option value="">
+              {isLoading ? 'Loading employees...' : 'Select employee...'}
+            </option>
+            {employeeOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
             ))}
           </select>
+          {isEmployeeListEmpty && (
+            <p className="text-xs text-red-400 mt-1">
+              No employees found for this restaurant.
+            </p>
+          )}
         </div>
 
         <div>
@@ -303,34 +387,21 @@ export function AddShiftModal() {
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">Job / Position</label>
           <select
-            value={job}
+            value={effectiveJob}
             onChange={(e) => setJob(e.target.value)}
             className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
             required
             disabled={!isManager}
           >
             <option value="">Select job...</option>
-            {(showAllJobs || !hasEligibleJobs ? JOB_OPTIONS : eligibleJobs).map((option) => {
-              const eligible = eligibleJobs.includes(option);
-              const label = showAllJobs && hasEligibleJobs && !eligible ? `${option} (Ineligible)` : option;
+            {jobsForEmployee.map((option) => {
               return (
                 <option key={option} value={option}>
-                  {label}
+                  {option}
                 </option>
               );
             })}
           </select>
-          {hasEligibleJobs && (
-            <label className="mt-2 flex items-center gap-2 text-xs text-theme-tertiary">
-              <input
-                type="checkbox"
-                checked={showAllJobs}
-                onChange={(e) => setShowAllJobs(e.target.checked)}
-                className="accent-amber-500"
-              />
-              Show all jobs
-            </label>
-          )}
           {selectedEmployee && !hasEligibleJobs && (
             <p className="text-xs text-red-400 mt-1">
               No eligible jobs assigned.
@@ -364,8 +435,10 @@ export function AddShiftModal() {
               className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
               disabled={!isManager}
             >
-              {hourOptions.map(hour => (
-                <option key={hour} value={hour}>{formatHour(hour)}</option>
+              {TIME_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
               ))}
             </select>
           </div>
@@ -377,10 +450,11 @@ export function AddShiftModal() {
               className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
               disabled={!isManager}
             >
-              {hourOptions.map(hour => (
-                <option key={hour} value={hour} disabled={hour <= startHour}>{formatHour(hour)}</option>
+              {TIME_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value} disabled={option.value <= startHour}>
+                  {option.label}
+                </option>
               ))}
-              <option value={24}>12am (midnight)</option>
             </select>
           </div>
         </div>
@@ -431,7 +505,7 @@ export function AddShiftModal() {
           </button>
           <button
             type="submit"
-            disabled={!isManager || (selectedEmployee && !hasEligibleJobs) || Boolean(overlapWarning)}
+            disabled={!isManager || isLoading || isEmployeeListEmpty || (selectedEmployee && !hasEligibleJobs) || Boolean(overlapWarning)}
             className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 hover:bg-amber-400 transition-all hover:scale-105 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isEditing ? 'Save Changes' : 'Add Shift'}

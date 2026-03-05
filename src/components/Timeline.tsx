@@ -13,6 +13,10 @@ import { getJobColorClasses } from '../lib/jobColors';
 import { compareJobs } from '../utils/jobOrder';
 import { ScheduleToolbar } from './ScheduleToolbar';
 import { ConfirmDialog } from './ui/ConfirmDialog';
+import { PublishScheduleDialog, type PublishEmailMode } from './ui/PublishScheduleDialog';
+import { PasteJobPickerDialog } from './ui/PasteJobPickerDialog';
+import { apiFetch } from '../lib/apiClient';
+import { resolvePasteJob } from '../utils/pasteJobResolution';
 import {
   DndContext,
   MeasuringStrategy,
@@ -72,6 +76,7 @@ type TimelineScheduleClipboard = {
   sourceOrgId: string;
   template: {
     shiftId: string;
+    sourceUserId?: string;
     startHour: number;
     endHour: number;
     job: string;
@@ -86,8 +91,21 @@ type TimelineCellTarget = {
   date: string;
 };
 
+type PublishNotificationResponse = {
+  ok?: boolean;
+  sent?: number;
+  failed?: number;
+  skippedNoEmail?: number;
+  requestId?: string;
+};
+
 type TimelineShiftTarget = {
   shiftId: string;
+};
+
+type TimelineOptimisticShiftMove = {
+  employeeId: string;
+  date: string;
 };
 
 function buildTimelineCellId(organizationId: string, userId: string, date: string): string {
@@ -113,6 +131,14 @@ function parseTimelineShiftId(rawId: unknown): TimelineShiftTarget | null {
   const shiftId = value.slice(SHIFT_ID_PREFIX.length);
   if (!shiftId) return null;
   return { shiftId };
+}
+
+function isKeyboardInputTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest('[contenteditable="true"]'));
 }
 
 function getClientPointFromEvent(event: Event | null | undefined): { x: number; y: number } | null {
@@ -353,6 +379,10 @@ export function Timeline() {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmDeleteShiftId, setConfirmDeleteShiftId] = useState<string | null>(null);
   const [confirmDeleteLoading, setConfirmDeleteLoading] = useState(false);
+  const [publishConfirmOpen, setPublishConfirmOpen] = useState(false);
+  const [publishConfirmScope, setPublishConfirmScope] = useState<'day' | 'week' | null>(null);
+  const [publishEmailMode, setPublishEmailMode] = useState<PublishEmailMode>('all');
+  const [publishConfirmLoading, setPublishConfirmLoading] = useState(false);
   const [draggingShiftId, setDraggingShiftId] = useState<string | null>(null);
   const [dragOverCellId, setDragOverCellId] = useState<string | null>(null);
   const [dragOrigin, setDragOrigin] = useState<{
@@ -362,6 +392,8 @@ export function Timeline() {
     startHour: number;
     endHour: number;
   } | null>(null);
+  const [optimisticShiftMoves, setOptimisticShiftMoves] = useState<Record<string, TimelineOptimisticShiftMove>>({});
+  const [pendingMoveShiftIds, setPendingMoveShiftIds] = useState<string[]>([]);
   const [dayMoveTimeTooltip, setDayMoveTimeTooltip] = useState<{
     left: number;
     top: number;
@@ -369,6 +401,10 @@ export function Timeline() {
   } | null>(null);
   const [isPendingRowMove, setIsPendingRowMove] = useState(false);
   const [optimisticDeletedShiftIds, setOptimisticDeletedShiftIds] = useState<string[]>([]);
+  const [pasteJobPickerOpen, setPasteJobPickerOpen] = useState(false);
+  const [pasteJobPickerEmployeeName, setPasteJobPickerEmployeeName] = useState('');
+  const [pasteJobPickerOptions, setPasteJobPickerOptions] = useState<string[]>([]);
+  const [pasteJobPickerSelectedJob, setPasteJobPickerSelectedJob] = useState('');
   const dragStartRef = useRef<{ startX: number; startY: number; originUserId: string } | null>(null);
   const [dragPreview, setDragPreview] = useState<Record<string, { startHour: number; endHour: number; date?: string }>>({});
   const [commitOverridesVersion, setCommitOverridesVersion] = useState(0);
@@ -420,6 +456,7 @@ export function Timeline() {
   const activePointerIdRef = useRef<number | null>(null);
   const scrollToDateRef = useRef<(date: Date, options?: { reanchor?: boolean }) => void>(() => {});
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const pasteJobPickerResolveRef = useRef<((job: string | null) => void) | null>(null);
 
   // Timeline range state (day vs week)
 
@@ -501,38 +538,91 @@ export function Timeline() {
     : !hasDraftInWeek
     ? 'No draft changes'
     : undefined;
-  const handlePublishDay = useCallback(async () => {
+  const openPublishConfirm = useCallback((scope: 'day' | 'week') => {
+    setPublishConfirmScope(scope);
+    setPublishEmailMode('all');
+    setPublishConfirmOpen(true);
+  }, []);
+
+  const closePublishConfirm = useCallback(() => {
+    if (publishConfirmLoading) return;
+    setPublishConfirmOpen(false);
+    setPublishConfirmScope(null);
+  }, [publishConfirmLoading]);
+
+  const handlePublishDay = useCallback(() => {
+    if (!publishDayEnabled) return;
+    openPublishConfirm('day');
+  }, [openPublishConfirm, publishDayEnabled]);
+
+  const handlePublishWeek = useCallback(() => {
+    if (!publishWeekEnabled) return;
+    openPublishConfirm('week');
+  }, [openPublishConfirm, publishWeekEnabled]);
+
+  const handleConfirmPublish = useCallback(async () => {
+    if (!publishConfirmScope) return;
     if (!activeRestaurantId) {
       showToast('Select a restaurant first.', 'error');
       return;
     }
-    const result = await publishDraftRange({
-      startDate: selectedDateYmd,
-      endDate: selectedDateYmd,
-    });
-    if (!result.success) {
-      showToast(result.error || 'Unable to publish day.', 'error');
-      return;
+
+    const scope = publishConfirmScope;
+    const startDate = scope === 'day' ? selectedDateYmd : weekStartYmd;
+    const endDate = scope === 'day' ? selectedDateYmd : weekEndYmd;
+
+    setPublishConfirmLoading(true);
+    try {
+      const publishResult = await publishDraftRange({
+        startDate,
+        endDate,
+      });
+      if (!publishResult.success) {
+        showToast(publishResult.error || `Unable to publish ${scope}.`, 'error');
+        return;
+      }
+
+      await loadRestaurantData(activeRestaurantId);
+      showToast(scope === 'day' ? `Published ${publishDayLabel}.` : `Published week ${publishWeekLabel}.`, 'success');
+
+      if (publishEmailMode !== 'none') {
+        const notifyResult = await apiFetch<PublishNotificationResponse>('/api/notifications/schedule-published', {
+          method: 'POST',
+          json: {
+            organizationId: activeRestaurantId,
+            scope,
+            rangeStart: startDate,
+            rangeEnd: endDate,
+            mode: publishEmailMode,
+          },
+        });
+        const emailFailed =
+          !notifyResult.ok
+          || !notifyResult.data?.ok
+          || (typeof notifyResult.data?.failed === 'number' && notifyResult.data.failed > 0);
+        if (emailFailed) {
+          showToast('Published, but emails failed to send.', 'error');
+        }
+      }
+
+      setPublishConfirmOpen(false);
+      setPublishConfirmScope(null);
+    } finally {
+      setPublishConfirmLoading(false);
     }
-    await loadRestaurantData(activeRestaurantId);
-    showToast(`Published ${publishDayLabel}.`, 'success');
-  }, [activeRestaurantId, loadRestaurantData, publishDayLabel, publishDraftRange, selectedDateYmd, showToast]);
-  const handlePublishWeek = useCallback(async () => {
-    if (!activeRestaurantId) {
-      showToast('Select a restaurant first.', 'error');
-      return;
-    }
-    const result = await publishDraftRange({
-      startDate: weekStartYmd,
-      endDate: weekEndYmd,
-    });
-    if (!result.success) {
-      showToast(result.error || 'Unable to publish week.', 'error');
-      return;
-    }
-    await loadRestaurantData(activeRestaurantId);
-    showToast(`Published week ${publishWeekLabel}.`, 'success');
-  }, [activeRestaurantId, loadRestaurantData, publishDraftRange, publishWeekLabel, showToast, weekEndYmd, weekStartYmd]);
+  }, [
+    activeRestaurantId,
+    loadRestaurantData,
+    publishConfirmScope,
+    publishDraftRange,
+    publishDayLabel,
+    publishEmailMode,
+    publishWeekLabel,
+    selectedDateYmd,
+    showToast,
+    weekEndYmd,
+    weekStartYmd,
+  ]);
   const handleCopyPreviousDayIntoDraft = useCallback(async () => {
     if (!activeRestaurantId) {
       showToast('Select a restaurant first.', 'error');
@@ -555,6 +645,18 @@ export function Timeline() {
   const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
+  const shiftsForRender = useMemo(() => {
+    if (Object.keys(optimisticShiftMoves).length === 0) return scopedShifts;
+    return scopedShifts.map((shift) => {
+      const move = optimisticShiftMoves[shift.id];
+      if (!move) return shift;
+      return {
+        ...shift,
+        employeeId: move.employeeId,
+        date: move.date,
+      };
+    });
+  }, [optimisticShiftMoves, scopedShifts]);
   const locationMap = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name])),
     [locations]
@@ -653,6 +755,7 @@ export function Timeline() {
       sourceOrgId: activeRestaurantId,
       template: {
         shiftId: sourceShift.id,
+        sourceUserId: sourceShift.employeeId,
         startHour: sourceShift.startHour,
         endHour: sourceShift.endHour,
         job,
@@ -673,6 +776,49 @@ export function Timeline() {
     }
     showToast('Shift copied', 'success');
   }, [activeRestaurantId, canUseCopyPaste, optimisticDeletedShiftIdSet, scopedShifts, showToast, updateSessionClipboard]);
+
+  const resolvePasteJobPicker = useCallback((job: string | null) => {
+    const resolver = pasteJobPickerResolveRef.current;
+    pasteJobPickerResolveRef.current = null;
+    setPasteJobPickerOpen(false);
+    setPasteJobPickerEmployeeName('');
+    setPasteJobPickerOptions([]);
+    setPasteJobPickerSelectedJob('');
+    if (resolver) resolver(job);
+  }, []);
+
+  const requestPasteJobSelection = useCallback((options: string[], employeeName: string) => {
+    const normalizedOptions = options
+      .map((option) => String(option ?? '').trim())
+      .filter(Boolean);
+
+    if (normalizedOptions.length === 0) {
+      return Promise.resolve<string | null>(null);
+    }
+
+    if (pasteJobPickerResolveRef.current) {
+      pasteJobPickerResolveRef.current(null);
+      pasteJobPickerResolveRef.current = null;
+    }
+
+    setPasteJobPickerEmployeeName(employeeName);
+    setPasteJobPickerOptions(normalizedOptions);
+    setPasteJobPickerSelectedJob(normalizedOptions[0]);
+    setPasteJobPickerOpen(true);
+
+    return new Promise<string | null>((resolve) => {
+      pasteJobPickerResolveRef.current = resolve;
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pasteJobPickerResolveRef.current) {
+        pasteJobPickerResolveRef.current(null);
+        pasteJobPickerResolveRef.current = null;
+      }
+    };
+  }, []);
 
   const handlePasteShiftFromClipboard = useCallback(async (targetCellId?: string | null) => {
     const effectiveCellId = targetCellId ?? activeCellId;
@@ -732,6 +878,31 @@ export function Timeline() {
       showToast('Paste failed: clipboard template is incomplete', 'error');
       return;
     }
+    const sourceUserId = String(template.sourceUserId ?? '').trim()
+      || scopedShifts.find((shift) => String(shift.id) === String(template.shiftId))?.employeeId
+      || '';
+    const targetEmployeeName =
+      scopedEmployees.find((employee) => employee.id === targetCell.userId)?.name ?? 'This employee';
+    const jobResolution = resolvePasteJob({
+      targetUserId: targetCell.userId,
+      sourceUserId,
+      copiedJob: template.job,
+      employees: scopedEmployees,
+    });
+    let resolvedJob = template.job;
+    if (jobResolution.mode === 'auto') {
+      resolvedJob = jobResolution.job;
+    } else if (jobResolution.mode === 'pick') {
+      const selectedJob = await requestPasteJobSelection(
+        jobResolution.options.map((option) => option.name),
+        targetEmployeeName,
+      );
+      if (!selectedJob) return;
+      resolvedJob = selectedJob;
+    } else {
+      resolvedJob = jobResolution.job;
+      showToast('Employee has no job set; using copied job.', 'error');
+    }
 
     try {
       const result = await addShift({
@@ -742,7 +913,7 @@ export function Timeline() {
         endHour: template.endHour,
         notes: template.notes,
         isBlocked: false,
-        job: template.job,
+        job: resolvedJob,
         locationId: template.locationId ?? null,
         scheduleState: scheduleMode,
       });
@@ -765,8 +936,11 @@ export function Timeline() {
     addShift,
     canUseCopyPaste,
     isEditableDate,
+    requestPasteJobSelection,
     scheduleClipboard,
     scheduleMode,
+    scopedEmployees,
+    scopedShifts,
     showToast,
     updateSessionClipboard,
   ]);
@@ -799,9 +973,10 @@ export function Timeline() {
 
   const handleContextPasteShift = useCallback(async () => {
     if (!contextMenu || contextMenu.type !== 'cell' || !contextMenu.cellId) return;
-    setActiveCellId(contextMenu.cellId);
-    await handlePasteShiftFromClipboard(contextMenu.cellId);
+    const cellId = contextMenu.cellId;
+    setActiveCellId(cellId);
     closeContextMenu();
+    await handlePasteShiftFromClipboard(cellId);
   }, [closeContextMenu, contextMenu, handlePasteShiftFromClipboard]);
 
   const handleContextDeleteShift = useCallback(() => {
@@ -855,15 +1030,99 @@ export function Timeline() {
     dragStartRef.current = null;
   }, []);
 
+  const markShiftMovePending = useCallback((shiftId: string, pending: boolean) => {
+    setPendingMoveShiftIds((prev) => {
+      if (pending) {
+        if (prev.includes(shiftId)) return prev;
+        return [...prev, shiftId];
+      }
+      return prev.filter((id) => id !== shiftId);
+    });
+  }, []);
+
+  const commitShiftMove = useCallback(async ({
+    shiftId,
+    targetUserId,
+    targetDate,
+    startHour,
+    endHour,
+  }: {
+    shiftId: string;
+    targetUserId: string;
+    targetDate: string;
+    startHour: number;
+    endHour: number;
+  }) => {
+    const previousMove = optimisticShiftMoves[shiftId];
+    setOptimisticShiftMoves((prev) => ({
+      ...prev,
+      [shiftId]: {
+        employeeId: targetUserId,
+        date: targetDate,
+      },
+    }));
+    markShiftMovePending(shiftId, true);
+    setIsPendingRowMove(true);
+
+    try {
+      const result = await updateShift(shiftId, {
+        employeeId: targetUserId,
+        date: targetDate,
+        startHour,
+        endHour,
+      });
+
+      if (!result.success) {
+        setOptimisticShiftMoves((prev) => {
+          const next = { ...prev };
+          if (previousMove) {
+            next[shiftId] = previousMove;
+          } else {
+            delete next[shiftId];
+          }
+          return next;
+        });
+        const requestId = (result as Record<string, unknown>).requestId;
+        const requestSuffix = typeof requestId === 'string' ? ` (request: ${requestId})` : '';
+        showToast(`Move failed: ${result.error ?? 'Unknown error'}${requestSuffix}`, 'error');
+        return false;
+      }
+
+      setOptimisticShiftMoves((prev) => {
+        const next = { ...prev };
+        delete next[shiftId];
+        return next;
+      });
+      return true;
+    } catch (error) {
+      setOptimisticShiftMoves((prev) => {
+        const next = { ...prev };
+        if (previousMove) {
+          next[shiftId] = previousMove;
+        } else {
+          delete next[shiftId];
+        }
+        return next;
+      });
+      const message = error instanceof Error ? error.message : String(error);
+      showToast(`Move failed: ${message}`, 'error');
+      return false;
+    } finally {
+      markShiftMovePending(shiftId, false);
+      setIsPendingRowMove(false);
+    }
+  }, [markShiftMovePending, optimisticShiftMoves, showToast, updateShift]);
+
   const handleDayDragStart = useCallback((event: DragStartEvent) => {
     if (!dayReassignEnabled) return;
     const dragTarget = parseTimelineShiftId(event.active.id);
     if (!dragTarget) return;
+    if (pendingMoveShiftIds.includes(dragTarget.shiftId)) return;
     setDraggingShiftId(dragTarget.shiftId);
     if (process.env.NODE_ENV !== 'production') {
       showToast('Drag start', 'success');
     }
-    const sourceShift = scopedShifts.find((shift) => shift.id === dragTarget.shiftId && !shift.isBlocked);
+    const sourceShift = shiftsForRender.find((shift) => shift.id === dragTarget.shiftId && !shift.isBlocked);
     if (sourceShift) {
       setDragOrigin({
         shiftId: sourceShift.id,
@@ -888,13 +1147,13 @@ export function Timeline() {
         label: `${formatHour(sourceShift.startHour)}-${formatHour(sourceShift.endHour)}`,
       });
     }
-  }, [dayReassignEnabled, scopedShifts, showToast]);
+  }, [dayReassignEnabled, pendingMoveShiftIds, shiftsForRender, showToast]);
 
   const handleDayDragMove = useCallback((event: DragMoveEvent) => {
     if (!dayReassignEnabled) return;
     const dragTarget = parseTimelineShiftId(event.active.id);
     if (!dragTarget) return;
-    const sourceShift = scopedShifts.find(
+    const sourceShift = shiftsForRender.find(
       (shift) => shift.id === dragTarget.shiftId && !shift.isBlocked && !optimisticDeletedShiftIdSet.has(shift.id)
     );
     if (!sourceShift) {
@@ -924,7 +1183,7 @@ export function Timeline() {
       top: startPoint.startY + event.delta.y - 28,
       label: `${formatHour(preview.startHour)}-${formatHour(preview.endHour)}`,
     });
-  }, [dayReassignEnabled, optimisticDeletedShiftIdSet, scopedShifts]);
+  }, [dayReassignEnabled, optimisticDeletedShiftIdSet, shiftsForRender]);
 
   const handleDayDragOver = useCallback((event: DragOverEvent) => {
     if (!dayReassignEnabled) return;
@@ -947,10 +1206,15 @@ export function Timeline() {
       return;
     }
 
-    const sourceShift = scopedShifts.find(
+    const sourceShift = shiftsForRender.find(
       (shift) => shift.id === dragTarget.shiftId && !shift.isBlocked && !optimisticDeletedShiftIdSet.has(shift.id)
     );
     if (!sourceShift) {
+      clearDayReassignState();
+      return;
+    }
+
+    if (pendingMoveShiftIds.includes(sourceShift.id)) {
       clearDayReassignState();
       return;
     }
@@ -981,6 +1245,23 @@ export function Timeline() {
 
     const allowCrossEmployee = Math.abs(event.delta.y) >= CROSS_EMPLOYEE_Y_THRESHOLD_PX;
     const targetUserId = allowCrossEmployee ? parsedTarget.userId : sourceShift.employeeId;
+    const targetHasTimeOff = hasApprovedTimeOff(targetUserId, parsedTarget.date);
+    if (targetHasTimeOff) {
+      showToast('Move failed: Employee has approved time off on this date', 'error');
+      clearDayReassignState();
+      return;
+    }
+    const targetHasBlockedShift = hasBlockedShiftOnDate(targetUserId, parsedTarget.date);
+    if (targetHasBlockedShift) {
+      showToast('Move failed: This employee is blocked out on that date', 'error');
+      clearDayReassignState();
+      return;
+    }
+    if (hasOrgBlackoutOnDate(parsedTarget.date)) {
+      showToast('Move failed: Organization blackout day cannot receive shifts.', 'error');
+      clearDayReassignState();
+      return;
+    }
 
     const employeeChanged = sourceShift.employeeId !== targetUserId;
     const dateChanged = sourceShift.date !== parsedTarget.date;
@@ -990,52 +1271,38 @@ export function Timeline() {
         clearDayReassignState();
         return;
       }
-      setIsPendingRowMove(true);
-      try {
-        const result = await updateShift(sourceShift.id, {
-          employeeId: sourceShift.employeeId,
-          date: sourceShift.date,
-          startHour: snappedMove.startHour,
-          endHour: snappedMove.endHour,
-        });
-        if (!result.success) {
-          showToast(result.error ?? 'Failed to move shift', 'error');
-        } else {
-          showToast('Shift moved', 'success');
-        }
-      } finally {
-        setIsPendingRowMove(false);
-        clearDayReassignState();
-      }
+      clearDayReassignState();
+      await commitShiftMove({
+        shiftId: sourceShift.id,
+        targetUserId: sourceShift.employeeId,
+        targetDate: sourceShift.date,
+        startHour: snappedMove.startHour,
+        endHour: snappedMove.endHour,
+      });
       return;
     }
 
-    setIsPendingRowMove(true);
-    try {
-      const result = await updateShift(sourceShift.id, {
-        employeeId: targetUserId,
-        date: parsedTarget.date,
-        startHour: sourceShift.startHour,
-        endHour: sourceShift.endHour,
-      });
-      if (!result.success) {
-        showToast(result.error ?? 'Failed to move shift', 'error');
-      } else {
-        showToast('Shift moved', 'success');
-      }
-    } finally {
-      setIsPendingRowMove(false);
-      clearDayReassignState();
-    }
+    clearDayReassignState();
+    await commitShiftMove({
+      shiftId: sourceShift.id,
+      targetUserId,
+      targetDate: parsedTarget.date,
+      startHour: sourceShift.startHour,
+      endHour: sourceShift.endHour,
+    });
   }, [
     activeRestaurantId,
+    commitShiftMove,
     clearDayReassignState,
     dayReassignEnabled,
+    hasApprovedTimeOff,
+    hasBlockedShiftOnDate,
+    hasOrgBlackoutOnDate,
     isEditableDate,
     optimisticDeletedShiftIdSet,
-    scopedShifts,
+    pendingMoveShiftIds,
+    shiftsForRender,
     showToast,
-    updateShift,
   ]);
 
   const handleDayDragCancel = useCallback(() => {
@@ -1055,7 +1322,7 @@ export function Timeline() {
     const earliestByEmployee = new Map<string, { date: string; startHour: number; job: string }>();
     const earliestStartByEmployee = new Map<string, number>();
 
-    scopedShifts.forEach((shift) => {
+    shiftsForRender.forEach((shift) => {
       if (shift.isBlocked) return;
       if (!filteredIds.has(shift.employeeId)) return;
       if (shift.date < rangeStart || shift.date > rangeEnd) return;
@@ -1081,7 +1348,7 @@ export function Timeline() {
     });
 
     // Sort rows within each job by earliest start time on the selected day.
-    scopedShifts.forEach((shift) => {
+    shiftsForRender.forEach((shift) => {
       if (shift.isBlocked) return;
       if (!filteredIds.has(shift.employeeId)) return;
       if (shift.date !== dateString) return;
@@ -1138,7 +1405,7 @@ export function Timeline() {
     }
 
     return rows;
-  }, [filteredEmployees, scopedShifts, jobOrder, rangeStartDate, rangeEndDate, dateString]);
+  }, [dateString, filteredEmployees, jobOrder, rangeEndDate, rangeStartDate, shiftsForRender]);
 
   // Fit timeline grid width to available space
   useLayoutEffect(() => {
@@ -1222,10 +1489,10 @@ export function Timeline() {
   const continuousShifts = useMemo(() => {
     if (!continuousDays) return [];
     const dateStrings = continuousDaysData.map((d) => d.dateString);
-    return scopedShifts.filter(
+    return shiftsForRender.filter(
       (s) => dateStrings.includes(s.date) && !s.isBlocked && !optimisticDeletedShiftIdSet.has(s.id)
     );
-  }, [continuousDays, continuousDaysData, optimisticDeletedShiftIdSet, scopedShifts]);
+  }, [continuousDays, continuousDaysData, optimisticDeletedShiftIdSet, shiftsForRender]);
 
   const getDayIndexForDateString = useCallback(
     (targetDate: string) => continuousDaysData.findIndex((d) => d.dateString === targetDate),
@@ -2348,6 +2615,43 @@ export function Timeline() {
   }, []);
 
   useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (isKeyboardInputTarget(event.target)) return;
+      const hasShortcutModifier = event.ctrlKey || event.metaKey;
+      if (!hasShortcutModifier) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'c' && key !== 'v') return;
+
+      event.preventDefault();
+      if (!canUseCopyPaste) {
+        showToast('Not permitted', 'error');
+        return;
+      }
+
+      if (key === 'c') {
+        if (!selectedShiftId) {
+          showToast('Select a shift first', 'error');
+          return;
+        }
+        handleCopyShiftToClipboard(selectedShiftId);
+        return;
+      }
+
+      void handlePasteShiftFromClipboard();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    canUseCopyPaste,
+    handleCopyShiftToClipboard,
+    handlePasteShiftFromClipboard,
+    selectedShiftId,
+    showToast,
+  ]);
+
+  useEffect(() => {
     const root = timelineScrollRef.current;
     if (!root) return;
 
@@ -2546,7 +2850,7 @@ export function Timeline() {
               );
             }
             const employee = row.employee;
-            const employeeShifts = scopedShifts.filter(
+            const employeeShifts = shiftsForRender.filter(
               s =>
                 s.employeeId === employee.id
                 && s.date === dateString
@@ -3344,12 +3648,6 @@ export function Timeline() {
   const publishDisabledReason = isManager ? undefined : 'Only managers can publish.';
   const isPasteMenuDisabled = !canUseCopyPaste || !hasUsableClipboard;
   const pasteMenuTitle = !hasUsableClipboard ? 'Nothing to paste' : !canUseCopyPaste ? 'Not permitted' : undefined;
-  const contextMenuCellTarget = contextMenu?.type === 'cell' && contextMenu.cellId
-    ? parseTimelineCellId(contextMenu.cellId)
-    : null;
-  const contextMenuTargetUserShort = contextMenuCellTarget?.userId
-    ? contextMenuCellTarget.userId.slice(0, 8)
-    : null;
   const showContinuousToggle = viewMode === 'day';
   const rightActions = showContinuousToggle ? (
     <div className="w-[220px] h-9 rounded-lg border border-theme-primary bg-theme-secondary/80 p-1 grid grid-cols-2 gap-1">
@@ -3395,11 +3693,6 @@ export function Timeline() {
       <div
         className="h-full flex flex-col min-h-0 bg-theme-timeline overflow-hidden relative transition-theme"
       >
-      {process.env.NODE_ENV !== 'production' && (
-        <div className="fixed top-2 left-2 z-[9999] rounded bg-zinc-900/90 px-2 py-1 text-[10px] font-semibold text-zinc-100">
-          DEV VIEW: DayView
-        </div>
-      )}
       <ScheduleToolbar
         viewMode={viewMode}
         selectedDate={selectedDate}
@@ -3583,11 +3876,6 @@ export function Timeline() {
           )}
           {contextMenu.type === 'cell' && (
             <div className="px-1">
-              {process.env.NODE_ENV !== 'production' && contextMenuCellTarget && (
-                <p className="px-2 py-1 text-[10px] text-zinc-500">
-                  Paste to: {contextMenuTargetUserShort ?? '-'} {contextMenuCellTarget.date}
-                </p>
-              )}
               <button
                 type="button"
                 className={`w-full rounded px-3 py-2 text-left text-sm ${
@@ -3604,6 +3892,14 @@ export function Timeline() {
           )}
         </div>
       )}
+      <PublishScheduleDialog
+        open={publishConfirmOpen}
+        selectedMode={publishEmailMode}
+        isLoading={publishConfirmLoading}
+        onModeChange={setPublishEmailMode}
+        onCancel={closePublishConfirm}
+        onConfirm={handleConfirmPublish}
+      />
       <ConfirmDialog
         open={confirmDeleteOpen}
         title="Delete shift?"
@@ -3623,6 +3919,15 @@ export function Timeline() {
           </div>
         ) : null}
       </ConfirmDialog>
+      <PasteJobPickerDialog
+        open={pasteJobPickerOpen}
+        employeeName={pasteJobPickerEmployeeName}
+        options={pasteJobPickerOptions}
+        selectedJob={pasteJobPickerSelectedJob}
+        onSelectJob={setPasteJobPickerSelectedJob}
+        onCancel={() => resolvePasteJobPicker(null)}
+        onConfirm={() => resolvePasteJobPicker(pasteJobPickerSelectedJob || null)}
+      />
 
       {tooltip && typeof document !== 'undefined'
         ? createPortal(

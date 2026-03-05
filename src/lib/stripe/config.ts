@@ -12,11 +12,18 @@ export const STRIPE_MONTHLY_PRICE_ID = process.env.STRIPE_PRICE_PRO_MONTHLY ?? '
 export const STRIPE_ANNUAL_PRICE_ID = process.env.STRIPE_PRICE_PRO_YEARLY ?? '';
 
 /**
- * Coupon for the $1 intro month.
- * Created in Stripe Dashboard: amount_off=1899, duration='once', currency='usd'.
- * Applied only to the first invoice of the monthly plan.
+ * Intro promotion code string for the monthly plan checkout.
+ * Example: CREWSHYFTPRO1
  */
-export const STRIPE_INTRO_COUPON_ID = process.env.STRIPE_COUPON_INTRO ?? '';
+export const STRIPE_INTRO_PROMO_CODE_MONTHLY = process.env.STRIPE_COUPON_INTRO_MONTHLY
+  ?? process.env.STRIPE_COUPON_INTRO
+  ?? '';
+
+/**
+ * Intro promotion code string for the annual plan checkout.
+ * Example: CREWSHYFTPROANNUAL1
+ */
+export const STRIPE_INTRO_PROMO_CODE_YEARLY = process.env.STRIPE_COUPON_INTRO_YEARLY ?? '';
 
 /** Webhook signing secret for verifying Stripe events */
 export const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? '';

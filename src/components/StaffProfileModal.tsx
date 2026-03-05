@@ -7,6 +7,7 @@ import { normalizeJobs } from '../utils/jobs';
 import { getUserRole } from '../utils/role';
 import { apiFetch } from '../lib/apiClient';
 import { supabase } from '../lib/supabase/client';
+import { useQueryClient } from '@tanstack/react-query';
 
 type StaffProfileUser = {
   id: string;
@@ -74,6 +75,7 @@ export function StaffProfileModal({
   onError,
   onAuthError,
 }: StaffProfileModalProps) {
+  const queryClient = useQueryClient();
   const allowAdminCreation = process.env.NEXT_PUBLIC_ENABLE_ADMIN_CREATION === 'true';
   const [fullName, setFullName] = useState('');
   const [loginEmail, setLoginEmail] = useState('');
@@ -498,6 +500,12 @@ export function StaffProfileModal({
         console.log('[StaffProfileModal] response user.jobPay', returnedUser?.jobPay);
       }
       await onSaved(updatedUser);
+      await queryClient.invalidateQueries({
+        queryKey: ['restaurantEmployees'],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ['restaurantEmployees', organizationId],
+      });
       if (loginEmailSuccessMessage) {
         onSuccess?.(loginEmailSuccessMessage);
       }

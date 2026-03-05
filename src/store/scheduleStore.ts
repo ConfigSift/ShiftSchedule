@@ -299,6 +299,7 @@ interface ScheduleState {
   setSectionSelectedForRestaurant: (section: string, selected: boolean, restaurantId: string | null) => void;
   toggleEmployee: (employeeId: string) => void;
   setSelectedEmployeeIds: (ids: string[]) => void;
+  setEmployeesForRestaurant: (restaurantId: string, nextEmployees: Employee[]) => void;
   selectAllEmployeesForRestaurant: (restaurantId: string | null) => void;
   deselectAllEmployees: () => void;
   toggleWorkingTodayOnly: () => void;
@@ -917,6 +918,33 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   })),
 
   setSelectedEmployeeIds: (ids) => set({ selectedEmployeeIds: ids }),
+
+  setEmployeesForRestaurant: (restaurantId, nextEmployees) => set((state) => {
+    if (!restaurantId) return {};
+
+    const scopedExistingIds = new Set(
+      state.employees
+        .filter((employee) => employee.restaurantId === restaurantId)
+        .map((employee) => employee.id),
+    );
+    const normalizedEmployees = nextEmployees.map((employee) => ({
+      ...employee,
+      restaurantId,
+      isActive: employee.isActive ?? true,
+    }));
+    const scopedNextIds = new Set(normalizedEmployees.map((employee) => employee.id));
+    const selectedEmployeeIds = state.selectedEmployeeIds.filter(
+      (id) => !scopedExistingIds.has(id) || scopedNextIds.has(id),
+    );
+
+    return {
+      employees: [
+        ...state.employees.filter((employee) => employee.restaurantId !== restaurantId),
+        ...normalizedEmployees,
+      ],
+      selectedEmployeeIds,
+    };
+  }),
 
   selectAllEmployeesForRestaurant: (restaurantId) => set((state) => {
     if (!restaurantId) return { selectedEmployeeIds: [] };

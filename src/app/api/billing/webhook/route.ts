@@ -240,7 +240,7 @@ async function upsertSubscriptionRow(
  * Stripe webhook handler.
  * Uses request.text() for raw body access (required for signature verification).
  */
-export async function POST(request: NextRequest) {
+export async function handleStripeWebhook(request: NextRequest) {
   console.log('[billing:webhook] env presence', {
     STRIPE_SECRET_KEY: Boolean(process.env.STRIPE_SECRET_KEY),
     STRIPE_WEBHOOK_SECRET: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
@@ -325,6 +325,20 @@ export async function POST(request: NextRequest) {
         );
         break;
 
+      case 'invoice.payment_action_required':
+        await handleInvoicePaymentActionRequired(
+          event.data.object as Stripe.Invoice,
+          supabaseAdminClient,
+        );
+        break;
+
+      case 'payment_intent.requires_action':
+        handlePaymentIntentRequiresAction(
+          event.data.object as Stripe.PaymentIntent,
+          event.id,
+        );
+        break;
+
       default:
         console.log('[billing:webhook] unhandled event type, acknowledging', {
           eventId: event.id,
@@ -338,6 +352,10 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ received: true });
+}
+
+export async function POST(request: NextRequest) {
+  return handleStripeWebhook(request);
 }
 
 // ---------------------------------------------------------------------------
@@ -642,4 +660,71 @@ async function handleInvoicePaymentFailed(
   console.error(
     `[billing:webhook] Payment failed - subscription ${subscriptionId} marked past_due`,
   );
+}
+
+async function handleInvoicePaymentActionRequired(
+  invoice: Stripe.Invoice,
+  supabaseAdminClient: typeof supabaseAdmin,
+) {
+  const subscriptionId = getSubscriptionId(invoice.subscription);
+  if (!subscriptionId) {
+    console.log('[billing:webhook] invoice.payment_action_required without subscription, acknowledging', {
+      invoiceId: invoice.id,
+    });
+    return;
+  }
+
+  const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+  await upsertBillingAccountRow(
+    supabaseAdminClient,
+    subscription,
+    'invoice.payment_action_required',
+    `invoice.payment_action_required:${invoice.id}`,
+  );
+
+  const organizationId = subscription.metadata?.organization_id ?? null;
+  if (!organizationId) {
+    console.log('[billing:webhook] invoice.payment_action_required without organization metadata, billing account only', {
+      invoiceId: invoice.id,
+      subscriptionId: subscription.id,
+      status: subscription.status,
+    });
+    return;
+  }
+
+  const upsertResult = await upsertSubscriptionRow(
+    supabaseAdminClient,
+    subscription,
+    organizationId,
+    'invoice.payment_action_required',
+    `invoice.payment_action_required:${invoice.id}`,
+  );
+
+  if (upsertResult.ignoredMissingOrganization) {
+    console.log('[billing:webhook] invoice.payment_action_required skipped (organization missing)', {
+      organizationId,
+      subscriptionId: subscription.id,
+      status: subscription.status,
+    });
+  } else {
+    console.log('[billing:webhook] invoice.payment_action_required upserted subscription', {
+      organizationId,
+      subscriptionId: subscription.id,
+      status: subscription.status,
+      currentPeriodEnd: subscription.current_period_end,
+    });
+  }
+}
+
+function handlePaymentIntentRequiresAction(
+  paymentIntent: Stripe.PaymentIntent,
+  eventId: string,
+) {
+  console.log('[billing:webhook] payment_intent.requires_action received', {
+    eventId,
+    paymentIntentId: paymentIntent.id,
+    customer: paymentIntent.customer,
+    invoice: paymentIntent.invoice,
+    status: paymentIntent.status,
+  });
 }

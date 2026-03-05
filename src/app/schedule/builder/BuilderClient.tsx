@@ -7,6 +7,7 @@ import { useAuthStore } from '@/store/authStore';
 import { useScheduleStore } from '@/store/scheduleStore';
 import { getWeekStart } from '@/utils/timeUtils';
 import { getUserRole, isManagerRole } from '@/utils/role';
+import { useRestaurantEmployees } from '@/hooks/useRestaurantEmployees';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -29,10 +30,10 @@ export default function BuilderClient() {
     applyRestaurantScope,
     loadRestaurantData,
     scheduleViewSettings,
-    getEmployeesForRestaurant,
     selectAllEmployeesForRestaurant,
     selectedEmployeeIds,
   } = useScheduleStore();
+  const { data: canonicalEmployees = [] } = useRestaurantEmployees(activeRestaurantId);
   const autoSelectedRef = useRef<string | null>(null);
 
   const isManager = useMemo(
@@ -82,14 +83,14 @@ export default function BuilderClient() {
   useEffect(() => {
     if (!isManager || !activeRestaurantId) return;
     if (selectedEmployeeIds.length > 0) return;
-    const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
+    const scopedEmployees = canonicalEmployees.filter((employee) => employee.isActive);
     if (scopedEmployees.length === 0) return;
     if (autoSelectedRef.current === activeRestaurantId) return;
     selectAllEmployeesForRestaurant(activeRestaurantId);
     autoSelectedRef.current = activeRestaurantId;
   }, [
     activeRestaurantId,
-    getEmployeesForRestaurant,
+    canonicalEmployees,
     isManager,
     selectAllEmployeesForRestaurant,
     selectedEmployeeIds.length,

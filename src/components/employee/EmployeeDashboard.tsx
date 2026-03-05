@@ -6,6 +6,7 @@ import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { AddShiftModal } from '../AddShiftModal';
+import { useRestaurantEmployees } from '../../hooks/useRestaurantEmployees';
 import {
   formatDateLong,
   formatHour,
@@ -50,7 +51,7 @@ export function EmployeeDashboard() {
   const {
     loadRestaurantData,
     getShiftsForRestaurant,
-    getEmployeesForRestaurant,
+    setEmployeesForRestaurant,
     openModal,
     scheduleViewSettings,
   } = useScheduleStore();
@@ -72,7 +73,8 @@ export function EmployeeDashboard() {
     [accessibleRestaurants, activeRestaurantId]
   );
 
-  const restaurantEmployees = activeRestaurantId ? getEmployeesForRestaurant(activeRestaurantId) : [];
+  const { data: restaurantEmployees = [], isSuccess: hasCanonicalEmployees } =
+    useRestaurantEmployees(activeRestaurantId);
   const restaurantShifts = activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : [];
   const employeeId = currentUser?.id ?? '';
   const weekStartsOn = normalizeWeekStartsOn(scheduleViewSettings?.weekStartDay ?? 'monday');
@@ -85,6 +87,11 @@ export function EmployeeDashboard() {
   const loadReady = Boolean(isInitialized && activeRestaurantId && employeeId && weekKey);
   const employeeWeekLoadKey =
     loadReady && activeRestaurantId ? `${activeRestaurantId}:${employeeId}:${weekKey}` : null;
+
+  useEffect(() => {
+    if (!activeRestaurantId || !hasCanonicalEmployees) return;
+    setEmployeesForRestaurant(activeRestaurantId, restaurantEmployees);
+  }, [activeRestaurantId, hasCanonicalEmployees, restaurantEmployees, setEmployeesForRestaurant]);
 
   useEffect(() => {
     if (!loadReady || !activeRestaurantId || !employeeId || !employeeWeekLoadKey) {

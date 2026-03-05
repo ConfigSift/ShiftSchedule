@@ -15,6 +15,7 @@ import { useEffect } from 'react';
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { MonthView } from './MonthView';
+import { useRestaurantEmployees } from '../hooks/useRestaurantEmployees';
 
 type DashboardProps = {
   autoLoad?: boolean;
@@ -25,16 +26,24 @@ export function Dashboard({ autoLoad = true }: DashboardProps) {
     viewMode,
     applyRestaurantScope,
     loadRestaurantData,
+    setEmployeesForRestaurant,
     scheduleMode,
   } = useScheduleStore();
   const { activeRestaurantId } = useAuthStore();
   const isDraftMode = scheduleMode === 'draft';
+  const { data: canonicalEmployees = [], isSuccess: hasEmployeeData } =
+    useRestaurantEmployees(activeRestaurantId);
 
   useEffect(() => {
     if (!autoLoad) return;
     applyRestaurantScope(activeRestaurantId);
     loadRestaurantData(activeRestaurantId);
   }, [activeRestaurantId, applyRestaurantScope, autoLoad, loadRestaurantData, scheduleMode]);
+
+  useEffect(() => {
+    if (!activeRestaurantId || !hasEmployeeData) return;
+    setEmployeesForRestaurant(activeRestaurantId, canonicalEmployees);
+  }, [activeRestaurantId, canonicalEmployees, hasEmployeeData, setEmployeesForRestaurant]);
 
 
   return (
