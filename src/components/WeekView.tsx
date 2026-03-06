@@ -36,6 +36,23 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const CROSS_EMPLOYEE_Y_THRESHOLD_PX = 20;
 const SCHEDULE_CLIPBOARD_KEY = 'crewshyft:scheduleClipboard:v1';
 const CLIPBOARD_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const WEEK_ZOOM_STORAGE_KEY = 'crewshyft_week_zoom';
+const WEEK_ZOOM_STEPS = [80, 90, 100, 110, 120] as const;
+const DEFAULT_WEEK_ZOOM_DESKTOP = 90;
+const DEFAULT_WEEK_ZOOM_MOBILE = 100;
+
+type WeekZoomStep = (typeof WEEK_ZOOM_STEPS)[number];
+
+function getDefaultWeekZoom(): WeekZoomStep {
+  if (typeof window === 'undefined') return DEFAULT_WEEK_ZOOM_DESKTOP;
+  return window.innerWidth >= 1024 ? DEFAULT_WEEK_ZOOM_DESKTOP : DEFAULT_WEEK_ZOOM_MOBILE;
+}
+
+function parseStoredWeekZoom(raw: string | null): WeekZoomStep | null {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return null;
+  return WEEK_ZOOM_STEPS.includes(parsed as WeekZoomStep) ? (parsed as WeekZoomStep) : null;
+}
 
 // Returns a short role abbreviation for display inside shift blocks
 function getJobAbbr(job?: string): string {
@@ -297,6 +314,11 @@ function WeekShiftCard({
     ? `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)`
     : undefined;
   const isActiveDragCard = isDragging || isDraggingShiftId;
+  const cardPad = isSingleLayout ? 'var(--shiftPad)' : 'calc(var(--shiftPad) * 0.55)';
+  const cardBottomPad = isSingleLayout ? 'calc(var(--shiftPad) * 2.9)' : 'calc(var(--shiftPad) * 1.7)';
+  const timeFontSize = isSingleLayout ? 'var(--shiftTimeSize)' : 'calc(var(--shiftMetaSize) + 0px)';
+  const metaFontSize = isSingleLayout ? 'var(--shiftMetaSize)' : 'calc(var(--shiftMetaSize) - 1px)';
+  const durationFontSize = isSingleLayout ? 'calc(var(--shiftMetaSize) + 1px)' : 'calc(var(--shiftMetaSize) - 1px)';
 
   return (
     <div
@@ -312,9 +334,7 @@ function WeekShiftCard({
           console.debug('[WeekView] drag disabled', { shiftId: shift.id, reason: dragDisabledReason ?? 'unknown' });
         }
       }}
-      className={`relative z-20 flex min-h-0 h-full flex-col rounded-lg overflow-hidden transition-transform ${
-        isSingleLayout ? 'flex-1 p-3 pb-12 text-[10px]' : 'flex-1 p-2.5 pb-11 text-[9px]'
-      } ${
+      className={`relative z-20 flex min-h-0 h-full flex-col rounded-lg overflow-hidden transition-transform flex-1 ${
         dragEnabled ? 'cursor-grab hover:scale-[1.02] hover:shadow-sm' : 'cursor-pointer'
       } ${
         isDraftShift ? 'border border-amber-400/60 border-dashed' : ''
@@ -336,6 +356,10 @@ function WeekShiftCard({
         borderLeft: `3px solid ${jobColor.color}`,
         color: jobColor.color,
         transform: dragTransform,
+        paddingTop: cardPad,
+        paddingRight: cardPad,
+        paddingLeft: cardPad,
+        paddingBottom: cardBottomPad,
       }}
       title={`${shift.job ? shift.job + ' | ' : ''}${formatShiftTime(shift.startHour)} - ${formatShiftTime(shift.endHour)} (${Math.round(shiftDuration)}h)`}
       {...(dragEnabled ? attributes : {})}
@@ -362,23 +386,42 @@ function WeekShiftCard({
           DRAFT
         </span>
       )}
-      <div className={`${isSingleLayout ? 'space-y-1' : 'space-y-0.5'} min-w-0 flex-1 pr-6 flex flex-col items-start text-left leading-none select-none`}>
+      <div
+        className={`${isSingleLayout ? 'space-y-1' : 'space-y-0.5'} min-w-0 flex-1 flex flex-col items-start text-left leading-none select-none`}
+        style={{ paddingRight: 'calc(var(--shiftPad) * 1.8)' }}
+      >
         <div className="min-w-0">
-          <span className="text-[13px] font-semibold leading-tight truncate whitespace-nowrap overflow-hidden text-ellipsis block">
+          <span
+            className="font-semibold leading-tight truncate whitespace-nowrap overflow-hidden text-ellipsis block"
+            style={{ fontSize: timeFontSize }}
+          >
             {formatShiftTime(shift.startHour)}-{formatShiftTime(shift.endHour)}
           </span>
         </div>
         <div className="min-w-0 opacity-80">
-          <span className="text-[11px] leading-tight truncate whitespace-nowrap overflow-hidden text-ellipsis block">
+          <span
+            className="leading-tight truncate whitespace-nowrap overflow-hidden text-ellipsis block"
+            style={{ fontSize: metaFontSize }}
+          >
             {isSingleLayout ? toDisplayJobLabel(shift.job) : getJobAbbr(shift.job)}
           </span>
         </div>
       </div>
-      <div className="absolute left-3 right-3 bottom-3">
-        <div className={`flex justify-end font-semibold opacity-80 mb-1 leading-none ${isSingleLayout ? 'text-xs' : 'text-[10px]'}`}>
+      <div
+        className="absolute"
+        style={{
+          left: cardPad,
+          right: cardPad,
+          bottom: cardPad,
+        }}
+      >
+        <div className="flex justify-end font-semibold opacity-80 mb-1 leading-none" style={{ fontSize: durationFontSize }}>
           {durationText}
         </div>
-        <div className="relative h-2 w-full rounded-full overflow-hidden" style={{ backgroundColor: barTrackColor }}>
+        <div
+          className="relative w-full rounded-full overflow-hidden"
+          style={{ backgroundColor: barTrackColor, height: isSingleLayout ? 'var(--barH)' : 'calc(var(--barH) * 0.75)' }}
+        >
           <div
             className="absolute top-0 h-full rounded-full"
             style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: barFillColor }}
@@ -406,16 +449,21 @@ function WeekShiftOverlayCard({
   const barTrackColor = withAlpha(jobColor.color, '33');
   const barFillColor = withAlpha(jobColor.color, '66');
   const durationText = formatShiftDuration(shiftDuration);
+  const cardPad = 'var(--shiftPad)';
 
   return (
     <div
-      className={`relative z-[9999] flex min-h-0 h-full flex-col rounded-lg p-3 pb-12 text-[10px] overflow-hidden opacity-95 pointer-events-none cursor-grabbing shadow-xl ring-1 ring-sky-300/80 ${
+      className={`relative z-[9999] flex min-h-0 h-full flex-col rounded-lg overflow-hidden opacity-95 pointer-events-none cursor-grabbing shadow-xl ring-1 ring-sky-300/80 ${
         isDraftShift ? 'border border-amber-400/60 border-dashed' : ''
       } ${isBaselinePublished ? 'ring-1 ring-emerald-400/40' : ''}`}
       style={{
         backgroundColor: jobColor.bgColor,
         borderLeft: `3px solid ${jobColor.color}`,
         color: jobColor.color,
+        paddingTop: cardPad,
+        paddingRight: cardPad,
+        paddingLeft: cardPad,
+        paddingBottom: 'calc(var(--shiftPad) * 2.9)',
       }}
       title={`${shift.job ? shift.job + ' | ' : ''}${formatShiftTime(shift.startHour)} - ${formatShiftTime(shift.endHour)} (${Math.round(shiftDuration)}h)`}
     >
@@ -424,21 +472,21 @@ function WeekShiftOverlayCard({
           DRAFT
         </span>
       )}
-      <div className="space-y-1 min-w-0 flex-1 pr-6 flex flex-col items-start text-left leading-none select-none">
+      <div className="space-y-1 min-w-0 flex-1 flex flex-col items-start text-left leading-none select-none" style={{ paddingRight: 'calc(var(--shiftPad) * 1.8)' }}>
         <div className="min-w-0">
-          <span className="font-semibold text-[13px] leading-tight truncate whitespace-nowrap overflow-hidden text-ellipsis block">
+          <span className="font-semibold leading-tight truncate whitespace-nowrap overflow-hidden text-ellipsis block" style={{ fontSize: 'var(--shiftTimeSize)' }}>
             {formatShiftTime(shift.startHour)}-{formatShiftTime(shift.endHour)}
           </span>
         </div>
         <div className="min-w-0 opacity-80">
-          <span className="text-[11px] leading-tight truncate whitespace-nowrap overflow-hidden text-ellipsis block">{toDisplayJobLabel(shift.job)}</span>
+          <span className="leading-tight truncate whitespace-nowrap overflow-hidden text-ellipsis block" style={{ fontSize: 'var(--shiftMetaSize)' }}>{toDisplayJobLabel(shift.job)}</span>
         </div>
       </div>
-      <div className="absolute left-3 right-3 bottom-3">
-        <div className="flex justify-end text-xs font-semibold opacity-80 mb-1 leading-none">
+      <div className="absolute" style={{ left: cardPad, right: cardPad, bottom: cardPad }}>
+        <div className="flex justify-end font-semibold opacity-80 mb-1 leading-none" style={{ fontSize: 'calc(var(--shiftMetaSize) + 1px)' }}>
           {durationText}
         </div>
-        <div className="relative h-2 w-full rounded-full overflow-hidden" style={{ backgroundColor: barTrackColor }}>
+        <div className="relative w-full rounded-full overflow-hidden" style={{ backgroundColor: barTrackColor, height: 'var(--barH)' }}>
           <div
             className="absolute top-0 h-full rounded-full"
             style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: barFillColor }}
@@ -580,9 +628,66 @@ export function WeekView() {
     ? 'No draft changes'
     : undefined;
   const showCopyDraftWeek = isManager && isDraftMode && weekShiftCount === 0;
+  const [weekZoom, setWeekZoom] = useState<WeekZoomStep>(() => {
+    if (typeof window === 'undefined') return getDefaultWeekZoom();
+    const stored = parseStoredWeekZoom(window.localStorage.getItem(WEEK_ZOOM_STORAGE_KEY));
+    return stored ?? getDefaultWeekZoom();
+  });
+
+  const weekZoomIndex = useMemo(
+    () => WEEK_ZOOM_STEPS.findIndex((step) => step === weekZoom),
+    [weekZoom],
+  );
+  const canZoomOut = weekZoomIndex > 0;
+  const canZoomIn = weekZoomIndex < WEEK_ZOOM_STEPS.length - 1;
+
+  const applyZoomByIndex = useCallback((index: number) => {
+    const clamped = Math.max(0, Math.min(WEEK_ZOOM_STEPS.length - 1, index));
+    setWeekZoom(WEEK_ZOOM_STEPS[clamped]);
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    if (!canZoomOut) return;
+    applyZoomByIndex(weekZoomIndex - 1);
+  }, [applyZoomByIndex, canZoomOut, weekZoomIndex]);
+
+  const zoomIn = useCallback(() => {
+    if (!canZoomIn) return;
+    applyZoomByIndex(weekZoomIndex + 1);
+  }, [applyZoomByIndex, canZoomIn, weekZoomIndex]);
+
+  const resetZoom = useCallback(() => {
+    applyZoomByIndex(WEEK_ZOOM_STEPS.findIndex((step) => step === 100));
+  }, [applyZoomByIndex]);
+
+  const weekZoomStyles = useMemo(() => {
+    const scale = weekZoom / 100;
+    const px = (base: number) => `${Math.max(1, Math.round(base * scale * 10) / 10)}px`;
+    return {
+      '--weekZoom': String(scale),
+      '--weekRowH': px(84),
+      '--weekHeaderH': px(48),
+      '--weekCoverageH': px(24),
+      '--weekSectionH': px(24),
+      '--weekCellPad': px(2),
+      '--weekCellInnerPad': px(4),
+      '--weekCellStackGap': px(4),
+      '--shiftPad': px(10),
+      '--shiftTimeSize': px(13),
+      '--shiftMetaSize': px(11),
+      '--barH': px(8),
+      '--weekAvatarSize': px(28),
+      '--weekAvatarTextSize': px(10),
+      '--weekNameSize': px(12),
+      '--weekHoursSize': px(10),
+      '--weekCoverageTextSize': px(9),
+      '--weekHiddenCountSize': px(9),
+    } as React.CSSProperties;
+  }, [weekZoom]);
 
   // Refs for scroll syncing
   const gridScrollRef = useRef<HTMLDivElement>(null);
+  const weekViewRootRef = useRef<HTMLDivElement | null>(null);
   const weekGridRootRef = useRef<HTMLDivElement | null>(null);
 
   // Drag-to-scroll state
@@ -629,6 +734,48 @@ export function WeekView() {
   const dragStartRef = useRef<{ startX: number; startY: number; originUserId: string } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const pasteJobPickerResolveRef = useRef<((job: string | null) => void) | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(WEEK_ZOOM_STORAGE_KEY, String(weekZoom));
+  }, [weekZoom]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      const rootEl = weekViewRootRef.current;
+      if (!rootEl) return;
+      const eventTarget = event.target instanceof Node ? event.target : null;
+      const activeEl = document.activeElement;
+      const hasWeekFocus =
+        (activeEl instanceof Node && rootEl.contains(activeEl))
+        || (eventTarget !== null && rootEl.contains(eventTarget));
+      if (!hasWeekFocus) return;
+      if (isKeyboardInputTarget(event.target)) return;
+
+      if (event.key === '+' || event.key === '=' || event.key === 'Add') {
+        if (!canZoomIn) return;
+        event.preventDefault();
+        zoomIn();
+        return;
+      }
+      if (event.key === '-' || event.key === '_' || event.key === 'Subtract') {
+        if (!canZoomOut) return;
+        event.preventDefault();
+        zoomOut();
+        return;
+      }
+      if (event.key === '0') {
+        event.preventDefault();
+        resetZoom();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [canZoomIn, canZoomOut, resetZoom, zoomIn, zoomOut]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -1832,9 +1979,39 @@ export function WeekView() {
   const isPasteMenuDisabled = !canUseCopyPaste || !hasUsableClipboard;
   const pasteMenuTitle = !hasUsableClipboard ? 'Nothing to paste' : !canUseCopyPaste ? 'Not permitted' : undefined;
   const weekRowGridColsClass = '[grid-template-columns:9rem_repeat(7,minmax(0,1fr))_3.5rem]';
+  const weekZoomControl = (
+    <div className="inline-flex items-center gap-1 rounded-lg border border-theme-primary bg-theme-tertiary/80 p-1">
+      <button
+        type="button"
+        onClick={zoomOut}
+        disabled={!canZoomOut}
+        title="Zoom out"
+        className="h-7 w-7 rounded-md text-sm font-semibold text-theme-secondary hover:bg-theme-hover hover:text-theme-primary disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        -
+      </button>
+      <button
+        type="button"
+        onDoubleClick={resetZoom}
+        title="Double-click to reset to 100%"
+        className="h-7 min-w-[62px] rounded-md px-2 text-[11px] font-semibold text-theme-primary tabular-nums"
+      >
+        {weekZoom}%
+      </button>
+      <button
+        type="button"
+        onClick={zoomIn}
+        disabled={!canZoomIn}
+        title="Zoom in"
+        className="h-7 w-7 rounded-md text-sm font-semibold text-theme-secondary hover:bg-theme-hover hover:text-theme-primary disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        +
+      </button>
+    </div>
+  );
 
   return (
-    <div className="flex-1 flex flex-col bg-theme-timeline overflow-hidden transition-theme">
+    <div ref={weekViewRootRef} className="flex-1 flex flex-col bg-theme-timeline overflow-hidden transition-theme" style={weekZoomStyles}>
       <ScheduleToolbar
         viewMode="week"
         selectedDate={selectedDate}
@@ -1850,6 +2027,8 @@ export function WeekView() {
         onPublishWeek={openPublishConfirm}
         publishDisabledReason={publishDisabledReason}
         publishWeekDisabledReason={publishWeekDisabledReason}
+        rightActions={weekZoomControl}
+        rightActionsWidthClass="w-[220px]"
       />
 
       <DndContext
@@ -1916,8 +2095,8 @@ export function WeekView() {
               }`}
             >
               <div
-                className={`h-12 border-b border-theme-primary grid ${weekRowGridColsClass} shrink-0 sticky top-0 z-30`}
-                style={{ backgroundColor: '#f6f7fb' }}
+                className={`border-b border-theme-primary grid ${weekRowGridColsClass} shrink-0 sticky top-0 z-30`}
+                style={{ backgroundColor: '#f6f7fb', height: 'var(--weekHeaderH)' }}
               >
                 <div className={`border-r border-theme-primary/50 flex items-center justify-center text-[10px] font-semibold uppercase tracking-wide ${statusTone}`}>
                   {publishStatusLabel}
@@ -1957,11 +2136,11 @@ export function WeekView() {
               </div>
 
               <div
-                className={`h-6 border-b border-theme-primary/30 grid ${weekRowGridColsClass} shrink-0 sticky top-12 z-30`}
-                style={{ backgroundColor: '#f6f7fb' }}
+                className={`border-b border-theme-primary/30 grid ${weekRowGridColsClass} shrink-0 sticky z-30`}
+                style={{ backgroundColor: '#f6f7fb', height: 'var(--weekCoverageH)', top: 'var(--weekHeaderH)' }}
               >
                 <div className="border-r border-theme-primary/30 flex items-center px-2">
-                  <span className="text-[9px] font-semibold text-theme-muted uppercase tracking-wide">Coverage</span>
+                  <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>Coverage</span>
                 </div>
                 {weekDates.map((date) => {
                   const dateStr = dateToString(date);
@@ -1986,10 +2165,10 @@ export function WeekView() {
                           style={{ backgroundColor: coverageColor ?? '#9ca3af' }}
                         />
                         <span
-                          className={`text-[9px] font-bold tabular-nums ${
+                          className={`font-bold tabular-nums ${
                             count > 0 ? '' : 'text-theme-muted'
                           }`}
-                          style={{ color: count > 0 ? coverageColor ?? undefined : undefined }}
+                          style={{ color: count > 0 ? coverageColor ?? undefined : undefined, fontSize: 'var(--weekCoverageTextSize)' }}
                         >
                           {count} staff
                         </span>
@@ -2015,8 +2194,8 @@ export function WeekView() {
                         return (
                           <div
                             key={`grid-sep-${row.groupKey}`}
-                            className="h-6 border-b border-theme-primary/20 flex items-center px-3 gap-2"
-                            style={{ backgroundColor: row.bgColor }}
+                            className="border-b border-theme-primary/20 flex items-center px-3 gap-2"
+                            style={{ backgroundColor: row.bgColor, height: 'var(--weekSectionH)' }}
                           >
                             <div className="w-1 h-3 rounded-full shrink-0" style={{ backgroundColor: row.color }} />
                             <span className="text-[9px] font-semibold uppercase tracking-wider truncate" style={{ color: row.color }}>
@@ -2033,20 +2212,24 @@ export function WeekView() {
                       return (
                         <div
                           key={employee.id}
-                          className={`grid ${weekRowGridColsClass} h-[84px] border-b border-theme-primary/50 hover:bg-theme-hover/30 transition-colors group`}
+                          className={`grid ${weekRowGridColsClass} border-b border-theme-primary/50 hover:bg-theme-hover/30 transition-colors group`}
+                          style={{ height: 'var(--weekRowH)' }}
                         >
                           <div className="border-r border-theme-primary/30 h-full flex items-center gap-2 px-2 bg-theme-timeline">
                             <div
-                              className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0"
+                              className="rounded-full flex items-center justify-center font-semibold shrink-0"
                               style={{
                                 backgroundColor: row.groupBgColor,
                                 color: row.groupColor,
+                                width: 'var(--weekAvatarSize)',
+                                height: 'var(--weekAvatarSize)',
+                                fontSize: 'var(--weekAvatarTextSize)',
                               }}
                             >
                               {employee.name.split(' ').map((n) => n[0]).join('')}
                             </div>
                             <div className="min-w-0 flex-1">
-                              <p className="text-xs font-medium text-theme-primary truncate">
+                              <p className="font-medium text-theme-primary truncate" style={{ fontSize: 'var(--weekNameSize)' }}>
                                 {employee.name}
                               </p>
                             </div>
@@ -2092,11 +2275,12 @@ export function WeekView() {
                                 isActiveCell={activeCellId === droppableId}
                                 isContextMenuTarget={contextMenuCellHighlightId === droppableId}
                                 isDragOverCell={dragOverCellId === droppableId}
-                                className={`border-r border-theme-primary/30 p-0.5 group relative overflow-hidden ${
+                                className={`border-r border-theme-primary/30 group relative overflow-hidden ${
                                   isToday ? 'bg-amber-500/5' : ''
                                 } ${hasTimeOff ? 'bg-emerald-500/5' : ''} ${hasBlocked ? 'bg-red-500/5' : ''} ${hasOrgBlackout ? 'bg-amber-500/5' : ''} ${
                                   canReceiveDrop ? 'hover:outline hover:outline-1 hover:outline-sky-300/50' : ''
                                 }`}
+                                style={{ padding: 'var(--weekCellPad)' }}
                                 onClick={(e) => handleCellClick(employee.id, dateStr, e)}
                                 onMouseDown={(e) => handleCellMouseDown(employee.id, dateStr, e)}
                                 onMouseUp={(e) => handleCellMouseUp(employee.id, dateStr, e)}
@@ -2134,7 +2318,13 @@ export function WeekView() {
                                   </div>
                                 ) : (
                                   <div className="relative h-full overflow-hidden">
-                                    <div className={`flex h-full min-h-0 flex-col overflow-hidden p-1 ${isSingleShiftCell ? '' : 'gap-1'}`}>
+                                    <div
+                                      className="flex h-full min-h-0 flex-col overflow-hidden"
+                                      style={{
+                                        padding: 'var(--weekCellInnerPad)',
+                                        gap: isSingleShiftCell ? '0px' : 'var(--weekCellStackGap)',
+                                      }}
+                                    >
                                       {visibleDayShifts.map((shift) => {
                                         if (draggingShiftId === shift.id) {
                                           // Hide active dragged shift in-grid; DragOverlay is the only full tile.
@@ -2177,7 +2367,7 @@ export function WeekView() {
                                         );
                                       })}
                                       {hiddenShiftCount > 0 ? (
-                                        <div className="shrink-0 rounded bg-theme-secondary/70 px-1 py-0.5 text-center text-[9px] font-medium text-theme-muted">
+                                        <div className="shrink-0 rounded bg-theme-secondary/70 px-1 py-0.5 text-center font-medium text-theme-muted" style={{ fontSize: 'var(--weekHiddenCountSize)' }}>
                                           +{hiddenShiftCount}
                                         </div>
                                       ) : null}
@@ -2195,7 +2385,7 @@ export function WeekView() {
                           >
                             {hrs > 0 ? (
                               <div className="flex flex-col items-center leading-tight">
-                                <span className={`text-[10px] font-semibold tabular-nums ${isOvertime ? 'text-red-600' : 'text-emerald-700'}`}>
+                                <span className={`font-semibold tabular-nums ${isOvertime ? 'text-red-600' : 'text-emerald-700'}`} style={{ fontSize: 'var(--weekHoursSize)' }}>
                                   {Math.round(hrs)}h
                                 </span>
                                 {isOvertime ? (
