@@ -769,6 +769,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           customStartHour: Number(settingsData.custom_start_hour ?? 0),
           customEndHour: Number(settingsData.custom_end_hour ?? 24),
           weekStartDay: (settingsData.week_start_day ?? 'sunday') === 'monday' ? 'monday' : 'sunday',
+          minStaffPerHour: Number(settingsData.min_staff_per_hour ?? 5),
         };
 
     const selectedDate = get().selectedDate;

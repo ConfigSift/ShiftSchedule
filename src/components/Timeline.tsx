@@ -11,6 +11,7 @@ import { Palmtree, ArrowLeftRight } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { getJobColorClasses } from '../lib/jobColors';
 import { compareJobs } from '../utils/jobOrder';
+import { calculateHourlyCoverage } from '../utils/coverageUtils';
 import { ScheduleToolbar } from './ScheduleToolbar';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { PublishScheduleDialog, type PublishEmailMode } from './ui/PublishScheduleDialog';
@@ -1470,6 +1471,14 @@ export function Timeline() {
   }, [dayReassignEnabled, snapPx]);
   const singleDayHours = Array.from({ length: TOTAL_HOURS }, (_, i) => HOURS_START + i);
   const singleDayGridWidth = TOTAL_HOURS * pxPerHour;
+
+  const hourlyCoverage = useMemo(() => {
+    if (continuousDays) return [];
+    const dayShifts = shiftsForRender.filter(
+      (s) => !s.isBlocked && !optimisticDeletedShiftIdSet.has(s.id)
+    );
+    return calculateHourlyCoverage(dayShifts, selectedDateYmd, HOURS_START, HOURS_END);
+  }, [continuousDays, shiftsForRender, optimisticDeletedShiftIdSet, selectedDateYmd, HOURS_START, HOURS_END]);
   // Continuous mode values
   const continuousGridWidth = CONTINUOUS_TOTAL_HOURS * pxPerHour;
 
@@ -2824,6 +2833,53 @@ export function Timeline() {
       }`}
       style={{ width: `${singleDayGridWidth}px`, minWidth: `${singleDayGridWidth}px` }}
     >
+      {/* Coverage strip */}
+      <div className="flex h-9 border-b border-theme-primary/50 pointer-events-none select-none bg-black/[0.04] dark:bg-white/[0.03]">
+        {singleDayHours.map((hour, idx) => {
+          const count = hourlyCoverage[idx]?.staffCount ?? 0;
+          const minimumStaff = scheduleViewSettings?.minStaffPerHour ?? 5;
+          const isCovered = count >= minimumStaff;
+          const hasStaff = count > 0;
+          const deficit = minimumStaff - count;
+          return (
+            <div
+              key={hour}
+              className="border-r border-theme-primary/30 flex flex-col items-center justify-center gap-[1px]"
+              style={{
+                width: `${pxPerHour}px`,
+                minWidth: `${pxPerHour}px`,
+                backgroundColor: hasStaff
+                  ? isCovered
+                    ? 'rgba(74, 222, 128, 0.10)'
+                    : 'rgba(248, 113, 113, 0.10)'
+                  : 'transparent',
+              }}
+            >
+              {hasStaff ? (
+                <>
+                  <span
+                    className="text-[11px] font-bold leading-none"
+                    style={{ color: isCovered ? '#4ADE80' : '#F87171' }}
+                  >
+                    {count}
+                  </span>
+                  <span
+                    className="leading-none"
+                    style={{
+                      fontSize: '8px',
+                      color: isCovered ? 'rgba(52,211,153,0.6)' : 'rgba(248,113,113,0.7)',
+                    }}
+                  >
+                    {isCovered ? '✓' : `-${deficit}`}
+                  </span>
+                </>
+              ) : (
+                <span className="text-[10px] leading-none text-theme-muted/40">–</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
       <div>
         {filteredEmployees.length === 0 ? (
           <div className="flex items-center justify-center h-full text-theme-muted">
@@ -3775,6 +3831,15 @@ export function Timeline() {
         <div className="flex">
           {/* Names Column - scrolls with parent, no separate overflow */}
           <div className="w-36 shrink-0 bg-theme-timeline z-20 border-r border-theme-primary">
+            {/* Coverage strip label */}
+            {!continuousDays && (
+              <div
+                className="h-9 border-b border-theme-primary/50 flex items-center px-2"
+                style={{ boxShadow: '4px 0 8px rgba(0,0,0,0.08)' }}
+              >
+                <span className="text-[9px] uppercase tracking-widest text-theme-muted font-semibold">Coverage</span>
+              </div>
+            )}
             {/* Employee names - natural height, scrolls with parent */}
             <div>
               {filteredEmployees.length === 0 ? (

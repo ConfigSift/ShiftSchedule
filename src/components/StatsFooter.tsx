@@ -7,20 +7,8 @@ import { SECTIONS, Section } from '../types';
 import { Clock, Users, DollarSign, Percent } from 'lucide-react';
 import { getWeekDates, dateToString } from '../utils/timeUtils';
 import { getUserRole } from '../utils/role';
+import { calculateHourlyCoverage, calculateDayCoverageStats } from '../utils/coverageUtils';
 
-function parseTimeToDecimal(value?: string | null): number {
-  if (!value) return 0;
-  const text = String(value);
-  if (text.includes(':')) {
-    const [hours, minutes = '0'] = text.split(':');
-    const hour = Number(hours);
-    const minute = Number(minutes);
-    if (Number.isNaN(hour) || Number.isNaN(minute)) return 0;
-    return hour + minute / 60;
-  }
-  const asNumber = Number(text);
-  return Number.isNaN(asNumber) ? 0 : asNumber;
-}
 
 type StatsFooterProps = {
   compact?: boolean;
@@ -33,7 +21,6 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
     selectedEmployeeIds,
     employees,
     shifts,
-    coreHours,
     scheduleViewSettings,
     getShiftsForRestaurant,
   } = useScheduleStore();
@@ -153,79 +140,49 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
     return { estimatedCost: total, missingPayCount: missing };
   }, [relevantShifts, scopedEmployees]);
 
-  const coveragePercent = useMemo(() => {
-    if (viewMode === 'month') {
-      return null;
-    }
-    if (!coreHours || coreHours.length === 0) {
-      return null;
-    }
+  const coverageInfo = useMemo(() => {
+    if (viewMode === 'month') return null;
+    if (relevantShifts.length === 0) return null;
 
-    const coreByDay = new Map<number, Array<{ start: number; end: number }>>();
-    coreHours.forEach((row) => {
-      if (!row.enabled || !row.openTime || !row.closeTime) return;
-      const start = parseTimeToDecimal(row.openTime);
-      const end = parseTimeToDecimal(row.closeTime);
-      if (end <= start) return;
-      if (!coreByDay.has(row.dayOfWeek)) {
-        coreByDay.set(row.dayOfWeek, []);
+    const minimumStaff = scheduleViewSettings?.minStaffPerHour ?? 5;
+    const startHour = scheduleViewSettings?.hourMode === 'custom'
+      ? scheduleViewSettings.customStartHour : 0;
+    const endHour = scheduleViewSettings?.hourMode === 'custom'
+      ? scheduleViewSettings.customEndHour : 24;
+
+    type SparkBar = { staffed: boolean; covered: boolean };
+    const bars: SparkBar[] = [];
+    let totalStaffed = 0;
+    let aboveMin = 0;
+    let totalGap = 0;
+
+    if (viewMode === 'week') {
+      for (const date of weekDates) {
+        const dateKey = dateToString(date);
+        const hourly = calculateHourlyCoverage(relevantShifts, dateKey, startHour, endHour);
+        const stats = calculateDayCoverageStats(hourly, minimumStaff);
+        totalStaffed += stats.totalStaffedHours;
+        aboveMin += stats.hoursAboveMinimum;
+        totalGap += stats.gapHours;
+        bars.push({ staffed: stats.totalStaffedHours > 0, covered: stats.coveragePercent >= 80 });
       }
-      coreByDay.get(row.dayOfWeek)!.push({ start, end });
-    });
-    if (coreByDay.size === 0) {
-      return null;
-    }
-
-    const mergeRanges = (ranges: Array<{ start: number; end: number }>) => {
-      const sorted = [...ranges].sort((a, b) => a.start - b.start);
-      const merged: Array<{ start: number; end: number }> = [];
-      sorted.forEach((range) => {
-        const last = merged[merged.length - 1];
-        if (!last || range.start > last.end) {
-          merged.push({ ...range });
-          return;
-        }
-        last.end = Math.max(last.end, range.end);
-      });
-      return merged;
-    };
-
-    const shiftsByDate = new Map<string, typeof relevantShifts>();
-    relevantShifts.forEach((shift) => {
-      if (!shiftsByDate.has(shift.date)) {
-        shiftsByDate.set(shift.date, []);
+    } else {
+      const dateKey = dateToString(selectedDate);
+      const hourly = calculateHourlyCoverage(relevantShifts, dateKey, startHour, endHour);
+      const stats = calculateDayCoverageStats(hourly, minimumStaff);
+      totalStaffed = stats.totalStaffedHours;
+      aboveMin = stats.hoursAboveMinimum;
+      totalGap = stats.gapHours;
+      // sample ~8 bars
+      const step = Math.max(1, Math.floor(hourly.length / 8));
+      for (let i = 0; i < hourly.length && bars.length < 8; i += step) {
+        bars.push({ staffed: hourly[i].staffCount > 0, covered: hourly[i].staffCount >= minimumStaff });
       }
-      shiftsByDate.get(shift.date)!.push(shift);
-    });
-
-    const datesToCheck = viewMode === 'week' ? weekDates : [selectedDate];
-    let totalCore = 0;
-    let covered = 0;
-
-    datesToCheck.forEach((date) => {
-      const dayRanges = coreByDay.get(date.getDay());
-      if (!dayRanges || dayRanges.length === 0) return;
-      const mergedRanges = mergeRanges(dayRanges);
-      const dateKey = dateToString(date);
-      const shiftsForDate = shiftsByDate.get(dateKey) ?? [];
-
-      mergedRanges.forEach((range) => {
-        totalCore += range.end - range.start;
-        shiftsForDate.forEach((shift) => {
-          const overlap = Math.max(
-            0,
-            Math.min(shift.endHour, range.end) - Math.max(shift.startHour, range.start),
-          );
-          covered += overlap;
-        });
-      });
-    });
-
-    if (totalCore <= 0) {
-      return null;
     }
-    return (covered / totalCore) * 100;
-  }, [coreHours, relevantShifts, selectedDate, viewMode, weekDates]);
+
+    if (totalStaffed === 0) return null;
+    return { percent: (aboveMin / totalStaffed) * 100, gapHours: totalGap, bars };
+  }, [relevantShifts, scheduleViewSettings, selectedDate, viewMode, weekDates]);
 
   const footerClassName = compact
     ? 'fixed bottom-0 left-0 right-0 h-10 sm:h-11 bg-theme-secondary border-t border-theme-primary flex items-center px-2 sm:px-4 gap-2 sm:gap-5 shrink-0 transition-theme z-40'
@@ -274,9 +231,33 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
         </div>
         <div>
           <p className={labelClassName}>Coverage</p>
-          <p className={valueClassName}>
-            {coveragePercent === null ? '-' : `${coveragePercent.toFixed(1)}%`}
-          </p>
+          {coverageInfo === null ? (
+            <p className={valueClassName}>-</p>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <div className="flex items-end gap-[1.5px] h-[13px]" aria-hidden>
+                {coverageInfo.bars.map((bar, i) => (
+                  <div
+                    key={i}
+                    className="w-[3px] rounded-[1px]"
+                    style={{
+                      height: bar.staffed ? (bar.covered ? '100%' : '60%') : '20%',
+                      backgroundColor: bar.staffed
+                        ? bar.covered ? '#4ade80' : '#f87171'
+                        : 'rgba(156,163,175,0.2)',
+                    }}
+                  />
+                ))}
+              </div>
+              <span className={valueClassName}>{Math.round(coverageInfo.percent)}%</span>
+              {coverageInfo.gapHours > 0 && (
+                <span className="flex items-center gap-0.5 text-[9px] text-red-400 font-medium whitespace-nowrap">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                  {coverageInfo.gapHours}h
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

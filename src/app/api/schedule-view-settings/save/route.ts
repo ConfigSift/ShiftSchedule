@@ -14,6 +14,7 @@ type SavePayload = {
   customStartHour?: number;
   customEndHour?: number;
   weekStartDay?: 'sunday' | 'monday';
+  minStaffPerHour?: number;
 };
 
 export async function POST(request: NextRequest) {
@@ -23,7 +24,8 @@ export async function POST(request: NextRequest) {
   }
   const hasHourMode = typeof payload.hourMode === 'string';
   const hasWeekStartDay = typeof payload.weekStartDay === 'string';
-  if (!hasHourMode && !hasWeekStartDay) {
+  const hasMinStaff = typeof payload.minStaffPerHour === 'number';
+  if (!hasHourMode && !hasWeekStartDay && !hasMinStaff) {
     return badRequest('Missing required fields.');
   }
 
@@ -110,6 +112,13 @@ export async function POST(request: NextRequest) {
   }
   if (hasWeekStartDay) {
     updatePayload.week_start_day = weekStartDay;
+  }
+  if (hasMinStaff) {
+    const minStaff = Number(payload.minStaffPerHour);
+    if (!Number.isInteger(minStaff) || minStaff < 1 || minStaff > 20) {
+      return badRequest('minStaffPerHour must be an integer between 1 and 20.');
+    }
+    updatePayload.min_staff_per_hour = minStaff;
   }
 
   let data;

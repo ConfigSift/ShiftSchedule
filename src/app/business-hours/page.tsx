@@ -70,8 +70,10 @@ export default function BusinessHoursPage() {
   const [customStartHour, setCustomStartHour] = useState(6);
   const [customEndHour, setCustomEndHour] = useState(22);
   const [weekStartDay, setWeekStartDay] = useState<'sunday' | 'monday'>('sunday');
+  const [minStaffPerHour, setMinStaffPerHour] = useState(5);
   const [savingViewSettings, setSavingViewSettings] = useState(false);
   const [savingWeekStart, setSavingWeekStart] = useState(false);
+  const [savingMinStaff, setSavingMinStaff] = useState(false);
 
   const isManager = isManagerRole(getUserRole(currentUser?.role));
 
@@ -130,12 +132,14 @@ export default function BusinessHoursPage() {
       setCustomStartHour(scheduleViewSettings.customStartHour);
       setCustomEndHour(scheduleViewSettings.customEndHour);
       setWeekStartDay(scheduleViewSettings.weekStartDay ?? 'sunday');
+      setMinStaffPerHour(scheduleViewSettings.minStaffPerHour ?? 5);
     } else {
       // Default values
       setHourMode('full24');
       setCustomStartHour(6);
       setCustomEndHour(22);
       setWeekStartDay('sunday');
+      setMinStaffPerHour(5);
     }
   }, [scheduleViewSettings]);
 
@@ -358,6 +362,7 @@ export default function BusinessHoursPage() {
           customStartHour: Number(s.custom_start_hour ?? 0),
           customEndHour: Number(s.custom_end_hour ?? 24),
           weekStartDay: s.week_start_day === 'monday' ? 'monday' : 'sunday',
+          minStaffPerHour: Number(s.min_staff_per_hour ?? 5),
         });
       }
 
@@ -435,6 +440,7 @@ export default function BusinessHoursPage() {
           customStartHour: Number(s.custom_start_hour ?? 0),
           customEndHour: Number(s.custom_end_hour ?? 24),
           weekStartDay: s.week_start_day === 'monday' ? 'monday' : 'sunday',
+          minStaffPerHour: Number(s.min_staff_per_hour ?? 5),
         });
       }
 
@@ -455,6 +461,45 @@ export default function BusinessHoursPage() {
       }
     } finally {
       setSavingWeekStart(false);
+    }
+  };
+
+  const handleSaveMinStaff = async () => {
+    if (!activeRestaurantId) {
+      showToast('Select a restaurant first', 'error');
+      return;
+    }
+    const payload = { organizationId: activeRestaurantId, minStaffPerHour };
+    setSavingMinStaff(true);
+    try {
+      const result = await apiFetch<{ settings: Record<string, unknown> }>('/api/schedule-view-settings/save', {
+        method: 'POST',
+        json: payload,
+      });
+      if (!result.ok) {
+        const statusLabel = result.status === 0 ? 'network' : result.status;
+        const message = result.error ?? result.rawText?.slice(0, 120) ?? 'Unknown error';
+        showToast(`Save failed (${statusLabel}): ${message}`, 'error');
+        return;
+      }
+      if (result.data?.settings) {
+        const s = result.data.settings;
+        setScheduleViewSettings({
+          id: readString(s.id),
+          organizationId: readString(s.organization_id),
+          hourMode: s.hour_mode as ScheduleHourMode,
+          customStartHour: Number(s.custom_start_hour ?? 0),
+          customEndHour: Number(s.custom_end_hour ?? 24),
+          weekStartDay: s.week_start_day === 'monday' ? 'monday' : 'sunday',
+          minStaffPerHour: Number(s.min_staff_per_hour ?? 5),
+        });
+      }
+      showToast('Minimum staffing updated', 'success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
+    } finally {
+      setSavingMinStaff(false);
     }
   };
 
@@ -677,6 +722,50 @@ export default function BusinessHoursPage() {
                 className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-amber-500 text-zinc-900 text-sm font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
               >
                 {savingWeekStart ? 'Saving...' : 'Save Start of Week'}
+              </button>
+            </div>
+          </div>
+
+          {/* Minimum Staffing Section */}
+          <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-3 space-y-2.5">
+            <div>
+              <h2 className="text-lg font-semibold text-theme-primary">Minimum Staffing</h2>
+              <p className="text-xs text-theme-tertiary mt-0.5">
+                Set the minimum number of staff needed during operating hours. Used to calculate coverage in the footer.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-theme-primary">Staff per hour</p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMinStaffPerHour(Math.max(1, minStaffPerHour - 1))}
+                  disabled={minStaffPerHour <= 1}
+                  className="w-8 h-8 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary text-lg font-bold flex items-center justify-center hover:bg-theme-hover transition-colors disabled:opacity-40"
+                >
+                  −
+                </button>
+                <span className="w-8 text-center font-semibold text-theme-primary">{minStaffPerHour}</span>
+                <button
+                  type="button"
+                  onClick={() => setMinStaffPerHour(Math.min(20, minStaffPerHour + 1))}
+                  disabled={minStaffPerHour >= 20}
+                  className="w-8 h-8 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary text-lg font-bold flex items-center justify-center hover:bg-theme-hover transition-colors disabled:opacity-40"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleSaveMinStaff}
+                disabled={savingMinStaff}
+                className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-amber-500 text-zinc-900 text-sm font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
+              >
+                {savingMinStaff ? 'Saving...' : 'Save Minimum Staffing'}
               </button>
             </div>
           </div>

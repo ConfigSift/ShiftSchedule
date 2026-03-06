@@ -190,6 +190,7 @@ export interface ScheduleViewSettings {
   customStartHour: number; // 0-23
   customEndHour: number;   // 1-24
   weekStartDay: WeekStartDay;
+  minStaffPerHour: number; // minimum staff count threshold for coverage (default 2)
 }
 
 export type WeekStartDay = 'sunday' | 'monday';

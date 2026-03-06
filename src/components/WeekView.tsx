@@ -3,11 +3,12 @@
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { type Shift } from '../types';
-import { getWeekDates, getWeekStart, dateToString, isSameDay, formatHour, shiftsOverlap } from '../utils/timeUtils';
+import { getWeekDates, getWeekStart, dateToString, isSameDay, formatHour, formatHourShort, shiftsOverlap } from '../utils/timeUtils';
 import { Palmtree, ArrowLeftRight } from 'lucide-react';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
+import { calculateHourlyCoverage, calculateDayCoverageStats } from '../utils/coverageUtils';
 import { ScheduleToolbar } from './ScheduleToolbar';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { PublishScheduleDialog, type PublishEmailMode } from './ui/PublishScheduleDialog';
@@ -667,7 +668,7 @@ export function WeekView() {
       '--weekZoom': String(scale),
       '--weekRowH': px(84),
       '--weekHeaderH': px(48),
-      '--weekCoverageH': px(24),
+      '--weekCoverageH': px(36),
       '--weekSectionH': px(24),
       '--weekCellPad': px(2),
       '--weekCellInnerPad': px(4),
@@ -721,6 +722,18 @@ export function WeekView() {
   const [optimisticDeletedShiftIds, setOptimisticDeletedShiftIds] = useState<string[]>([]);
   const [pendingMoveShiftIds, setPendingMoveShiftIds] = useState<string[]>([]);
   const [pasteJobPickerOpen, setPasteJobPickerOpen] = useState(false);
+  const [hoveredCovBar, setHoveredCovBar] = useState<{ dayStr: string; hourIdx: number; hour: number; count: number } | null>(null);
+  const [weekCoverageMode, setWeekCoverageMode] = useState<'bars' | 'simple'>(() => {
+    if (typeof window === 'undefined') return 'bars';
+    return (window.localStorage.getItem('crewshyft_week_coverage_mode') as 'bars' | 'simple') ?? 'bars';
+  });
+  const toggleWeekCoverageMode = useCallback(() => {
+    setWeekCoverageMode((prev) => {
+      const next = prev === 'bars' ? 'simple' : 'bars';
+      window.localStorage.setItem('crewshyft_week_coverage_mode', next);
+      return next;
+    });
+  }, []);
   const [pasteJobPickerEmployeeName, setPasteJobPickerEmployeeName] = useState('');
   const [pasteJobPickerOptions, setPasteJobPickerOptions] = useState<string[]>([]);
   const [pasteJobPickerSelectedJob, setPasteJobPickerSelectedJob] = useState('');
@@ -881,6 +894,28 @@ export function WeekView() {
     }
     return result;
   }, [displayShifts, visibleEmployeeIdSet, weekDates]);
+
+  const weekCoverageByDate = useMemo(() => {
+    const minStaff = scheduleViewSettings?.minStaffPerHour ?? 5;
+    const startHour = scheduleViewSettings?.hourMode === 'custom'
+      ? scheduleViewSettings.customStartHour
+      : 8;
+    const endHour = scheduleViewSettings?.hourMode === 'custom'
+      ? scheduleViewSettings.customEndHour
+      : 22;
+    const result: Record<string, {
+      hourly: ReturnType<typeof calculateHourlyCoverage>;
+      coveragePercent: number;
+      peakStaff: number;
+    }> = {};
+    for (const date of weekDates) {
+      const dateStr = dateToString(date);
+      const hourly = calculateHourlyCoverage(displayShifts, dateStr, startHour, endHour);
+      const stats = calculateDayCoverageStats(hourly, minStaff);
+      result[dateStr] = { hourly, coveragePercent: stats.coveragePercent, peakStaff: stats.peakStaff };
+    }
+    return result;
+  }, [displayShifts, weekDates, scheduleViewSettings]);
 
   // Employee list interspersed with job-title separator markers
   const employeeRowsWithSeparators = useMemo(() => {
@@ -2139,39 +2174,128 @@ export function WeekView() {
                 className={`border-b border-theme-primary/30 grid ${weekRowGridColsClass} shrink-0 sticky z-30 bg-theme-secondary print:bg-zinc-50`}
                 style={{ height: 'var(--weekCoverageH)', top: 'var(--weekHeaderH)' }}
               >
-                <div className="border-r border-theme-primary/30 flex items-center px-2">
-                  <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>Coverage</span>
-                </div>
+                <button
+                  type="button"
+                  onClick={toggleWeekCoverageMode}
+                  className="border-r border-theme-primary/30 flex items-center gap-1 px-2 w-full h-full hover:bg-theme-hover/50 transition-colors cursor-pointer"
+                  title={weekCoverageMode === 'bars' ? 'Switch to staff count view' : 'Switch to coverage bars view'}
+                >
+                  <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
+                    {weekCoverageMode === 'bars' ? 'Coverage' : 'Staff'}
+                  </span>
+                  <span className="text-theme-muted/50 shrink-0" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
+                    {weekCoverageMode === 'bars' ? '#' : '▐▐'}
+                  </span>
+                </button>
                 {weekDates.map((date) => {
                   const dateStr = dateToString(date);
-                  const count = staffCountByDate[dateStr] ?? 0;
-                  const coverageColor =
-                    count >= 5 ? '#10b981' :
-                    count >= 3 ? '#f59e0b' :
-                    count >= 1 ? '#ef4444' :
-                    null;
+                  const dayData = weekCoverageByDate[dateStr];
+                  const hourly = dayData?.hourly ?? [];
+                  const pct = dayData?.coveragePercent ?? 0;
+                  const peakStaff = dayData?.peakStaff ?? 0;
+                  const minStaff = scheduleViewSettings?.minStaffPerHour ?? 5;
+                  const hasAny = peakStaff > 0;
+                  const isTooltipDay = hoveredCovBar?.dayStr === dateStr;
+
+                  if (weekCoverageMode === 'simple') {
+                    const count = staffCountByDate[dateStr] ?? 0;
+                    const halfMin = Math.ceil(minStaff / 2);
+                    const dotColor =
+                      count === 0 ? undefined
+                      : count >= minStaff ? '#22C55E'
+                      : count < halfMin ? '#EF4444'
+                      : '#F59E0B';
+                    return (
+                      <div
+                        key={date.toISOString()}
+                        className="border-r border-theme-primary/30 flex items-center justify-center gap-1.5"
+                      >
+                        {count === 0 ? (
+                          <span className="text-[11px] font-semibold text-theme-muted/40">—</span>
+                        ) : (
+                          <>
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: dotColor }}
+                            />
+                            <span className="text-[11px] font-semibold" style={{ color: dotColor }}>
+                              {count} staff
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    );
+                  }
                   return (
                     <div
                       key={date.toISOString()}
-                      className="border-r border-theme-primary/30 flex items-center justify-center"
-                      style={{
-                        backgroundColor: coverageColor ? `${coverageColor}18` : undefined,
-                      }}
+                      className="border-r border-theme-primary/30 flex flex-col items-center justify-end relative"
+                      style={{ padding: '3px 3px 2px' }}
                     >
-                      <span className="inline-flex items-center gap-2 whitespace-nowrap">
-                        <span
-                          aria-hidden="true"
-                          className="inline-block w-2 h-2 rounded-full shrink-0"
-                          style={{ backgroundColor: coverageColor ?? '#9ca3af' }}
-                        />
-                        <span
-                          className={`font-bold tabular-nums ${
-                            count > 0 ? '' : 'text-theme-muted'
-                          }`}
-                          style={{ color: count > 0 ? coverageColor ?? undefined : undefined, fontSize: 'var(--weekCoverageTextSize)' }}
-                        >
-                          {count} staff
-                        </span>
+                      {/* Mini bar chart */}
+                      <div
+                        className="flex items-end gap-[1px] w-full relative"
+                        style={{ height: 'calc(var(--weekCoverageH) - 14px)', minHeight: '12px' }}
+                      >
+                        {hourly.map(({ hour, staffCount }, hourIdx) => {
+                          const barPct = peakStaff > 0
+                            ? Math.max(staffCount > 0 ? 10 : 0, Math.round((staffCount / peakStaff) * 100))
+                            : 0;
+                          const barColor = staffCount >= minStaff
+                            ? '#10b981'
+                            : staffCount > 0
+                            ? '#ef4444'
+                            : 'rgba(156,163,175,0.15)';
+                          const isHovered = isTooltipDay && hoveredCovBar?.hourIdx === hourIdx;
+                          return (
+                            <div
+                              key={hour}
+                              className="flex-1 rounded-[1px] cursor-default"
+                              style={{
+                                height: `${barPct}%`,
+                                backgroundColor: isHovered ? (staffCount >= minStaff ? '#34d399' : staffCount > 0 ? '#f87171' : 'rgba(156,163,175,0.4)') : barColor,
+                                alignSelf: 'flex-end',
+                              }}
+                              onMouseEnter={() => setHoveredCovBar({ dayStr: dateStr, hourIdx, hour, count: staffCount })}
+                              onMouseLeave={() => setHoveredCovBar(null)}
+                            />
+                          );
+                        })}
+                        {/* Hover tooltip */}
+                        {isTooltipDay && hoveredCovBar && (
+                          <div
+                            className="absolute top-full left-1/2 -translate-x-1/2 z-50 mt-1 pointer-events-none"
+                            style={{ marginTop: '2px' }}
+                          >
+                            <div className="relative flex flex-col items-center">
+                              <div
+                                className="rounded-md border border-theme-primary px-2 py-1 whitespace-nowrap shadow-lg"
+                                style={{ backgroundColor: '#0F172A', fontSize: '10px', color: '#e2e8f0' }}
+                              >
+                                <span className="font-semibold">{formatHourShort(hoveredCovBar.hour)}</span>
+                                <span className="text-slate-400">: </span>
+                                <span>{hoveredCovBar.count} staff</span>
+                              </div>
+                              {/* Caret */}
+                              <div
+                                className="w-2 h-2 border-l border-b border-theme-primary rotate-[225deg] -mt-[5px]"
+                                style={{ backgroundColor: '#0F172A' }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      {/* Coverage % */}
+                      <span
+                        className="tabular-nums leading-none mt-0.5 font-semibold"
+                        style={{
+                          fontSize: 'var(--weekCoverageTextSize)',
+                          color: hasAny
+                            ? pct >= 80 ? '#10b981' : pct > 0 ? '#ef4444' : '#9ca3af'
+                            : undefined,
+                        }}
+                      >
+                        {hasAny ? `${Math.round(pct)}%` : '—'}
                       </span>
                     </div>
                   );
