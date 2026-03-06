@@ -579,6 +579,7 @@ export function WeekView() {
     getEffectiveHourRange,
     scheduleViewSettings,
     scheduleMode,
+    workingTodayOnly,
   } = useScheduleStore();
 
   const { activeRestaurantId, currentUser } = useAuthStore();
@@ -594,7 +595,7 @@ export function WeekView() {
     () => formatPublishWeekLabel(weekDates[0], weekDates[6]),
     [weekDates]
   );
-  const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
+  const baseFilteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const today = new Date();
@@ -835,6 +836,19 @@ export function WeekView() {
     const hiddenIds = new Set(optimisticDeletedShiftIds);
     return merged.filter((shift) => !hiddenIds.has(shift.id));
   }, [optimisticCreatedShifts, optimisticDeletedShiftIds, optimisticShiftMoves, scopedShifts]);
+  const scheduledEmployeeIds = useMemo(() => {
+    const ids = new Set<string>();
+    displayShifts.forEach((shift) => {
+      if (shift.isBlocked) return;
+      if (shift.date < weekStartYmd || shift.date > weekEndYmd) return;
+      ids.add(shift.employeeId);
+    });
+    return ids;
+  }, [displayShifts, weekEndYmd, weekStartYmd]);
+  const filteredEmployees = useMemo(() => {
+    if (!workingTodayOnly) return baseFilteredEmployees;
+    return baseFilteredEmployees.filter((employee) => scheduledEmployeeIds.has(employee.id));
+  }, [baseFilteredEmployees, scheduledEmployeeIds, workingTodayOnly]);
   const confirmDeleteShift = useMemo(
     () => (confirmDeleteShiftId ? scopedShifts.find((shift) => shift.id === confirmDeleteShiftId) ?? null : null),
     [confirmDeleteShiftId, scopedShifts]
@@ -2308,8 +2322,14 @@ export function WeekView() {
                   {filteredEmployees.length === 0 ? (
                     <div className="flex items-center justify-center h-full text-theme-muted">
                       <div className="text-center">
-                        <p className="text-sm font-medium mb-1">No staff selected</p>
-                        <p className="text-xs">Use the sidebar to select employees</p>
+                        <p className="text-sm font-medium mb-1">
+                          {workingTodayOnly ? 'No staff working today' : 'No staff selected'}
+                        </p>
+                        <p className="text-xs">
+                          {workingTodayOnly
+                            ? 'No shifts scheduled for this week, or try disabling the "Working today" filter'
+                            : 'Use the sidebar to select employees'}
+                        </p>
                       </div>
                     </div>
                   ) : (

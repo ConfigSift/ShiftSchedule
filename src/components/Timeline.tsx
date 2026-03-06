@@ -643,7 +643,7 @@ export function Timeline() {
     const countsLabel = ` (${inserted} added${skipped ? `, ${skipped} skipped` : ''})`;
     showToast(`Copied previous day into draft.${countsLabel}`, 'success');
   }, [activeRestaurantId, copyPreviousDayIntoDraft, selectedDate, showToast]);
-  const filteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
+  const baseFilteredEmployees = getFilteredEmployeesForRestaurant(activeRestaurantId);
   const scopedEmployees = getEmployeesForRestaurant(activeRestaurantId);
   const scopedShifts = getShiftsForRestaurant(activeRestaurantId);
   const shiftsForRender = useMemo(() => {
@@ -662,6 +662,19 @@ export function Timeline() {
     () => new Map(locations.map((location) => [location.id, location.name])),
     [locations]
   );
+  const scheduledEmployeeIds = useMemo(() => {
+    const ids = new Set<string>();
+    shiftsForRender.forEach((shift) => {
+      if (shift.isBlocked) return;
+      if (shift.date < rangeStartYmd || shift.date > rangeEndYmd) return;
+      ids.add(shift.employeeId);
+    });
+    return ids;
+  }, [rangeEndYmd, rangeStartYmd, shiftsForRender]);
+  const filteredEmployees = useMemo(() => {
+    if (!workingTodayOnly) return baseFilteredEmployees;
+    return baseFilteredEmployees.filter((employee) => scheduledEmployeeIds.has(employee.id));
+  }, [baseFilteredEmployees, scheduledEmployeeIds, workingTodayOnly]);
 
   const jobOrder = useMemo(() => {
     const uniqueJobs = new Set<string>();
@@ -4024,5 +4037,4 @@ export function Timeline() {
     </DndContext>
   );
 }
-
 

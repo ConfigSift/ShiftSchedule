@@ -204,10 +204,6 @@ function isPastDate(dateStr: string): boolean {
   return dateStr < toLocalDateString(new Date());
 }
 
-function buildWorkingTodayKey(restaurantId: string | null, date: Date): string {
-  return `${restaurantId ?? 'none'}:${toLocalDateString(date)}`;
-}
-
 function normalizeShiftNotes(notes?: string | null): string {
   if (!notes) return '';
   return String(notes).trim();
@@ -618,7 +614,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         employees,
         shifts: [],
         selectedEmployeeIds: [],
-        lastAppliedWorkingTodayKey: buildWorkingTodayKey(restaurantId, get().selectedDate),
+        lastAppliedWorkingTodayKey: null,
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
@@ -772,17 +768,15 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           minStaffPerHour: Number(settingsData.min_staff_per_hour ?? 5),
         };
 
-    const selectedDate = get().selectedDate;
-    const workingTodayKey = buildWorkingTodayKey(restaurantId, selectedDate);
-    const workingIdsForDate = shifts
-      .filter((shift) => shift.date === toLocalDateString(selectedDate) && !shift.isBlocked)
-      .map((shift) => shift.employeeId);
+    const currentSelectedIds = new Set(get().selectedEmployeeIds);
 
     set({
       employees,
       shifts,
-      selectedEmployeeIds: get().workingTodayOnly ? workingIdsForDate : employees.map((e) => e.id),
-      lastAppliedWorkingTodayKey: get().workingTodayOnly ? workingTodayKey : null,
+      selectedEmployeeIds: employees
+        .map((employee) => employee.id)
+        .filter((employeeId) => currentSelectedIds.has(employeeId)),
+      lastAppliedWorkingTodayKey: null,
       timeOffRequests,
       blockedDayRequests,
       businessHours,
@@ -835,23 +829,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     return { success: true };
   },
 
-  setSelectedDate: (date) => set((state) => {
-    if (!state.workingTodayOnly) {
-      return { selectedDate: date };
-    }
-    const restaurantId = useAuthStore.getState().activeRestaurantId ?? null;
-    const nextKey = buildWorkingTodayKey(restaurantId, date);
-    if (state.lastAppliedWorkingTodayKey === nextKey) {
-      return { selectedDate: date };
-    }
-    const workingIds = get().getWorkingEmployeeIdsForDate(date);
-    return {
-      selectedDate: date,
-      selectedEmployeeIds: workingIds,
-      lastAppliedWorkingTodayKey: nextKey,
-    };
-  }),
-  setViewMode: (mode) => set({ viewMode: mode }),
+  setSelectedDate: (date) => set({ selectedDate: date, lastAppliedWorkingTodayKey: null }),
+  setViewMode: (mode) => set({ viewMode: mode, lastAppliedWorkingTodayKey: null }),
   setContinuousDays: (enabled) => set({ continuousDays: enabled }),
   setScheduleMode: (mode) => set({ scheduleMode: mode }),
 
@@ -957,30 +936,24 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
   deselectAllEmployees: () => set({ selectedEmployeeIds: [] }),
 
-  toggleWorkingTodayOnly: () => set((state) => {
-    const next = !state.workingTodayOnly;
-    if (!next) {
-      return { workingTodayOnly: next };
-    }
-    const workingIds = get().getWorkingEmployeeIdsForDate(state.selectedDate);
-    const restaurantId = useAuthStore.getState().activeRestaurantId ?? null;
-    const nextKey = buildWorkingTodayKey(restaurantId, state.selectedDate);
-    return {
-      workingTodayOnly: next,
-      selectedEmployeeIds: workingIds,
-      lastAppliedWorkingTodayKey: nextKey,
-    };
-  }),
+  toggleWorkingTodayOnly: () => set((state) => ({
+    workingTodayOnly: !state.workingTodayOnly,
+    lastAppliedWorkingTodayKey: null,
+  })),
 
   getWorkingEmployeeIdsForDate: (date) => {
     const state = get();
-    const dateString = toLocalDateString(date);
-    // Build a Set of employee IDs who have at least one non-blocked shift on this date
+    const weekStartDay = state.scheduleViewSettings?.weekStartDay ?? 'sunday';
+    const { start, end } = state.viewMode === 'week'
+      ? getWeekRange(date, weekStartDay)
+      : { start: date, end: date };
+    const startDateString = toLocalDateString(start);
+    const endDateString = toLocalDateString(end);
     const workingIds = new Set<string>();
     for (const shift of state.shifts) {
-      if (shift.date === dateString && !shift.isBlocked) {
-        workingIds.add(shift.employeeId);
-      }
+      if (shift.isBlocked) continue;
+      if (shift.date < startDateString || shift.date > endDateString) continue;
+      workingIds.add(shift.employeeId);
     }
     return Array.from(workingIds);
   },
@@ -2225,11 +2198,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return scopedEmployees.filter((e) => selectedSet.has(e.id));
     }
 
-    if (state.workingTodayOnly) {
-      const workingIds = new Set(get().getWorkingEmployeeIdsForDate(state.selectedDate));
-      return scopedEmployees.filter((e) => workingIds.has(e.id));
-    }
-
     return scopedEmployees;
   },
 
@@ -2351,4 +2319,3 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
   setScheduleViewSettings: (settings) => set({ scheduleViewSettings: settings }),
 }));
-
