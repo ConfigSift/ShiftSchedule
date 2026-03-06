@@ -28,7 +28,6 @@ type DemoSnapshot = {
   timeOffRequests: ScheduleStoreState['timeOffRequests'];
   blockedDayRequests: ScheduleStoreState['blockedDayRequests'];
   businessHours: ScheduleStoreState['businessHours'];
-  coreHours: ScheduleStoreState['coreHours'];
   scheduleViewSettings: ScheduleStoreState['scheduleViewSettings'];
   locations: ScheduleStoreState['locations'];
   dropRequests: ScheduleStoreState['dropRequests'];
@@ -62,7 +61,6 @@ function createSeedSnapshot(): DemoSnapshot {
     timeOffRequests: cloneJson(DEMO_DATA.timeOffRequests),
     blockedDayRequests: cloneJson(DEMO_DATA.blockedDayRequests),
     businessHours: cloneJson(DEMO_DATA.businessHours),
-    coreHours: cloneJson(DEMO_DATA.coreHours),
     scheduleViewSettings: cloneJson(DEMO_DATA.scheduleViewSettings),
     locations: cloneJson(DEMO_DATA.locations),
     dropRequests: cloneJson(DEMO_DATA.dropRequests),
@@ -187,7 +185,6 @@ export function DemoProvider({ children }: DemoProviderProps) {
       timeOffRequests: cloneJson(snapshot.timeOffRequests),
       blockedDayRequests: cloneJson(snapshot.blockedDayRequests),
       businessHours: cloneJson(snapshot.businessHours),
-      coreHours: cloneJson(snapshot.coreHours),
       scheduleViewSettings: cloneJson(snapshot.scheduleViewSettings),
       locations: cloneJson(snapshot.locations),
       dropRequests: cloneJson(snapshot.dropRequests),
@@ -218,7 +215,6 @@ export function DemoProvider({ children }: DemoProviderProps) {
       timeOffRequests: cloneJson(state.timeOffRequests),
       blockedDayRequests: cloneJson(state.blockedDayRequests),
       businessHours: cloneJson(state.businessHours),
-      coreHours: cloneJson(state.coreHours),
       scheduleViewSettings: cloneJson(state.scheduleViewSettings),
       locations: cloneJson(state.locations),
       dropRequests: cloneJson(state.dropRequests),
@@ -266,7 +262,6 @@ export function DemoProvider({ children }: DemoProviderProps) {
 
     const scheduleOverrides: Partial<ScheduleStoreState> = {
       loadRestaurantData: async () => {},
-      loadCoreHours: async () => {},
       hydrate: () => {},
 
       addShift: async (shift) => {
@@ -506,32 +501,6 @@ export function DemoProvider({ children }: DemoProviderProps) {
         };
       },
 
-      saveCoreHours: async (payload) => {
-        const toTime = (value: string | null | undefined, fallback: string) => {
-          const normalized = String(value ?? '').trim();
-          if (!normalized) return fallback;
-          if (normalized.length === 5) return `${normalized}:00`;
-          return normalized;
-        };
-
-        const currentState = useScheduleStore.getState();
-        const existingByDay = new Map(currentState.coreHours.map((row) => [row.dayOfWeek, row]));
-        const updatedCoreHours = payload.hours.map((hour) => {
-          const existing = existingByDay.get(hour.dayOfWeek);
-          return {
-            id: existing?.id ?? `demo-core-${hour.dayOfWeek}`,
-            organizationId: payload.organizationId,
-            dayOfWeek: hour.dayOfWeek,
-            openTime: toTime(hour.openTime, existing?.openTime ?? '11:00:00'),
-            closeTime: toTime(hour.closeTime, existing?.closeTime ?? '22:00:00'),
-            enabled: Boolean(hour.enabled),
-            sortOrder: existing?.sortOrder ?? hour.dayOfWeek,
-          };
-        });
-
-        useScheduleStore.setState({ coreHours: updatedCoreHours });
-        return { success: true };
-      },
       addTimeOffRequest: async (request) => {
         const now = new Date().toISOString();
         const newRequest = {

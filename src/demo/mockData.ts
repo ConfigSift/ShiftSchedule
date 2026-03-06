@@ -11,7 +11,6 @@ import type {
   TimeOffRequest,
   BlockedDayRequest,
   BusinessHour,
-  CoreHour,
   Location,
   ScheduleViewSettings,
   UserProfile,
@@ -97,10 +96,13 @@ export const DEMO_SCHEDULE_VIEW_SETTINGS: ScheduleViewSettings = {
   customStartHour: 9,
   customEndHour: 24,
   weekStartDay: 'monday',
+  minStaffPerHour: 5,
+  coverageEnabled: false,
+  minStaffByHour: {},
 };
 
 // ---------------------------------------------------------------------------
-// Business & Core Hours (restaurant open 10 AM – 11 PM, Mon-Sun)
+// Business Hours (restaurant open 10 AM – 11 PM, Mon-Sun)
 // ---------------------------------------------------------------------------
 
 function makeBizHour(dayOfWeek: number): BusinessHour {
@@ -117,22 +119,6 @@ function makeBizHour(dayOfWeek: number): BusinessHour {
 
 export const DEMO_BUSINESS_HOURS: BusinessHour[] = Array.from({ length: 7 }, (_, i) =>
   makeBizHour(i),
-);
-
-function makeCoreHour(dayOfWeek: number): CoreHour {
-  return {
-    id: `demo-ch-${dayOfWeek}`,
-    organizationId: ORG_ID,
-    dayOfWeek,
-    openTime: '11:00:00',
-    closeTime: '22:00:00',
-    enabled: true,
-    sortOrder: dayOfWeek,
-  };
-}
-
-export const DEMO_CORE_HOURS: CoreHour[] = Array.from({ length: 7 }, (_, i) =>
-  makeCoreHour(i),
 );
 
 // ---------------------------------------------------------------------------
@@ -500,7 +486,6 @@ export const DEMO_DATA = {
   timeOffRequests: DEMO_TIME_OFF_REQUESTS,
   blockedDayRequests: DEMO_BLOCKED_DAY_REQUESTS,
   businessHours: DEMO_BUSINESS_HOURS,
-  coreHours: DEMO_CORE_HOURS,
   scheduleViewSettings: DEMO_SCHEDULE_VIEW_SETTINGS,
   currentUser: DEMO_CURRENT_USER,
   accessibleRestaurants: DEMO_ACCESSIBLE_RESTAURANTS,

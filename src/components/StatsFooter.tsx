@@ -140,11 +140,15 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
     return { estimatedCost: total, missingPayCount: missing };
   }, [relevantShifts, scopedEmployees]);
 
+  const coverageEnabled = scheduleViewSettings?.coverageEnabled ?? false;
+
   const coverageInfo = useMemo(() => {
+    if (!coverageEnabled) return null;
     if (viewMode === 'month') return null;
     if (relevantShifts.length === 0) return null;
 
     const minimumStaff = scheduleViewSettings?.minStaffPerHour ?? 5;
+    const minStaffByHour = scheduleViewSettings?.minStaffByHour ?? {};
     const startHour = scheduleViewSettings?.hourMode === 'custom'
       ? scheduleViewSettings.customStartHour : 0;
     const endHour = scheduleViewSettings?.hourMode === 'custom'
@@ -160,7 +164,7 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
       for (const date of weekDates) {
         const dateKey = dateToString(date);
         const hourly = calculateHourlyCoverage(relevantShifts, dateKey, startHour, endHour);
-        const stats = calculateDayCoverageStats(hourly, minimumStaff);
+        const stats = calculateDayCoverageStats(hourly, minimumStaff, minStaffByHour);
         totalStaffed += stats.totalStaffedHours;
         aboveMin += stats.hoursAboveMinimum;
         totalGap += stats.gapHours;
@@ -169,20 +173,21 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
     } else {
       const dateKey = dateToString(selectedDate);
       const hourly = calculateHourlyCoverage(relevantShifts, dateKey, startHour, endHour);
-      const stats = calculateDayCoverageStats(hourly, minimumStaff);
+      const stats = calculateDayCoverageStats(hourly, minimumStaff, minStaffByHour);
       totalStaffed = stats.totalStaffedHours;
       aboveMin = stats.hoursAboveMinimum;
       totalGap = stats.gapHours;
       // sample ~8 bars
       const step = Math.max(1, Math.floor(hourly.length / 8));
       for (let i = 0; i < hourly.length && bars.length < 8; i += step) {
-        bars.push({ staffed: hourly[i].staffCount > 0, covered: hourly[i].staffCount >= minimumStaff });
+        const hourThreshold = minStaffByHour[hourly[i].hour] ?? minimumStaff;
+        bars.push({ staffed: hourly[i].staffCount > 0, covered: hourly[i].staffCount >= hourThreshold });
       }
     }
 
     if (totalStaffed === 0) return null;
     return { percent: (aboveMin / totalStaffed) * 100, gapHours: totalGap, bars };
-  }, [relevantShifts, scheduleViewSettings, selectedDate, viewMode, weekDates]);
+  }, [coverageEnabled, relevantShifts, scheduleViewSettings, selectedDate, viewMode, weekDates]);
 
   const footerClassName = compact
     ? 'fixed bottom-0 left-0 right-0 h-10 sm:h-11 bg-theme-secondary border-t border-theme-primary flex items-center px-2 sm:px-4 gap-2 sm:gap-5 shrink-0 transition-theme z-40'
@@ -225,41 +230,43 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <div className={`${iconWrapClassName} bg-amber-500/10`}>
-          <Percent className={`${iconClassName} text-amber-400`} />
-        </div>
-        <div>
-          <p className={labelClassName}>Coverage</p>
-          {coverageInfo === null ? (
-            <p className={valueClassName}>-</p>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <div className="flex items-end gap-[1.5px] h-[13px]" aria-hidden>
-                {coverageInfo.bars.map((bar, i) => (
-                  <div
-                    key={i}
-                    className="w-[3px] rounded-[1px]"
-                    style={{
-                      height: bar.staffed ? (bar.covered ? '100%' : '60%') : '20%',
-                      backgroundColor: bar.staffed
-                        ? bar.covered ? '#4ade80' : '#f87171'
-                        : 'rgba(156,163,175,0.2)',
-                    }}
-                  />
-                ))}
+      {coverageEnabled && (
+        <div className="flex items-center gap-2">
+          <div className={`${iconWrapClassName} bg-amber-500/10`}>
+            <Percent className={`${iconClassName} text-amber-400`} />
+          </div>
+          <div>
+            <p className={labelClassName}>Coverage</p>
+            {coverageInfo === null ? (
+              <p className={valueClassName}>-</p>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-end gap-[1.5px] h-[13px]" aria-hidden>
+                  {coverageInfo.bars.map((bar, i) => (
+                    <div
+                      key={i}
+                      className="w-[3px] rounded-[1px]"
+                      style={{
+                        height: bar.staffed ? (bar.covered ? '100%' : '60%') : '20%',
+                        backgroundColor: bar.staffed
+                          ? bar.covered ? '#4ade80' : '#f87171'
+                          : 'rgba(156,163,175,0.2)',
+                      }}
+                    />
+                  ))}
+                </div>
+                <span className={valueClassName}>{Math.round(coverageInfo.percent)}%</span>
+                {coverageInfo.gapHours > 0 && (
+                  <span className="flex items-center gap-0.5 text-[9px] text-red-400 font-medium whitespace-nowrap">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                    {coverageInfo.gapHours}h
+                  </span>
+                )}
               </div>
-              <span className={valueClassName}>{Math.round(coverageInfo.percent)}%</span>
-              {coverageInfo.gapHours > 0 && (
-                <span className="flex items-center gap-0.5 text-[9px] text-red-400 font-medium whitespace-nowrap">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-                  {coverageInfo.gapHours}h
-                </span>
-              )}
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className={sectionWrapClassName}>
         {(Object.keys(SECTIONS) as Section[]).map((section) => {

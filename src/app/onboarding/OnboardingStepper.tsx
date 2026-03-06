@@ -404,9 +404,6 @@ export function OnboardingStepper() {
   const [weekStartDay, setWeekStartDay] = useState<'sunday' | 'monday'>('monday');
   const [setHours, setSetHours] = useState(false);
   const [businessHours, setBusinessHours] = useState<DayHoursRow[]>(() => buildUniformHours('10:00', '23:00'));
-  const [setCoreHours, setSetCoreHours] = useState(false);
-  const [coreOpenTime, setCoreOpenTime] = useState('11:00');
-  const [coreCloseTime, setCoreCloseTime] = useState('14:00');
   const [selectedRoles, setSelectedRoles] = useState<string[]>(DEFAULT_ROLES);
 
   // Step 3 — Subscription (staff drafts are edited in Step 2)
@@ -662,14 +659,6 @@ export function OnboardingStepper() {
     setRestaurantNameError('');
   }, []);
 
-  const copyCoreHoursFromOperating = useCallback(() => {
-    const source = businessHours.find((hour) => hour.enabled) ?? businessHours[0];
-    if (!source) return;
-    setSetCoreHours(true);
-    setCoreOpenTime(source.openTime);
-    setCoreCloseTime(source.closeTime);
-  }, [businessHours]);
-
   const saveStaffProfiles = useCallback(async (orgId: string) => {
     const staffRows = inviteRows.filter((row) => row.name.trim() && row.role.trim());
     persistStaffDrafts(orgId, staffRows);
@@ -857,23 +846,6 @@ export function OnboardingStepper() {
         }
       }
 
-      if (setCoreHours && coreOpenTime && coreCloseTime) {
-        const coreHours = Array.from({ length: 7 }, (_, i) => ({
-          dayOfWeek: i,
-          openTime: coreOpenTime,
-          closeTime: coreCloseTime,
-          enabled: true,
-          sortOrder: i,
-        }));
-        const coreHoursResult = await apiFetch('/api/core-hours/save', {
-          method: 'POST',
-          json: { organizationId, hours: coreHours },
-        });
-        if (!coreHoursResult.ok) {
-          hadSaveError = true;
-        }
-      }
-
       await saveStaffProfiles(organizationId);
       if (hadSaveError) {
         setError('Some setup details could not be saved. You can finish them later in CrewShyft.');
@@ -885,13 +857,10 @@ export function OnboardingStepper() {
     }
   }, [
     businessHours,
-    coreOpenTime,
-    coreCloseTime,
     isSetupWizard,
     organizationId,
     router,
     saveStaffProfiles,
-    setCoreHours,
     setHours,
     weekStartDay,
   ]);
@@ -1490,9 +1459,6 @@ export function OnboardingStepper() {
                   weekStartDay={weekStartDay}
                   setHoursEnabled={setHours}
                   businessHours={businessHours}
-                  setCoreHoursEnabled={setCoreHours}
-                  coreOpenTime={coreOpenTime}
-                  coreCloseTime={coreCloseTime}
                   staffRows={inviteRows}
                   staffRoleOptions={inviteRoleOptions}
                   selectedRoles={selectedRoles}
@@ -1502,10 +1468,6 @@ export function OnboardingStepper() {
                   onSetHoursChange={setSetHours}
                   onBusinessHourChange={updateBusinessHour}
                   onApplyHoursToAll={applyHoursToAllDays}
-                  onSetCoreHoursChange={setSetCoreHours}
-                  onCoreOpenTimeChange={setCoreOpenTime}
-                  onCoreCloseTimeChange={setCoreCloseTime}
-                  onCopyCoreHoursFromOperating={copyCoreHoursFromOperating}
                   onToggleRole={toggleRole}
                   onStaffRowChange={updateInviteRow}
                   onAddStaffRow={addInviteRow}
@@ -1769,9 +1731,6 @@ function ScheduleStepView({
   weekStartDay,
   setHoursEnabled,
   businessHours,
-  setCoreHoursEnabled,
-  coreOpenTime,
-  coreCloseTime,
   staffRows,
   staffRoleOptions,
   selectedRoles,
@@ -1781,10 +1740,6 @@ function ScheduleStepView({
   onSetHoursChange,
   onBusinessHourChange,
   onApplyHoursToAll,
-  onSetCoreHoursChange,
-  onCoreOpenTimeChange,
-  onCoreCloseTimeChange,
-  onCopyCoreHoursFromOperating,
   onToggleRole,
   onStaffRowChange,
   onAddStaffRow,
@@ -1796,9 +1751,6 @@ function ScheduleStepView({
   weekStartDay: 'sunday' | 'monday';
   setHoursEnabled: boolean;
   businessHours: DayHoursRow[];
-  setCoreHoursEnabled: boolean;
-  coreOpenTime: string;
-  coreCloseTime: string;
   staffRows: InviteRow[];
   staffRoleOptions: string[];
   selectedRoles: string[];
@@ -1808,10 +1760,6 @@ function ScheduleStepView({
   onSetHoursChange: (v: boolean) => void;
   onBusinessHourChange: (dayOfWeek: number, field: 'openTime' | 'closeTime' | 'enabled', value: string | boolean) => void;
   onApplyHoursToAll: () => void;
-  onSetCoreHoursChange: (v: boolean) => void;
-  onCoreOpenTimeChange: (v: string) => void;
-  onCoreCloseTimeChange: (v: string) => void;
-  onCopyCoreHoursFromOperating: () => void;
   onToggleRole: (role: string) => void;
   onStaffRowChange: (index: number, field: keyof InviteRow, value: string) => void;
   onAddStaffRow: () => void;
@@ -1957,64 +1905,6 @@ function ScheduleStepView({
                     </div>
                   </div>
                 ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Core hours */}
-        <div>
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <label className="block text-sm font-medium text-theme-secondary">
-              <Clock className="w-4 h-4 inline mr-1.5 -mt-0.5" />
-              Core hours (optional)
-            </label>
-            <button
-              type="button"
-              onClick={onCopyCoreHoursFromOperating}
-              className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
-            >
-              Copy from operating hours
-            </button>
-          </div>
-          <div className="flex items-center gap-3 mb-3">
-            <button
-              type="button"
-              onClick={() => onSetCoreHoursChange(!setCoreHoursEnabled)}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                setCoreHoursEnabled ? 'bg-amber-500' : 'bg-theme-tertiary'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  setCoreHoursEnabled ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-            <span className="text-sm text-theme-secondary">
-              {setCoreHoursEnabled ? 'Set core hours' : 'Skip for now'}
-            </span>
-          </div>
-          {setCoreHoursEnabled && (
-            <div className="flex items-center gap-3">
-              <div className="flex-1">
-                <label className="block text-xs text-theme-muted mb-1">Start</label>
-                <input
-                  type="time"
-                  value={coreOpenTime}
-                  onChange={(e) => onCoreOpenTimeChange(e.target.value)}
-                  className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                />
-              </div>
-              <span className="text-theme-muted mt-5">to</span>
-              <div className="flex-1">
-                <label className="block text-xs text-theme-muted mb-1">End</label>
-                <input
-                  type="time"
-                  value={coreCloseTime}
-                  onChange={(e) => onCoreCloseTimeChange(e.target.value)}
-                  className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                />
               </div>
             </div>
           )}

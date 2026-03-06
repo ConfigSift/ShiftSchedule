@@ -33,7 +33,6 @@ export function DemoSettingsModal({ isOpen, onClose }: DemoSettingsModalProps) {
   const {
     scheduleViewSettings,
     businessHours,
-    coreHours,
     setScheduleViewSettings,
     showToast,
   } = useScheduleStore();
@@ -44,18 +43,12 @@ export function DemoSettingsModal({ isOpen, onClose }: DemoSettingsModalProps) {
   const [customEndHour, setCustomEndHour] = useState(24);
   const [businessOpenTime, setBusinessOpenTime] = useState('10:00');
   const [businessCloseTime, setBusinessCloseTime] = useState('23:00');
-  const [coreOpenTime, setCoreOpenTime] = useState('11:00');
-  const [coreCloseTime, setCoreCloseTime] = useState('22:00');
 
   const restaurantId = activeRestaurantId ?? scheduleViewSettings?.organizationId ?? 'demo-org-001';
 
   const businessSeed = useMemo(
     () => businessHours.find((item) => item.enabled && item.openTime && item.closeTime) ?? businessHours[0],
     [businessHours],
-  );
-  const coreSeed = useMemo(
-    () => coreHours.find((item) => item.enabled && item.openTime && item.closeTime) ?? coreHours[0],
-    [coreHours],
   );
 
   useEffect(() => {
@@ -67,11 +60,9 @@ export function DemoSettingsModal({ isOpen, onClose }: DemoSettingsModalProps) {
       setCustomEndHour(scheduleViewSettings?.customEndHour ?? 24);
       setBusinessOpenTime((businessSeed?.openTime ?? '10:00:00').slice(0, 5));
       setBusinessCloseTime((businessSeed?.closeTime ?? '23:00:00').slice(0, 5));
-      setCoreOpenTime((coreSeed?.openTime ?? '11:00:00').slice(0, 5));
-      setCoreCloseTime((coreSeed?.closeTime ?? '22:00:00').slice(0, 5));
     }, 0);
     return () => clearTimeout(timer);
-  }, [businessSeed, coreSeed, isOpen, scheduleViewSettings]);
+  }, [businessSeed, isOpen, scheduleViewSettings]);
 
   const applySettings = () => {
     const baseId = scheduleViewSettings?.id ?? 'demo-svs-001';
@@ -82,13 +73,14 @@ export function DemoSettingsModal({ isOpen, onClose }: DemoSettingsModalProps) {
       customStartHour,
       customEndHour,
       weekStartDay,
+      minStaffPerHour: scheduleViewSettings?.minStaffPerHour ?? 5,
+      coverageEnabled: scheduleViewSettings?.coverageEnabled ?? false,
+      minStaffByHour: scheduleViewSettings?.minStaffByHour ?? {},
     } as const;
     setScheduleViewSettings(nextSettings);
 
     const openBusiness = normalizeTime(businessOpenTime, '10:00:00');
     const closeBusiness = normalizeTime(businessCloseTime, '23:00:00');
-    const openCore = normalizeTime(coreOpenTime, '11:00:00');
-    const closeCore = normalizeTime(coreCloseTime, '22:00:00');
 
     useScheduleStore.setState((state) => {
       const nextBusiness =
@@ -110,29 +102,7 @@ export function DemoSettingsModal({ isOpen, onClose }: DemoSettingsModalProps) {
               sortOrder: dayOfWeek,
             }));
 
-      const nextCore =
-        state.coreHours.length > 0
-          ? state.coreHours.map((row) => ({
-              ...row,
-              organizationId: restaurantId,
-              openTime: openCore,
-              closeTime: closeCore,
-              enabled: true,
-            }))
-          : Array.from({ length: 7 }, (_, dayOfWeek) => ({
-              id: `demo-ch-${dayOfWeek}`,
-              organizationId: restaurantId,
-              dayOfWeek,
-              openTime: openCore,
-              closeTime: closeCore,
-              enabled: true,
-              sortOrder: dayOfWeek,
-            }));
-
-      return {
-        businessHours: nextBusiness,
-        coreHours: nextCore,
-      };
+      return { businessHours: nextBusiness };
     });
 
     showToast('Demo schedule settings saved.', 'success');
@@ -219,27 +189,6 @@ export function DemoSettingsModal({ isOpen, onClose }: DemoSettingsModalProps) {
               type="time"
               value={businessCloseTime}
               onChange={(e) => setBusinessCloseTime(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/40"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div className="grid gap-2">
-            <label className="text-sm font-medium text-theme-secondary">Core Open</label>
-            <input
-              type="time"
-              value={coreOpenTime}
-              onChange={(e) => setCoreOpenTime(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/40"
-            />
-          </div>
-          <div className="grid gap-2">
-            <label className="text-sm font-medium text-theme-secondary">Core Close</label>
-            <input
-              type="time"
-              value={coreCloseTime}
-              onChange={(e) => setCoreCloseTime(e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/40"
             />
           </div>

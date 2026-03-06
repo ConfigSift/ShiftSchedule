@@ -44,10 +44,13 @@ export function calculateHourlyCoverage(
 /**
  * Aggregate per-hour coverage into summary stats.
  * coveragePercent = (hoursAboveMinimum / totalStaffedHours) * 100
+ *
+ * minStaffByHour overrides minimumStaff for specific hours.
  */
 export function calculateDayCoverageStats(
   hourlyCoverage: HourlyCoverage[],
   minimumStaff: number,
+  minStaffByHour: Record<number, number> = {},
 ): CoverageStats {
   let totalStaffedHours = 0;
   let hoursAboveMinimum = 0;
@@ -55,6 +58,7 @@ export function calculateDayCoverageStats(
   let peakHour = hourlyCoverage[0]?.hour ?? 0;
 
   for (const { hour, staffCount } of hourlyCoverage) {
+    const threshold = minStaffByHour[hour] ?? minimumStaff;
     if (staffCount > 0) {
       totalStaffedHours++;
       if (staffCount > peakStaff) {
@@ -62,7 +66,7 @@ export function calculateDayCoverageStats(
         peakHour = hour;
       }
     }
-    if (staffCount >= minimumStaff) {
+    if (staffCount >= threshold) {
       hoursAboveMinimum++;
     }
   }

@@ -171,16 +171,6 @@ export interface BusinessHour {
   sortOrder?: number;
 }
 
-export interface CoreHour {
-  id: string;
-  organizationId: string;
-  dayOfWeek: number;
-  openTime?: string;
-  closeTime?: string;
-  enabled: boolean;
-  sortOrder?: number;
-}
-
 export type ScheduleHourMode = 'business' | 'full24' | 'custom';
 
 export interface ScheduleViewSettings {
@@ -190,7 +180,9 @@ export interface ScheduleViewSettings {
   customStartHour: number; // 0-23
   customEndHour: number;   // 1-24
   weekStartDay: WeekStartDay;
-  minStaffPerHour: number; // minimum staff count threshold for coverage (default 2)
+  minStaffPerHour: number;            // global fallback minimum staff threshold
+  coverageEnabled: boolean;           // whether coverage tracking is active
+  minStaffByHour: Record<number, number>; // per-hour overrides for minimum staff
 }
 
 export type WeekStartDay = 'sunday' | 'monday';

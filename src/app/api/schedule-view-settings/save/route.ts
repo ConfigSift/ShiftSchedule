@@ -15,6 +15,8 @@ type SavePayload = {
   customEndHour?: number;
   weekStartDay?: 'sunday' | 'monday';
   minStaffPerHour?: number;
+  coverageEnabled?: boolean;
+  minStaffByHour?: Record<string, number>;
 };
 
 export async function POST(request: NextRequest) {
@@ -25,7 +27,9 @@ export async function POST(request: NextRequest) {
   const hasHourMode = typeof payload.hourMode === 'string';
   const hasWeekStartDay = typeof payload.weekStartDay === 'string';
   const hasMinStaff = typeof payload.minStaffPerHour === 'number';
-  if (!hasHourMode && !hasWeekStartDay && !hasMinStaff) {
+  const hasCoverageEnabled = typeof payload.coverageEnabled === 'boolean';
+  const hasMinStaffByHour = typeof payload.minStaffByHour === 'object' && payload.minStaffByHour !== null;
+  if (!hasHourMode && !hasWeekStartDay && !hasMinStaff && !hasCoverageEnabled && !hasMinStaffByHour) {
     return badRequest('Missing required fields.');
   }
 
@@ -119,6 +123,21 @@ export async function POST(request: NextRequest) {
       return badRequest('minStaffPerHour must be an integer between 1 and 20.');
     }
     updatePayload.min_staff_per_hour = minStaff;
+  }
+  if (hasCoverageEnabled) {
+    updatePayload.coverage_enabled = Boolean(payload.coverageEnabled);
+  }
+  if (hasMinStaffByHour) {
+    // Validate each entry: keys 0-23, values 0-20
+    const byHour: Record<string, number> = {};
+    for (const [k, v] of Object.entries(payload.minStaffByHour!)) {
+      const hour = Number(k);
+      const val = Number(v);
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) continue;
+      if (!Number.isInteger(val) || val < 0 || val > 20) continue;
+      byHour[String(hour)] = val;
+    }
+    updatePayload.min_staff_by_hour = byHour;
   }
 
   let data;

@@ -910,7 +910,10 @@ export function WeekView() {
   }, [displayShifts, visibleEmployeeIdSet, weekDates]);
 
   const weekCoverageByDate = useMemo(() => {
+    const coverageEnabled = scheduleViewSettings?.coverageEnabled ?? false;
+    if (!coverageEnabled) return {} as Record<string, { hourly: ReturnType<typeof calculateHourlyCoverage>; coveragePercent: number; peakStaff: number; }>;
     const minStaff = scheduleViewSettings?.minStaffPerHour ?? 5;
+    const minStaffByHour = scheduleViewSettings?.minStaffByHour ?? {};
     const startHour = scheduleViewSettings?.hourMode === 'custom'
       ? scheduleViewSettings.customStartHour
       : 8;
@@ -925,7 +928,7 @@ export function WeekView() {
     for (const date of weekDates) {
       const dateStr = dateToString(date);
       const hourly = calculateHourlyCoverage(displayShifts, dateStr, startHour, endHour);
-      const stats = calculateDayCoverageStats(hourly, minStaff);
+      const stats = calculateDayCoverageStats(hourly, minStaff, minStaffByHour);
       result[dateStr] = { hourly, coveragePercent: stats.coveragePercent, peakStaff: stats.peakStaff };
     }
     return result;
@@ -2188,22 +2191,31 @@ export function WeekView() {
                 className={`border-b border-theme-primary/30 grid ${weekRowGridColsClass} shrink-0 sticky z-30 bg-theme-secondary print:bg-zinc-50`}
                 style={{ height: 'var(--weekCoverageH)', top: 'var(--weekHeaderH)' }}
               >
-                <button
-                  type="button"
-                  onClick={toggleWeekCoverageMode}
-                  className="border-r border-theme-primary/30 flex items-center gap-1 px-2 w-full h-full hover:bg-theme-hover/50 transition-colors cursor-pointer"
-                  title={weekCoverageMode === 'bars' ? 'Switch to staff count view' : 'Switch to coverage bars view'}
-                >
-                  <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
-                    {weekCoverageMode === 'bars' ? 'Coverage' : 'Staff'}
-                  </span>
-                  <span className="text-theme-muted/50 shrink-0" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
-                    {weekCoverageMode === 'bars' ? '#' : '▐▐'}
-                  </span>
-                </button>
+                {scheduleViewSettings?.coverageEnabled ? (
+                  <button
+                    type="button"
+                    onClick={toggleWeekCoverageMode}
+                    className="border-r border-theme-primary/30 flex items-center gap-1 px-2 w-full h-full hover:bg-theme-hover/50 transition-colors cursor-pointer"
+                    title={weekCoverageMode === 'bars' ? 'Switch to staff count view' : 'Switch to coverage bars view'}
+                  >
+                    <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
+                      {weekCoverageMode === 'bars' ? 'Coverage' : 'Staff'}
+                    </span>
+                    <span className="text-theme-muted/50 shrink-0" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
+                      {weekCoverageMode === 'bars' ? '#' : '▐▐'}
+                    </span>
+                  </button>
+                ) : (
+                  <div className="border-r border-theme-primary/30 flex items-center px-2 w-full h-full">
+                    <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
+                      Staff
+                    </span>
+                  </div>
+                )}
                 {weekDates.map((date) => {
                   const dateStr = dateToString(date);
                   const dayData = weekCoverageByDate[dateStr];
+                  const coverageEnabled = scheduleViewSettings?.coverageEnabled ?? false;
                   const hourly = dayData?.hourly ?? [];
                   const pct = dayData?.coveragePercent ?? 0;
                   const peakStaff = dayData?.peakStaff ?? 0;
@@ -2211,7 +2223,7 @@ export function WeekView() {
                   const hasAny = peakStaff > 0;
                   const isTooltipDay = hoveredCovBar?.dayStr === dateStr;
 
-                  if (weekCoverageMode === 'simple') {
+                  if (!coverageEnabled || weekCoverageMode === 'simple') {
                     const count = staffCountByDate[dateStr] ?? 0;
                     const halfMin = Math.ceil(minStaff / 2);
                     const dotColor =
@@ -2255,7 +2267,8 @@ export function WeekView() {
                           const barPct = peakStaff > 0
                             ? Math.max(staffCount > 0 ? 10 : 0, Math.round((staffCount / peakStaff) * 100))
                             : 0;
-                          const barColor = staffCount >= minStaff
+                          const hourThreshold = scheduleViewSettings?.minStaffByHour?.[hour] ?? minStaff;
+                          const barColor = staffCount >= hourThreshold
                             ? '#10b981'
                             : staffCount > 0
                             ? '#ef4444'
@@ -2267,7 +2280,7 @@ export function WeekView() {
                               className="flex-1 rounded-[1px] cursor-default"
                               style={{
                                 height: `${barPct}%`,
-                                backgroundColor: isHovered ? (staffCount >= minStaff ? '#34d399' : staffCount > 0 ? '#f87171' : 'rgba(156,163,175,0.4)') : barColor,
+                                backgroundColor: isHovered ? (staffCount >= hourThreshold ? '#34d399' : staffCount > 0 ? '#f87171' : 'rgba(156,163,175,0.4)') : barColor,
                                 alignSelf: 'flex-end',
                               }}
                               onMouseEnter={() => setHoveredCovBar({ dayStr: dateStr, hourIdx, hour, count: staffCount })}

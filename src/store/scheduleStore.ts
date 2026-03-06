@@ -8,7 +8,6 @@ import {
   BlockedDayRequest,
   BlockedDayStatus,
   BusinessHour,
-  CoreHour,
   Location,
   DropShiftRequest,
   ChatMessage,
@@ -179,18 +178,6 @@ function toBusinessHourRow(row: UnknownRow): BusinessHour {
   };
 }
 
-function toCoreHourRow(row: UnknownRow): CoreHour {
-  return {
-    id: readString(row.id),
-    organizationId: readString(row.organization_id),
-    dayOfWeek: readNumber(row.day_of_week),
-    openTime: readOptionalString(row.open_time),
-    closeTime: readOptionalString(row.close_time),
-    enabled: Boolean(row.enabled),
-    sortOrder: row.sort_order != null ? readNumber(row.sort_order) : undefined,
-  };
-}
-
 // Convert Date to YYYY-MM-DD string using LOCAL timezone (not UTC)
 // This ensures consistent date comparison with shift_date values
 function toLocalDateString(date: Date): string {
@@ -255,7 +242,6 @@ interface ScheduleState {
   timeOffRequests: TimeOffRequest[];
   blockedDayRequests: BlockedDayRequest[];
   businessHours: BusinessHour[];
-  coreHours: CoreHour[];
   scheduleViewSettings: ScheduleViewSettings | null;
   locations: Location[];
   dropRequests: DropShiftRequest[];
@@ -282,11 +268,6 @@ interface ScheduleState {
 
   hydrate: () => void;
   loadRestaurantData: (restaurantId: string | null) => Promise<void>;
-  loadCoreHours: (restaurantId: string | null) => Promise<void>;
-  saveCoreHours: (payload: {
-    organizationId: string;
-    hours: Array<{ dayOfWeek: number; openTime?: string | null; closeTime?: string | null; enabled: boolean }>;
-  }) => Promise<{ success: boolean; error?: string }>;
   setSelectedDate: (date: Date) => void;
   setViewMode: (mode: ViewMode) => void;
   setContinuousDays: (enabled: boolean) => void;
@@ -457,7 +438,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   timeOffRequests: [],
   blockedDayRequests: [],
   businessHours: [],
-  coreHours: [],
   scheduleViewSettings: null,
   locations: [],
   dropRequests: [],
@@ -490,7 +470,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       timeOffRequests: [],
       blockedDayRequests: [],
       businessHours: [],
-      coreHours: [],
       scheduleViewSettings: null,
       dropRequests,
       chatMessages,
@@ -508,7 +487,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
-        coreHours: [],
         scheduleViewSettings: null,
         locations: [],
         shiftLoadCounts: { total: 0, visible: 0 },
@@ -540,7 +518,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
-        coreHours: [],
         scheduleViewSettings: null,
         locations: [],
         shiftLoadCounts: { total: 0, visible: 0 },
@@ -618,7 +595,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
         timeOffRequests: [],
         blockedDayRequests: [],
         businessHours: [],
-        coreHours: [],
         scheduleViewSettings: null,
         locations,
         shiftLoadCounts: { total: 0, visible: 0 },
@@ -728,24 +704,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
               : a.dayOfWeek - b.dayOfWeek
           );
 
-    const { data: coreData, error: coreError } = (await supabase
-      .from('core_hour_ranges')
-      .select('*')
-      .eq('organization_id', restaurantId)) as {
-        data: Array<Record<string, unknown>> | null;
-        error: { message: string } | null;
-      };
-
-    const coreHours: CoreHour[] = coreError
-      ? []
-      : (coreData || [])
-          .map(toCoreHourRow)
-          .sort((a, b) =>
-            a.dayOfWeek === b.dayOfWeek
-              ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
-              : a.dayOfWeek - b.dayOfWeek
-          );
-
     // Load schedule view settings
     const { data: settingsData, error: settingsError } = (await supabase
       .from('schedule_view_settings')
@@ -766,6 +724,14 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
           customEndHour: Number(settingsData.custom_end_hour ?? 24),
           weekStartDay: (settingsData.week_start_day ?? 'sunday') === 'monday' ? 'monday' : 'sunday',
           minStaffPerHour: Number(settingsData.min_staff_per_hour ?? 5),
+          coverageEnabled: Boolean(settingsData.coverage_enabled ?? false),
+          minStaffByHour: (typeof settingsData.min_staff_by_hour === 'object' && settingsData.min_staff_by_hour !== null && !Array.isArray(settingsData.min_staff_by_hour))
+            ? Object.fromEntries(
+                Object.entries(settingsData.min_staff_by_hour as Record<string, unknown>)
+                  .map(([k, v]) => [Number(k), Number(v)])
+                  .filter(([k, v]) => !Number.isNaN(k) && !Number.isNaN(v))
+              )
+            : {},
         };
 
     const currentSelectedIds = new Set(get().selectedEmployeeIds);
@@ -780,7 +746,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       timeOffRequests,
       blockedDayRequests,
       businessHours,
-      coreHours,
       scheduleViewSettings,
       locations,
       shiftLoadCounts: {
@@ -789,46 +754,6 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       },
     });
   },
-  loadCoreHours: async (restaurantId) => {
-    if (!restaurantId) {
-      set({ coreHours: [] });
-      return;
-    }
-    const { data, error } = (await supabase
-      .from('core_hour_ranges')
-      .select('*')
-      .eq('organization_id', restaurantId)) as {
-        data: Array<Record<string, unknown>> | null;
-        error: { message: string } | null;
-      };
-    if (error) {
-      set({ coreHours: [] });
-      return;
-    }
-    const coreHours: CoreHour[] = (data || [])
-      .map(toCoreHourRow)
-      .sort((a, b) =>
-        a.dayOfWeek === b.dayOfWeek
-          ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
-          : a.dayOfWeek - b.dayOfWeek
-      );
-    set({ coreHours });
-  },
-  saveCoreHours: async (payload) => {
-    if (!payload.organizationId) {
-      return { success: false, error: 'organizationId is required.' };
-    }
-    const result = await apiFetch('/api/core-hours/save', {
-      method: 'POST',
-      json: payload,
-    });
-    if (!result.ok) {
-      return { success: false, error: result.error ?? 'Unable to save core hours.' };
-    }
-    await get().loadCoreHours(payload.organizationId);
-    return { success: true };
-  },
-
   setSelectedDate: (date) => set({ selectedDate: date, lastAppliedWorkingTodayKey: null }),
   setViewMode: (mode) => set({ viewMode: mode, lastAppliedWorkingTodayKey: null }),
   setContinuousDays: (enabled) => set({ continuousDays: enabled }),

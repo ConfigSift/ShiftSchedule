@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useScheduleStore } from '../../store/scheduleStore';
@@ -35,11 +35,17 @@ const buildDefaultRows = () =>
 const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message || fallback : fallback;
 
+function formatHourLabel(hour: number): string {
+  if (hour === 0) return '12 AM';
+  if (hour < 12) return `${hour} AM`;
+  if (hour === 12) return '12 PM';
+  return `${hour - 12} PM`;
+}
+
 export default function BusinessHoursPage() {
   const router = useRouter();
   const {
     businessHours,
-    coreHours,
     scheduleViewSettings,
     loadRestaurantData,
     showToast,
@@ -57,9 +63,7 @@ export default function BusinessHoursPage() {
   } = useRestaurantLocations(activeRestaurantId);
 
   const [rows, setRows] = useState<HourRow[]>([]);
-  const [coreRows, setCoreRows] = useState<HourRow[]>([]);
   const [saving, setSaving] = useState(false);
-  const [savingCore, setSavingCore] = useState(false);
   const [newLocationName, setNewLocationName] = useState('');
   const [locationsMessage, setLocationsMessage] = useState<string | null>(null);
   const [locationActionId, setLocationActionId] = useState<string | null>(null);
@@ -70,10 +74,19 @@ export default function BusinessHoursPage() {
   const [customStartHour, setCustomStartHour] = useState(6);
   const [customEndHour, setCustomEndHour] = useState(22);
   const [weekStartDay, setWeekStartDay] = useState<'sunday' | 'monday'>('sunday');
-  const [minStaffPerHour, setMinStaffPerHour] = useState(5);
   const [savingViewSettings, setSavingViewSettings] = useState(false);
   const [savingWeekStart, setSavingWeekStart] = useState(false);
-  const [savingMinStaff, setSavingMinStaff] = useState(false);
+
+  // Coverage settings state
+  const [coverageEnabled, setCoverageEnabled] = useState(false);
+  const [minStaffPerHour, setMinStaffPerHour] = useState(5);
+  const [minStaffByHour, setMinStaffByHour] = useState<Record<number, number>>({});
+  const [savingCoverage, setSavingCoverage] = useState(false);
+
+  // Quick-fill state
+  const [quickFillAll, setQuickFillAll] = useState(5);
+  const [quickFillLunch, setQuickFillLunch] = useState(5);
+  const [quickFillDinner, setQuickFillDinner] = useState(8);
 
   const isManager = isManagerRole(getUserRole(currentUser?.role));
 
@@ -109,22 +122,6 @@ export default function BusinessHoursPage() {
     setRows(mapped);
   }, [businessHours]);
 
-  useEffect(() => {
-    if (coreHours.length === 0) {
-      setCoreRows(buildDefaultRows());
-      return;
-    }
-    const mapped = coreHours.map((range) => ({
-      id: range.id ?? makeRangeId(),
-      dayOfWeek: range.dayOfWeek,
-      openTime: range.openTime?.slice(0, 5) ?? '09:00',
-      closeTime: range.closeTime?.slice(0, 5) ?? '17:00',
-      enabled: range.enabled ?? true,
-      sortOrder: range.sortOrder,
-    }));
-    setCoreRows(mapped);
-  }, [coreHours]);
-
   // Load schedule view settings
   useEffect(() => {
     if (scheduleViewSettings) {
@@ -133,15 +130,43 @@ export default function BusinessHoursPage() {
       setCustomEndHour(scheduleViewSettings.customEndHour);
       setWeekStartDay(scheduleViewSettings.weekStartDay ?? 'sunday');
       setMinStaffPerHour(scheduleViewSettings.minStaffPerHour ?? 5);
+      setCoverageEnabled(scheduleViewSettings.coverageEnabled ?? false);
+      setMinStaffByHour(scheduleViewSettings.minStaffByHour ?? {});
     } else {
-      // Default values
       setHourMode('full24');
       setCustomStartHour(6);
       setCustomEndHour(22);
       setWeekStartDay('sunday');
       setMinStaffPerHour(5);
+      setCoverageEnabled(false);
+      setMinStaffByHour({});
     }
   }, [scheduleViewSettings]);
+
+  // Derive the hour range to display in the per-hour editor
+  const editorHourRange = useMemo((): { start: number; end: number } => {
+    if (hourMode === 'custom') {
+      return { start: customStartHour, end: customEndHour };
+    }
+    // Derive from business hours rows
+    const enabled = rows.filter((r) => r.enabled);
+    if (enabled.length === 0) return { start: 9, end: 23 };
+    const parseH = (t: string) => {
+      const [h] = t.split(':');
+      return Number(h);
+    };
+    const starts = enabled.map((r) => parseH(r.openTime));
+    const ends = enabled.map((r) => parseH(r.closeTime));
+    return {
+      start: Math.max(0, Math.min(...starts)),
+      end: Math.min(24, Math.max(...ends)),
+    };
+  }, [hourMode, customStartHour, customEndHour, rows]);
+
+  const editorHours = useMemo(
+    () => Array.from({ length: editorHourRange.end - editorHourRange.start }, (_, i) => editorHourRange.start + i),
+    [editorHourRange],
+  );
 
   const parseTimeToDecimal = (value: string) => {
     if (!value) return 0;
@@ -175,9 +200,6 @@ export default function BusinessHoursPage() {
   const handleSave = async () => {
     if (!activeRestaurantId) {
       showToast('Select a restaurant first', 'error');
-      if (process.env.NODE_ENV !== 'production') {
-        console.error('[schedule-settings] save business hours failed', new Error('Missing active restaurant'));
-      }
       return;
     }
     const payload = {
@@ -195,23 +217,6 @@ export default function BusinessHoursPage() {
         const statusLabel = result.status === 0 ? 'network' : result.status;
         const message = result.error ?? result.rawText?.slice(0, 120) ?? 'Unknown error';
         showToast(`Save failed (${statusLabel}): ${message}`, 'error');
-        if (process.env.NODE_ENV !== 'production') {
-          let safeData: string;
-          try {
-            safeData = JSON.stringify(result.data ?? null);
-          } catch {
-            safeData = '"[unserializable]"';
-          }
-          const debugPayload = {
-            endpoint: '/api/business-hours/save',
-            payload,
-            status: result.status,
-            error: result.error,
-            rawText: result.rawText?.slice(0, 500),
-            data: safeData,
-          };
-          console.error('[schedule-settings] save business hours failed', JSON.stringify(debugPayload, null, 2));
-        }
         return;
       }
 
@@ -220,96 +225,17 @@ export default function BusinessHoursPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
-      if (process.env.NODE_ENV !== 'production') {
-        const debugPayload = {
-          endpoint: '/api/business-hours/save',
-          payload,
-          status: 0,
-          error: message,
-          rawText: undefined,
-          data: null,
-        };
-        console.error('[schedule-settings] save business hours failed', JSON.stringify(debugPayload, null, 2));
-      }
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleSaveCore = async () => {
-    if (!activeRestaurantId) {
-      showToast('Select a restaurant first', 'error');
-      if (process.env.NODE_ENV !== 'production') {
-        console.error('[schedule-settings] save core hours failed', new Error('Missing active restaurant'));
-      }
-      return;
-    }
-    const payload = {
-      organizationId: activeRestaurantId,
-      hours: buildHoursPayload(coreRows),
-    };
-    setSavingCore(true);
-    try {
-      const result = await apiFetch('/api/core-hours/save', {
-        method: 'POST',
-        json: payload,
-      });
-
-      if (!result.ok) {
-        const statusLabel = result.status === 0 ? 'network' : result.status;
-        const message = result.error ?? result.rawText?.slice(0, 120) ?? 'Unknown error';
-        showToast(`Save failed (${statusLabel}): ${message}`, 'error');
-        if (process.env.NODE_ENV !== 'production') {
-          let safeData: string;
-          try {
-            safeData = JSON.stringify(result.data ?? null);
-          } catch {
-            safeData = '"[unserializable]"';
-          }
-          const debugPayload = {
-            endpoint: '/api/core-hours/save',
-            payload,
-            status: result.status,
-            error: result.error,
-            rawText: result.rawText?.slice(0, 500),
-            data: safeData,
-          };
-          console.error('[schedule-settings] save core hours failed', JSON.stringify(debugPayload, null, 2));
-        }
-        return;
-      }
-
-      await loadRestaurantData(activeRestaurantId);
-      showToast('Core hours updated', 'success');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
-      if (process.env.NODE_ENV !== 'production') {
-        const debugPayload = {
-          endpoint: '/api/core-hours/save',
-          payload,
-          status: 0,
-          error: message,
-          rawText: undefined,
-          data: null,
-        };
-        console.error('[schedule-settings] save core hours failed', JSON.stringify(debugPayload, null, 2));
-      }
-    } finally {
-      setSavingCore(false);
     }
   };
 
   const handleSaveViewSettings = async () => {
     if (!activeRestaurantId) {
       showToast('Select a restaurant first', 'error');
-      if (process.env.NODE_ENV !== 'production') {
-        console.error('[schedule-settings] save view settings failed', new Error('Missing active restaurant'));
-      }
       return;
     }
 
-    // Validate custom hours
     if (hourMode === 'custom' && customEndHour <= customStartHour) {
       showToast('End hour must be greater than start hour', 'error');
       return;
@@ -332,27 +258,9 @@ export default function BusinessHoursPage() {
         const statusLabel = result.status === 0 ? 'network' : result.status;
         const message = result.error ?? result.rawText?.slice(0, 120) ?? 'Unknown error';
         showToast(`Save failed (${statusLabel}): ${message}`, 'error');
-        if (process.env.NODE_ENV !== 'production') {
-          let safeData: string;
-          try {
-            safeData = JSON.stringify(result.data ?? null);
-          } catch {
-            safeData = '"[unserializable]"';
-          }
-          const debugPayload = {
-            endpoint: '/api/schedule-view-settings/save',
-            payload,
-            status: result.status,
-            error: result.error,
-            rawText: result.rawText?.slice(0, 500),
-            data: safeData,
-          };
-          console.error('[schedule-settings] save view settings failed', JSON.stringify(debugPayload, null, 2));
-        }
         return;
       }
 
-      // Update the store with new settings
       if (result.data?.settings) {
         const s = result.data.settings;
         setScheduleViewSettings({
@@ -363,6 +271,10 @@ export default function BusinessHoursPage() {
           customEndHour: Number(s.custom_end_hour ?? 24),
           weekStartDay: s.week_start_day === 'monday' ? 'monday' : 'sunday',
           minStaffPerHour: Number(s.min_staff_per_hour ?? 5),
+          coverageEnabled: Boolean(s.coverage_enabled ?? false),
+          minStaffByHour: (typeof s.min_staff_by_hour === 'object' && s.min_staff_by_hour !== null && !Array.isArray(s.min_staff_by_hour))
+            ? Object.fromEntries(Object.entries(s.min_staff_by_hour as Record<string, unknown>).map(([k, v]) => [Number(k), Number(v)]))
+            : {},
         });
       }
 
@@ -370,17 +282,6 @@ export default function BusinessHoursPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
-      if (process.env.NODE_ENV !== 'production') {
-        const debugPayload = {
-          endpoint: '/api/schedule-view-settings/save',
-          payload,
-          status: 0,
-          error: message,
-          rawText: undefined,
-          data: null,
-        };
-        console.error('[schedule-settings] save view settings failed', JSON.stringify(debugPayload, null, 2));
-      }
     } finally {
       setSavingViewSettings(false);
     }
@@ -389,9 +290,6 @@ export default function BusinessHoursPage() {
   const handleSaveWeekStart = async () => {
     if (!activeRestaurantId) {
       showToast('Select a restaurant first', 'error');
-      if (process.env.NODE_ENV !== 'production') {
-        console.error('[schedule-settings] save week start failed', new Error('Missing active restaurant'));
-      }
       return;
     }
 
@@ -411,23 +309,6 @@ export default function BusinessHoursPage() {
         const statusLabel = result.status === 0 ? 'network' : result.status;
         const message = result.error ?? result.rawText?.slice(0, 120) ?? 'Unknown error';
         showToast(`Save failed (${statusLabel}): ${message}`, 'error');
-        if (process.env.NODE_ENV !== 'production') {
-          let safeData: string;
-          try {
-            safeData = JSON.stringify(result.data ?? null);
-          } catch {
-            safeData = '"[unserializable]"';
-          }
-          const debugPayload = {
-            endpoint: '/api/schedule-view-settings/save',
-            payload,
-            status: result.status,
-            error: result.error,
-            rawText: result.rawText?.slice(0, 500),
-            data: safeData,
-          };
-          console.error('[schedule-settings] save week start failed', JSON.stringify(debugPayload, null, 2));
-        }
         return;
       }
 
@@ -441,6 +322,10 @@ export default function BusinessHoursPage() {
           customEndHour: Number(s.custom_end_hour ?? 24),
           weekStartDay: s.week_start_day === 'monday' ? 'monday' : 'sunday',
           minStaffPerHour: Number(s.min_staff_per_hour ?? 5),
+          coverageEnabled: Boolean(s.coverage_enabled ?? false),
+          minStaffByHour: (typeof s.min_staff_by_hour === 'object' && s.min_staff_by_hour !== null && !Array.isArray(s.min_staff_by_hour))
+            ? Object.fromEntries(Object.entries(s.min_staff_by_hour as Record<string, unknown>).map(([k, v]) => [Number(k), Number(v)]))
+            : {},
         });
       }
 
@@ -448,29 +333,28 @@ export default function BusinessHoursPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
-      if (process.env.NODE_ENV !== 'production') {
-        const debugPayload = {
-          endpoint: '/api/schedule-view-settings/save',
-          payload,
-          status: 0,
-          error: message,
-          rawText: undefined,
-          data: null,
-        };
-        console.error('[schedule-settings] save week start failed', JSON.stringify(debugPayload, null, 2));
-      }
     } finally {
       setSavingWeekStart(false);
     }
   };
 
-  const handleSaveMinStaff = async () => {
+  const handleSaveCoverage = async () => {
     if (!activeRestaurantId) {
       showToast('Select a restaurant first', 'error');
       return;
     }
-    const payload = { organizationId: activeRestaurantId, minStaffPerHour };
-    setSavingMinStaff(true);
+    // Convert minStaffByHour keys to strings for JSON serialization
+    const byHourPayload: Record<string, number> = {};
+    for (const [k, v] of Object.entries(minStaffByHour)) {
+      byHourPayload[String(k)] = v;
+    }
+    const payload = {
+      organizationId: activeRestaurantId,
+      minStaffPerHour,
+      coverageEnabled,
+      minStaffByHour: byHourPayload,
+    };
+    setSavingCoverage(true);
     try {
       const result = await apiFetch<{ settings: Record<string, unknown> }>('/api/schedule-view-settings/save', {
         method: 'POST',
@@ -492,15 +376,55 @@ export default function BusinessHoursPage() {
           customEndHour: Number(s.custom_end_hour ?? 24),
           weekStartDay: s.week_start_day === 'monday' ? 'monday' : 'sunday',
           minStaffPerHour: Number(s.min_staff_per_hour ?? 5),
+          coverageEnabled: Boolean(s.coverage_enabled ?? false),
+          minStaffByHour: (typeof s.min_staff_by_hour === 'object' && s.min_staff_by_hour !== null && !Array.isArray(s.min_staff_by_hour))
+            ? Object.fromEntries(Object.entries(s.min_staff_by_hour as Record<string, unknown>).map(([k, v]) => [Number(k), Number(v)]))
+            : {},
         });
       }
-      showToast('Minimum staffing updated', 'success');
+      showToast('Coverage settings updated', 'success');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       showToast(`Save failed (network): ${message || 'Unknown error'}`, 'error');
     } finally {
-      setSavingMinStaff(false);
+      setSavingCoverage(false);
     }
+  };
+
+  const setHourMin = (hour: number, value: number) => {
+    setMinStaffByHour((prev) => ({ ...prev, [hour]: value }));
+  };
+
+  const applyQuickFillAll = () => {
+    const next: Record<number, number> = {};
+    for (const h of editorHours) next[h] = quickFillAll;
+    setMinStaffByHour(next);
+  };
+
+  const applyQuickFillLunch = () => {
+    setMinStaffByHour((prev) => {
+      const next = { ...prev };
+      for (const h of [11, 12, 13]) {
+        if (editorHours.includes(h)) next[h] = quickFillLunch;
+      }
+      return next;
+    });
+  };
+
+  const applyQuickFillDinner = () => {
+    setMinStaffByHour((prev) => {
+      const next = { ...prev };
+      for (const h of [17, 18, 19, 20, 21]) {
+        if (editorHours.includes(h)) next[h] = quickFillDinner;
+      }
+      return next;
+    });
+  };
+
+  const resetToDefault = () => {
+    const next: Record<number, number> = {};
+    for (const h of editorHours) next[h] = minStaffPerHour;
+    setMinStaffByHour(next);
   };
 
   const handleAddLocation = async () => {
@@ -726,60 +650,181 @@ export default function BusinessHoursPage() {
             </div>
           </div>
 
-          {/* Minimum Staffing Section */}
-          <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-3 space-y-2.5">
-            <div>
-              <h2 className="text-lg font-semibold text-theme-primary">Minimum Staffing</h2>
-              <p className="text-xs text-theme-tertiary mt-0.5">
-                Set the minimum number of staff needed during operating hours. Used to calculate coverage in the footer.
-              </p>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-theme-primary">Staff per hour</p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMinStaffPerHour(Math.max(1, minStaffPerHour - 1))}
-                  disabled={minStaffPerHour <= 1}
-                  className="w-8 h-8 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary text-lg font-bold flex items-center justify-center hover:bg-theme-hover transition-colors disabled:opacity-40"
-                >
-                  −
-                </button>
-                <span className="w-8 text-center font-semibold text-theme-primary">{minStaffPerHour}</span>
-                <button
-                  type="button"
-                  onClick={() => setMinStaffPerHour(Math.min(20, minStaffPerHour + 1))}
-                  disabled={minStaffPerHour >= 20}
-                  className="w-8 h-8 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary text-lg font-bold flex items-center justify-center hover:bg-theme-hover transition-colors disabled:opacity-40"
-                >
-                  +
-                </button>
+          {/* Minimum Staffing / Coverage Section */}
+          <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-3 space-y-3 md:col-span-2">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-theme-primary">Minimum Staffing</h2>
+                <p className="text-xs text-theme-tertiary mt-0.5">
+                  Track staffing levels against minimum requirements. Shows coverage indicators on the schedule.
+                </p>
               </div>
-            </div>
-
-            <div className="flex justify-end">
+              {/* Enable/Disable toggle */}
               <button
                 type="button"
-                onClick={handleSaveMinStaff}
-                disabled={savingMinStaff}
+                onClick={() => setCoverageEnabled((v) => !v)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                  coverageEnabled ? 'bg-amber-500' : 'bg-theme-tertiary'
+                }`}
+                role="switch"
+                aria-checked={coverageEnabled}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ${
+                    coverageEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <p className="text-xs text-theme-muted">
+              {coverageEnabled ? 'Coverage tracking enabled' : 'Coverage tracking disabled — only basic headcount shows on the schedule'}
+            </p>
+
+            {coverageEnabled && (
+              <div className="space-y-3 pt-1 border-t border-theme-primary/30">
+                {/* Global fallback */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-theme-primary">Default minimum (all hours)</p>
+                    <p className="text-[11px] text-theme-muted">Used for hours without a specific minimum set below</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMinStaffPerHour(Math.max(1, minStaffPerHour - 1))}
+                      disabled={minStaffPerHour <= 1}
+                      className="w-7 h-7 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary text-base font-bold flex items-center justify-center hover:bg-theme-hover transition-colors disabled:opacity-40"
+                    >
+                      −
+                    </button>
+                    <span className="w-6 text-center font-semibold text-theme-primary text-sm">{minStaffPerHour}</span>
+                    <button
+                      type="button"
+                      onClick={() => setMinStaffPerHour(Math.min(20, minStaffPerHour + 1))}
+                      disabled={minStaffPerHour >= 20}
+                      className="w-7 h-7 rounded-lg bg-theme-tertiary border border-theme-primary text-theme-primary text-base font-bold flex items-center justify-center hover:bg-theme-hover transition-colors disabled:opacity-40"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+
+                {/* Quick-fill row */}
+                <div className="flex flex-wrap gap-2 items-center">
+                  <span className="text-xs text-theme-muted font-medium shrink-0">Quick fill:</span>
+
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-theme-secondary">All hours →</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={quickFillAll}
+                      onChange={(e) => setQuickFillAll(Math.min(20, Math.max(0, Number(e.target.value))))}
+                      className="w-12 px-1.5 py-0.5 bg-theme-tertiary border border-theme-primary rounded text-theme-primary text-xs text-center"
+                    />
+                    <button
+                      type="button"
+                      onClick={applyQuickFillAll}
+                      className="px-2 py-0.5 rounded bg-theme-tertiary border border-theme-primary text-theme-secondary text-xs hover:bg-theme-hover transition-colors"
+                    >
+                      Apply
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-theme-secondary">Lunch (11a–2p) →</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={quickFillLunch}
+                      onChange={(e) => setQuickFillLunch(Math.min(20, Math.max(0, Number(e.target.value))))}
+                      className="w-12 px-1.5 py-0.5 bg-theme-tertiary border border-theme-primary rounded text-theme-primary text-xs text-center"
+                    />
+                    <button
+                      type="button"
+                      onClick={applyQuickFillLunch}
+                      className="px-2 py-0.5 rounded bg-theme-tertiary border border-theme-primary text-theme-secondary text-xs hover:bg-theme-hover transition-colors"
+                    >
+                      Apply
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-theme-secondary">Dinner (5p–10p) →</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={quickFillDinner}
+                      onChange={(e) => setQuickFillDinner(Math.min(20, Math.max(0, Number(e.target.value))))}
+                      className="w-12 px-1.5 py-0.5 bg-theme-tertiary border border-theme-primary rounded text-theme-primary text-xs text-center"
+                    />
+                    <button
+                      type="button"
+                      onClick={applyQuickFillDinner}
+                      className="px-2 py-0.5 rounded bg-theme-tertiary border border-theme-primary text-theme-secondary text-xs hover:bg-theme-hover transition-colors"
+                    >
+                      Apply
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={resetToDefault}
+                    className="px-2 py-0.5 rounded bg-theme-tertiary border border-theme-primary text-theme-muted text-xs hover:bg-theme-hover transition-colors ml-auto"
+                  >
+                    Reset to default
+                  </button>
+                </div>
+
+                {/* Per-hour editor */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5 max-h-72 overflow-y-auto pr-1">
+                  {editorHours.map((hour) => {
+                    const val = minStaffByHour[hour] ?? minStaffPerHour;
+                    const barColor =
+                      val === 0 ? 'rgba(156,163,175,0.3)'
+                      : val <= 3 ? '#F59E0B'
+                      : val <= 6 ? '#22C55E'
+                      : '#16A34A';
+                    const barWidth = val === 0 ? 4 : Math.min(100, (val / 20) * 100);
+                    return (
+                      <div key={hour} className="flex items-center gap-1.5 bg-theme-tertiary rounded-lg px-2 py-1.5 border border-theme-primary/40">
+                        <span className="text-[10px] text-theme-muted w-10 shrink-0 font-medium">{formatHourLabel(hour)}</span>
+                        <div className="flex-1 h-1.5 rounded-full bg-theme-primary/20 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-150"
+                            style={{ width: `${barWidth}%`, backgroundColor: barColor }}
+                          />
+                        </div>
+                        <input
+                          type="number"
+                          min={0}
+                          max={20}
+                          value={val}
+                          onChange={(e) => setHourMin(hour, Math.min(20, Math.max(0, Number(e.target.value))))}
+                          className="w-8 text-center text-xs font-semibold bg-theme-secondary border border-theme-primary/40 rounded text-theme-primary focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={handleSaveCoverage}
+                disabled={savingCoverage}
                 className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-amber-500 text-zinc-900 text-sm font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
               >
-                {savingMinStaff ? 'Saving...' : 'Save Minimum Staffing'}
+                {savingCoverage ? 'Saving...' : 'Save Coverage Settings'}
               </button>
             </div>
           </div>
-
-          <HoursRangeSection
-            title="Core Hours"
-            description="Define the core coverage window for each day."
-            helperText="Used to calculate schedule coverage in the footer."
-            rows={coreRows}
-            setRows={setCoreRows}
-            onSave={handleSaveCore}
-            saving={savingCore}
-            saveLabel="Save Core Hours"
-          />
 
           <HoursRangeSection
             title="Business Hours"
@@ -913,4 +958,3 @@ export default function BusinessHoursPage() {
     </div>
   );
 }
-
