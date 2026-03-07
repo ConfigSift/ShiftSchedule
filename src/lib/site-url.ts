@@ -4,8 +4,16 @@ function trimTrailingSlash(value: string) {
 
 export function getSiteUrl() {
   const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (!configured) return 'http://localhost:3000';
-  return trimTrailingSlash(configured);
+  if (configured) {
+    return trimTrailingSlash(configured);
+  }
+
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+  if (vercelUrl) {
+    return trimTrailingSlash(`https://${vercelUrl}`);
+  }
+
+  return 'http://localhost:3000';
 }
 
 export function getAuthCallbackUrl() {

@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Calendar, Lock, Mail } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase/client';
-import { getAuthCallbackUrl } from '../../lib/site-url';
+import { getAuthCallbackUrl, getSiteUrl } from '../../lib/site-url';
 import { TransitionScreen } from '../../components/auth/TransitionScreen';
 import { normalizePersona, readStoredPersona } from '@/lib/persona';
 import { resolvePostAuthDestination } from '@/lib/authRedirect';
@@ -191,7 +191,7 @@ export default function LoginClient({ notice, nextPath, setupDisabled }: LoginCl
     setRecoveryLoading(true);
     try {
       await supabase.auth.resetPasswordForEmail(targetEmail, {
-        redirectTo: `${window.location.origin}/reset-passcode`,
+        redirectTo: `${getSiteUrl()}/auth/recovery`,
       });
       setRecoveryMessage('If an account exists, you will receive a recovery email shortly.');
     } catch {
@@ -290,6 +290,13 @@ export default function LoginClient({ notice, nextPath, setupDisabled }: LoginCl
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 mb-4">
               <p className="text-sm text-emerald-400">
                 Account deleted successfully.
+              </p>
+            </div>
+          )}
+          {notice === 'password-reset' && (
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 mb-4">
+              <p className="text-sm text-emerald-400">
+                Password updated. Sign in with your new password.
               </p>
             </div>
           )}

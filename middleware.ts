@@ -33,6 +33,7 @@ const APP_ROUTE_PREFIXES = [
 const PUBLIC_EXACT_PATHS = ['/'];
 const PUBLIC_PATH_PREFIXES = ['/login', '/signup', '/start', '/onboarding', '/setup', '/auth/callback', '/auth/error'];
 const AUTH_ENTRY_PATH_PREFIXES = ['/login', '/signup'];
+const RECOVERY_ALLOWED_PATH_PREFIXES = ['/auth/recovery', '/reset-password', '/login', '/signup', '/start', '/onboarding', '/setup', '/auth'];
 const PROTECTED_APP_ROUTE_PREFIXES = [
   '/admin',
   '/join',
@@ -148,6 +149,10 @@ function isPublicPath(pathname: string) {
 
 function isProtectedAppRoute(pathname: string) {
   return PROTECTED_APP_ROUTE_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
+}
+
+function isRecoveryAllowedPath(pathname: string) {
+  return RECOVERY_ALLOWED_PATH_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
 }
 
 function isBillingExempt(pathname: string): boolean {
@@ -305,6 +310,17 @@ async function runMiddleware(req: NextRequest) {
 
   const protectedRoute = isProtectedAppRoute(routeForGuards);
   const authEntryForGuards = isAuthEntryPath(routeForGuards);
+  const recoveryRequired = req.cookies.get('cs_recovery_required')?.value === '1';
+  const recoveryAllowedRoute = isRecoveryAllowedPath(routeForGuards);
+
+  if (recoveryRequired) {
+    if (!recoveryAllowedRoute) {
+      return createRedirect('/reset-password', 'recovery:required');
+    }
+
+    return response;
+  }
+
   if (!protectedRoute && !authEntryForGuards) {
     return response;
   }
